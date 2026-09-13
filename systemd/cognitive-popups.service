@@ -1,0 +1,19 @@
+[Unit]
+Description=Cognitive Popups desktop layer
+Requires=gemini-web2api.service
+After=graphical-session.target gemini-web2api.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/cognitive-popups
+Environment=PYTHONPATH=%h/projects/cognitive-popups/src
+Environment=GDK_BACKEND=x11
+Environment=DISPLAY=:0
+Environment=WAYLAND_DISPLAY=wayland-1
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStart=/usr/bin/python3 -m cognitive_popups
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

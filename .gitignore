@@ -1,0 +1,13 @@
+secrets/
+.restore-backup/
+*.gguf
+
+# generated files and local caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+graphify-out/
+
+# на случай, если кто-то прогонит gather.sh с секретами
+.config/cognitive-tools.env
+cookie.json*

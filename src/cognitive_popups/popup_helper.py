@@ -1,7 +1,32 @@
 #!/usr/bin/env python3
+"""GTK popup helper: renders one popup per invocation and returns its result.
+
+This is the only place that sees clicks, so it is also where click logging
+happens.  Every window records `window_open`, each click inside it, and
+`window_close` with the time spent open; rows are chained through `parent_id`
+by `EventChain`, so the log reconstructs "clicked this word -> this layer
+opened".  When the desktop layer spawned this process, the chain continues the
+interaction it started (see `cognitive_popups.event_log`).
+
+Invoked as `python -m cognitive_popups.popup_helper` with a JSON payload on
+stdin; the selected action or typed text goes back on stdout.
+"""
 import json
+import os
 import subprocess
 import sys
+import time
+from pathlib import Path
+
+if __package__ in (None, ""):
+    # Allow running the file directly, without the package on PYTHONPATH.
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from cognitive_popups.event_log import EventChain, EventLog
+else:
+    from .event_log import EventChain, EventLog
+
+_LOG = EventLog()
+_CHAIN = EventChain.from_env(_LOG, origin="popup", pid=os.getpid())
 
 
 def load_payload():
@@ -149,9 +174,10 @@ def show_input_popup(prompt_text, px=None, py=None):
         def _finalize_open(self):
             self.move_to(self.px, self.py)
             self.present()
-            self.present_with_time(int(__import__('time').time() * 1000))
+            self.present_with_time(int(time.time() * 1000))
             self.entry.grab_focus()
             self.entry.set_position(-1)
+            _CHAIN.emit('window_open', window='input', detail=prompt_text)
             return False
 
         def move_to(self, px, py):
@@ -161,6 +187,7 @@ def show_input_popup(prompt_text, px=None, py=None):
 
         def on_submit(self, *args):
             text = self.entry.get_text().strip()
+            _CHAIN.emit('submit', window='input', detail=f'{len(text)} chars')
             sys.stdout.write(text)
             sys.stdout.flush()
             Gtk.main_quit()
@@ -168,9 +195,11 @@ def show_input_popup(prompt_text, px=None, py=None):
 
         def on_copy(self, *args):
             copy_text_to_clipboard(self.entry.get_text().strip())
+            _CHAIN.emit('copy', window='input')
             return True
 
         def on_cancel(self, *args):
+            _CHAIN.emit('window_close', window='input', detail='cancel')
             Gtk.main_quit()
             return True
 
@@ -268,22 +297,25 @@ def show_objects_popup(items, px=None, py=None):
 
         def on_copy(self, *args):
             copy_text_to_clipboard('\n'.join(self.items))
+            _CHAIN.emit('copy', window='objects', detail=f'{len(self.items)} objects')
             return True
 
         def on_click(self, *args):
-            return self.close_and_quit()
+            return self.close_and_quit(reason='click')
 
         def on_key(self, widget, event):
             if event.keyval in (Gdk.KEY_Escape, Gdk.KEY_Return, Gdk.KEY_KP_Enter):
                 return self.close_and_quit()
             return False
 
-        def close_and_quit(self):
+        def close_and_quit(self, reason='key'):
+            _CHAIN.emit('window_close', window='objects', detail=reason)
             self.destroy()
             Gtk.main_quit()
             return True
 
-    Popup(items, px, py)
+    popup = Popup(items, px, py)
+    _CHAIN.emit('window_open', window='objects', detail=f'{len(items)} objects')
     Gtk.main()
     return 0
 
@@ -359,12 +391,17 @@ def show_menu_popup(items, px=None, py=None, title='Menu'):
                 mx, my = int(px), int(py)
             self.move(mx + 12, my + 12)
             self.present()
+            _CHAIN.emit('window_open', window='menu', detail=title)
             return False
 
         def choose(self, _widget, event, action):
             if getattr(event, 'button', 0) == 3:
+                _CHAIN.emit('window_close', window='menu', detail='right_click')
                 self.close()
                 return True
+            index = next((i for i, (_l, a) in enumerate(rows) if a == action), None)
+            label = rows[index][0] if index is not None else action
+            _CHAIN.emit('click', window='menu', layer=1, item_index=index, item_label=label, detail=action)
             sys.stdout.write(json.dumps({'action': action}, ensure_ascii=False))
             sys.stdout.flush()
             self.close()
@@ -372,6 +409,7 @@ def show_menu_popup(items, px=None, py=None, title='Menu'):
 
         def on_key(self, _widget, event):
             if event.keyval == Gdk.KEY_Escape:
+                _CHAIN.emit('window_close', window='menu', detail='escape')
                 self.close()
                 return True
             return False
@@ -415,6 +453,8 @@ def show_dual_popup(items, px=None, py=None, title=''):
         def __init__(self):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
             self.active: set[int] = set()
+            self.revealed: set[int] = set()
+            self._opened = time.monotonic()
             self.set_decorated(False)
             self.set_resizable(False)
             self.set_skip_taskbar_hint(True)
@@ -456,39 +496,69 @@ def show_dual_popup(items, px=None, py=None, title=''):
             mx, my = (get_mouse_position() if px is None or py is None else (int(px), int(py)))
             self.move(mx + 12, my + 12)
             self.present()
+            _CHAIN.emit('window_open', window='dual', layer=1, detail=title or f'{len(rows)} cues')
             return False
 
         def show_terms(self, _widget, event, _index):
             if getattr(event, 'button', 0) == 3:
-                return self.close()
-            if self.right.get_children():
+                return self.close(reason='right_click')
+            if not isinstance(_index, int) or not 0 <= _index < len(rows):
                 return True
+            simple, term = rows[_index][0], rows[_index][1]
+            _CHAIN.emit('click', window='dual', layer=1, item_index=_index, item_label=simple)
+            # The second column is revealed one word at a time: a click opens the
+            # term of that word only, so all four are never handed over at once.
+            self.revealed.add(_index)
+            self.render_terms()
+            _CHAIN.emit(
+                'layer_open', window='dual', layer=2, item_index=_index,
+                item_label=term, detail='word revealed',
+            )
+            return True
+
+        def render_terms(self):
+            """Keep one row per word so a revealed term lines up with its word."""
+            for child in self.right.get_children():
+                self.right.remove(child)
             for index, (_simple, term, _meaning) in enumerate(rows):
-                row = Gtk.EventBox()
-                row.set_visible_window(True)
-                row.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
-                row.connect('button-press-event', self.show_meaning, index)
-                row.set_size_request(-1, 28)
-                cell = Gtk.Label(label=term, xalign=0)
+                holder = Gtk.EventBox()
+                holder.set_size_request(-1, 28)
+                if index in self.revealed:
+                    holder.set_visible_window(True)
+                    holder.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+                    holder.connect('button-press-event', self.show_meaning, index)
+                    cell = Gtk.Label(label=term, xalign=0)
+                    cell.set_width_chars(22)
+                    cell.set_max_width_chars(24)
+                else:
+                    holder.set_visible_window(False)
+                    holder.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+                    holder.connect('button-press-event', self.close_on_right)
+                    cell = Gtk.Label(label='', xalign=0)
                 cell.set_margin_top(5); cell.set_margin_bottom(5)
                 cell.set_margin_start(12); cell.set_margin_end(12)
-                cell.set_width_chars(22)
-                cell.set_max_width_chars(24)
-                row.add(cell)
-                self.right.pack_start(row, False, False, 0)
+                holder.add(cell)
+                self.right.pack_start(holder, False, False, 0)
             self.right.show_all()
             self.resize(420, max(42, len(rows) * 28 + 8))
-            return True
 
         def show_meaning(self, _widget, event, index):
             if getattr(event, 'button', 0) == 3:
-                return self.close()
+                return self.close(reason='right_click')
+            term = rows[index][1] if isinstance(index, int) and 0 <= index < len(rows) else None
+            _CHAIN.emit('click', window='dual', layer=2, item_index=index, item_label=term)
             if index in self.active:
                 self.active.remove(index)
+                shown = False
             else:
                 self.active.add(index)
+                shown = True
             for child in self.meaning.get_children():
                 self.meaning.remove(child)
+            _CHAIN.emit(
+                'layer_toggle', window='dual', layer=3, item_index=index,
+                item_label=term, detail='shown' if shown else 'hidden',
+            )
             if not self.active:
                 self.meaning.hide()
                 self.resize(420, max(42, len(rows) * 28 + 8))
@@ -519,16 +589,20 @@ def show_dual_popup(items, px=None, py=None, title=''):
 
         def close_on_right(self, _widget, event):
             if getattr(event, 'button', 0) == 3:
-                return self.close()
+                return self.close(reason='right_click')
             return False
-            return True
 
         def on_key(self, _widget, event):
             if event.keyval == Gdk.KEY_Escape:
-                return self.close()
+                return self.close(reason='escape')
             return False
 
-        def close(self, *_args):
+        def close(self, *_args, **kwargs):
+            reason = kwargs.get('reason', 'key')
+            _CHAIN.emit(
+                'window_close', window='dual',
+                detail=f'{reason} after {time.monotonic() - self._opened:.1f}s',
+            )
             self.destroy(); Gtk.main_quit(); return True
 
     DualPopup()
@@ -568,7 +642,7 @@ def show_text_popup(text, px=None, py=None, title='Result'):
             outer = Gtk.EventBox()
             outer.set_visible_window(True)
             outer.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
-            outer.connect('button-press-event', lambda *a: self.close_and_quit())
+            outer.connect('button-press-event', lambda *a: self.close_and_quit(reason='click'))
             self.add(outer)
 
             box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -610,6 +684,7 @@ def show_text_popup(text, px=None, py=None, title='Result'):
 
         def on_copy(self, *args):
             copy_text_to_clipboard(self.body)
+            _CHAIN.emit('copy', window='text', detail=title)
             return True
 
         def on_key(self, widget, event):
@@ -617,19 +692,137 @@ def show_text_popup(text, px=None, py=None, title='Result'):
                 return self.close_and_quit()
             return False
 
-        def close_and_quit(self):
+        def close_and_quit(self, reason='key'):
+            _CHAIN.emit('window_close', window='text', detail=reason)
             self.destroy()
             Gtk.main_quit()
             return True
 
     TextPopup(text, px, py)
+    _CHAIN.emit('window_open', window='text', detail=title)
     Gtk.main()
     return 0
 
 
-def main():
-    payload = load_payload()
-    mode = str(payload.get('mode', 'objects')).lower().strip()
+def show_note_popup(anchor='', px=None, py=None):
+    """Multi-line capture for an error note; prints the comment on stdout.
+
+    The reader's own words need more room than the single-line input popup, and
+    Enter has to insert a newline: saving is Ctrl+Enter or the button.
+    """
+    try:
+        import gi
+        gi.require_version('Gtk', '3.0')
+        gi.require_version('Gdk', '3.0')
+        from gi.repository import Gtk, Gdk, GLib
+        apply_popup_font(Gtk, Gdk)
+    except Exception:
+        return 1
+
+    class NotePopup(Gtk.Window):
+        def __init__(self, anchor, px=None, py=None):
+            super().__init__(type=Gtk.WindowType.TOPLEVEL)
+            self.anchor = anchor
+            self.px = px
+            self.py = py
+            self._opened = time.monotonic()
+            self.set_decorated(False)
+            self.set_resizable(False)
+            self.set_skip_taskbar_hint(True)
+            self.set_skip_pager_hint(True)
+            self.set_keep_above(True)
+            self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
+            self.set_title('Error note')
+            self.set_border_width(0)
+            self.connect('key-press-event', self.on_key)
+
+            outer = Gtk.EventBox()
+            outer.set_visible_window(True)
+            self.add(outer)
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            box.set_margin_top(8)
+            box.set_margin_bottom(8)
+            box.set_margin_start(10)
+            box.set_margin_end(10)
+            outer.add(box)
+
+            label = Gtk.Label(label=anchor or 'нет выделения', xalign=0)
+            label.set_line_wrap(True)
+            label.set_max_width_chars(46)
+            label.set_xalign(0)
+            box.pack_start(label, False, False, 0)
+
+            self.view = Gtk.TextView()
+            self.view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+            self.view.set_left_margin(4)
+            self.view.set_right_margin(4)
+            self.view.set_size_request(380, 120)
+            box.pack_start(self.view, True, True, 0)
+
+            buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            save = Gtk.Button(label='Записать')
+            save.connect('clicked', self.on_submit)
+            buttons.pack_start(save, False, False, 0)
+            cancel = Gtk.Button(label='Отмена')
+            cancel.connect('clicked', self.on_cancel)
+            buttons.pack_end(cancel, False, False, 0)
+            box.pack_start(buttons, False, False, 0)
+
+            self.resize(410, 230)
+            self.show_all()
+            GLib.idle_add(self.place)
+
+        def place(self):
+            if self.px is None or self.py is None:
+                mx, my = get_mouse_position()
+            else:
+                mx, my = int(self.px), int(self.py)
+            self.move(mx + 12, my + 12)
+            self.present()
+            self.present_with_time(int(time.time() * 1000))
+            self.view.grab_focus()
+            _CHAIN.emit('window_open', window='note', detail=self.anchor or 'no selection')
+            return False
+
+        def text(self):
+            buffer = self.view.get_buffer()
+            return buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True).strip()
+
+        def on_submit(self, *_args):
+            text = self.text()
+            if not text:
+                return True
+            _CHAIN.emit('submit', window='note', detail=f'{len(text)} chars')
+            sys.stdout.write(text)
+            sys.stdout.flush()
+            self.destroy()
+            Gtk.main_quit()
+            return True
+
+        def on_cancel(self, *_args):
+            _CHAIN.emit('window_close', window='note', detail='cancel')
+            self.destroy()
+            Gtk.main_quit()
+            return True
+
+        def on_key(self, _widget, event):
+            if event.keyval == Gdk.KEY_Escape:
+                return self.on_cancel()
+            if event.keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) \
+                    and (event.state & Gdk.ModifierType.CONTROL_MASK):
+                return self.on_submit()
+            return False
+
+    NotePopup(anchor, px, py)
+    Gtk.main()
+    return 0
+
+
+def _dispatch(payload, mode):
+    if mode == 'note':
+        return show_note_popup(
+            str(payload.get('anchor', '')), payload.get('x'), payload.get('y')
+        )
 
     if mode == 'input':
         prompt_text = str(payload.get('prompt', 'Введите непонятное ядро или слова:')).strip()
@@ -666,6 +859,18 @@ def main():
     px = payload.get('x')
     py = payload.get('y')
     return show_objects_popup(items, px, py)
+
+
+def main():
+    payload = load_payload()
+    mode = str(payload.get('mode', 'objects')).lower().strip()
+    _CHAIN.emit('popup_start', window=mode)
+    try:
+        return _dispatch(payload, mode)
+    except Exception as exc:
+        # A popup that dies before Gtk.main() leaves no visible trace otherwise.
+        _CHAIN.emit('error', window=mode, detail=f'{type(exc).__name__}: {exc}')
+        raise
 
 
 if __name__ == '__main__':

@@ -17,6 +17,7 @@ DEFAULT_PROMPTS: Mapping[str, str] = {
     "four_words": prompts.SEED_SYSTEM,
     "feynman_question": prompts.QUESTION_SYSTEM,
     "feynman_check": prompts.FEYNMAN_SYSTEM,
+    "prediction": prompts.PREDICTION_SYSTEM,
 }
 
 

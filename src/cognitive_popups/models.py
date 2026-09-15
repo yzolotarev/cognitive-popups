@@ -85,12 +85,27 @@ class FeynmanCheck:
 
 
 @dataclass
+class PredictionCheck:
+    buffer_fragment_ids: list[str]
+    hypothesis: str
+    status: str
+    mismatch: str = ""
+    evidence: str = ""
+    created_at: str = field(default_factory=now_iso)
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class CognitiveSession:
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     title: str = "Untitled session"
     created_at: str = field(default_factory=now_iso)
     fragments: list[Fragment] = field(default_factory=list)
     feynman_checks: list[FeynmanCheck] = field(default_factory=list)
+    prediction_checks: list[PredictionCheck] = field(default_factory=list)
 
     def add_fragment(
         self,
@@ -107,6 +122,12 @@ class CognitiveSession:
         if unknown:
             raise ValueError("Feynman check references unknown fragments")
         self.feynman_checks.append(check)
+
+    def add_prediction_check(self, check: PredictionCheck) -> None:
+        unknown = set(check.buffer_fragment_ids) - {f.id for f in self.fragments}
+        if unknown:
+            raise ValueError("Prediction check references unknown fragments")
+        self.prediction_checks.append(check)
 
     def clear(self) -> "CognitiveSession":
         """Return a fresh active session; the old one can be stored in history."""
@@ -129,6 +150,7 @@ class CognitiveSession:
             "created_at": self.created_at,
             "fragments": [fragment.to_dict() for fragment in self.fragments],
             "feynman_checks": [check.to_dict() for check in self.feynman_checks],
+            "prediction_checks": [check.to_dict() for check in self.prediction_checks],
         }
 
     @classmethod
@@ -140,4 +162,7 @@ class CognitiveSession:
         )
         session.fragments = [Fragment(**item) for item in data.get("fragments", [])]
         session.feynman_checks = [FeynmanCheck(**item) for item in data.get("feynman_checks", [])]
+        session.prediction_checks = [
+            PredictionCheck(**item) for item in data.get("prediction_checks", [])
+        ]
         return session

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
-from urllib import request
+from urllib import error, request
 
 
 class Web2APIError(RuntimeError):
@@ -24,11 +25,30 @@ class GeminiWeb2API:
             "max_tokens": max_tokens,
         }, ensure_ascii=False).encode("utf-8")
         req = request.Request(self.url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+        started = time.monotonic()
+
+        def transport_failure(reason: str, exc: BaseException) -> Web2APIError:
+            elapsed = time.monotonic() - started
+            return Web2APIError(f"{reason} ({elapsed:.0f}s, {self.url}): {exc}")
+
+        # A timeout here is reported as a client timeout, not as a model failure:
+        # the bridge keeps waiting on the upstream for up to request_timeout_sec
+        # (180s by default), so it may still answer a request the client abandoned.
+        timeout_reason = (
+            f"client gave up after timeout={self.timeout:.0f}s; "
+            "the bridge may still be waiting for the upstream model"
+        )
         try:
             with request.urlopen(req, timeout=self.timeout) as response:
                 data: dict[str, Any] = json.loads(response.read().decode("utf-8"))
+        except error.URLError as exc:
+            if isinstance(exc.reason, TimeoutError):
+                raise transport_failure(timeout_reason, exc) from exc
+            raise transport_failure("cannot reach the bridge", exc) from exc
+        except TimeoutError as exc:
+            raise transport_failure(timeout_reason, exc) from exc
         except Exception as exc:
-            raise Web2APIError(str(exc)) from exc
+            raise transport_failure("bridge call failed", exc) from exc
         try:
             content = data["choices"][0]["message"].get("content", "")
         except (KeyError, IndexError, TypeError) as exc:

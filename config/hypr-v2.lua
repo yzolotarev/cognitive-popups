@@ -7,6 +7,8 @@ local signal = home .. "/projects/cognitive-popups/scripts/cognitive-popups-sign
 hl.bind("ALT + W", hl.dsp.exec_cmd(signal .. " seed"))
 -- Проверка понимания методом Фейнмана.
 hl.bind("ALT + F", hl.dsp.exec_cmd(signal .. " feynman"))
+-- Заметка о своей ошибке в чтении; якорь — текущее выделение.
+hl.bind("ALT + E", hl.dsp.exec_cmd(signal .. " note"))
 
 
 hl.window_rule({

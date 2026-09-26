@@ -24,8 +24,10 @@ local hud = shell_quote(project .. "/scripts/cognitive-hud.sh")
 hl.bind("ALT + W", hl.dsp.exec_cmd(signal .. " seed"))
 -- Проверка понимания методом Фейнмана.
 hl.bind("ALT + F", hl.dsp.exec_cmd(signal .. " feynman"))
--- Добровольно посмотреть на ту же связь под другим углом.
+-- Добровольно посмотреть на ту же связь под другим углом: сразу ответ.
 hl.bind("ALT + R", hl.dsp.exec_cmd(signal .. " reframe"))
+-- То же, но со своим вопросом к ракурсу.
+hl.bind("ALT + SHIFT + R", hl.dsp.exec_cmd(signal .. " reframe-ask"))
 -- Заметка о своей ошибке в чтении; якорь — текущее выделение.
 hl.bind("ALT + E", hl.dsp.exec_cmd(signal .. " note"))
 -- Спросить или объяснить: слова из буфера, которые не понял, — вручную; вопрос —

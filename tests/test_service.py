@@ -402,9 +402,9 @@ def test_reframe_uses_only_explicit_snapshot_and_labels_model_proposal(tmp_path)
 
     assert result.status == "proposal"
     assert result.basis in source
-    assert f"Опора в тексте: «{result.basis}»" in result.text
+    assert f"Опора: «{result.basis}»" in result.text
     assert "предложение модели" in result.text
-    assert "Следствие:" in result.text
+    assert "Что меняется:" in result.text
     assert result.current_frame == "это список терминов"
     assert result.prompt_hash == service.prompt_id("reframe")["prompt_hash"]
     assert client.calls == 1
@@ -434,12 +434,29 @@ def test_reframe_abstains_without_grounded_complete_proposal(reply):
     assert json.loads(client.messages[0][1]["content"])["current_frame"] == ""
 
 
-@pytest.mark.parametrize("material, focus", [(" ", "фокус"), ("Текст", "  ")])
-def test_reframe_requires_explicit_material_and_focus(material, focus):
-    client = ScriptedClient("{}")
+def test_reframe_requires_only_the_material():
+    """Pressing the key is the whole request, so a focus is not demanded.
+
+    An empty focus is a case of its own, not a missing argument: the prompt asks
+    the model to choose the organising principle instead of making the reader
+    write one before anything happens.
+    """
+    client = ScriptedClient(json.dumps({
+        "status": "proposal", "frame": "Смотри на число единиц.",
+        "implication": "Группировка меняет число единиц.", "basis": "группировка",
+    }, ensure_ascii=False))
+    service = CognitiveService(client)
+
     with pytest.raises(ValueError):
-        CognitiveService(client).reframe(material, focus)
+        service.reframe("   ")
     assert client.calls == 0
+
+    result = service.reframe("группировка сокращает число единиц")
+
+    assert result.status == "proposal"
+    assert result.focus == ""
+    assert json.loads(client.messages[0][1]["content"])["focus"] == ""
+    assert "Если focus пуст, выбери фокус сам" in client.messages[0][0]["content"]
 
 
 def test_reframe_source_instructions_are_passed_only_as_data():

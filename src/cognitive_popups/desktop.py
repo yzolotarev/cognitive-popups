@@ -71,6 +71,7 @@ KEYS_REFERENCE = (
     ("Alt+W", "четыре слова из выделенного текста"),
     ("Alt+F", "проверка понимания по Фейнману"),
     ("Alt+R", "другой ракурс к тому же материалу"),
+    ("Alt+Shift+R", "то же, но со своим вопросом"),
     ("Alt+E", "заметка к выделенному месту"),
     ("Alt+C", "объяснить слово или задать вопрос"),
     ("Ctrl+Q", "сжать выделение до сути"),
@@ -1000,12 +1001,29 @@ class DesktopApp:
         if again.strip():
             self.run_prediction(again)
 
-    def start_reframe(self, *, from_check=None, material_snapshot: str = "") -> None:
-        """One reader-initiated alternative view, never an automatic next step.
+    def _current_goal_text(self) -> str:
+        """The accepted goal in the reader's words, or an empty string."""
+        try:
+            current = RECORDS.current_intention()
+        except RecordError as exc:
+            debug(f"intent read failed: {exc}")
+            return ""
+        return current.text if current else ""
 
-        A live primary selection wins; without one, a prior hypothesis retains the
-        exact source fragments it was checked against. Clipboard text is not
-        treated as a live selection here, since it may be an unrelated old copy.
+    def start_reframe(self, *, from_check=None, material_snapshot: str = "", ask: bool = False) -> None:
+        """One alternative view, generated as soon as the key is pressed.
+
+        The material and the focus come from what the session already holds — the
+        exact fragments of the last hypothesis, its wording, or the accepted goal
+        — so pressing the key is the whole request and no window stands between
+        the reader and the answer. When there is nothing to derive a focus from,
+        the model picks the organising principle itself.
+
+        `ask` (Alt+Shift+R) is the one exception: it opens the field for a reader
+        who wants to steer the frame in their own words. A live primary selection
+        wins for the material; without one, a prior hypothesis keeps the exact
+        fragments it was checked against. Clipboard text is not treated as a live
+        selection here, since it may be an unrelated old copy.
         """
         if self._busy:
             emit("action", window="reframe", detail="busy, request dropped")
@@ -1034,13 +1052,17 @@ class DesktopApp:
                 "Другой ракурс",
             )
             return
-        focus = popup_input(
-            f"Другой ракурс по {label}. Какой вопрос или связь рассмотреть иначе?",
-            "Другой ракурс",
-            initial=previous.hypothesis if previous else "",
-        )
-        if not focus:
-            return
+        # What the reader already holds: their last claim, else their goal.
+        focus = previous.hypothesis if previous else self._current_goal_text()
+        if ask:
+            asked = popup_input(
+                f"Другой ракурс по {label}. Какой вопрос или связь рассмотреть иначе?",
+                "Другой ракурс",
+                initial=focus,
+            )
+            if not asked.strip():
+                return
+            focus = asked
         current_frame = previous.hypothesis if previous else ""
         self._busy = True
         self._log_prompt("reframe", "reframe")
@@ -2132,6 +2154,11 @@ class DesktopApp:
             begin_interaction("hotkey", window="reframe", detail="другой ракурс")
             self._split_idle_session()
             self.start_reframe()
+            return True
+        if request == "reframe-ask":
+            begin_interaction("hotkey", window="reframe", detail="ракурс со своим вопросом")
+            self._split_idle_session()
+            self.start_reframe(ask=True)
             return True
         if request == "summary":
             begin_interaction("hotkey", window="summary", detail="сжат текст (Ctrl+Q)")

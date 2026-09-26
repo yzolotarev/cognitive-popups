@@ -698,18 +698,21 @@ class CognitiveService:
         )
 
     @observed_operation("reframe")
-    def reframe(self, material: str, focus: str, current_frame: str = "") -> Reframe:
+    def reframe(self, material: str, focus: str = "", current_frame: str = "") -> Reframe:
         """Offer one source-grounded alternative for an explicit text snapshot.
 
         The caller supplies the saved buffer or highlight; this method never
         fetches a selection or generates anything without being called.
+
+        A focus is optional. Pressing the key is meant to be the whole request,
+        so an empty focus asks the model to pick the organising principle itself
+        rather than making the reader write one first; a focus that is given
+        still narrows the proposal to that question.
         """
         source = material.strip()
         chosen_focus = focus.strip()
         if not source:
             raise ValueError("material must not be empty")
-        if not chosen_focus:
-            raise ValueError("focus must not be empty")
         system_prompt = self._prompt("reframe")
         data = parse_json_object(self.client.complete(
             reframe_prompt(source, chosen_focus, current_frame.strip(), system_prompt),
@@ -725,10 +728,12 @@ class CognitiveService:
             and isinstance(implication, str) and bool(implication.strip())
         )
         return Reframe(
-            text=(f"Возможный ракурс (предложение модели): {frame.strip()} "
-                  f"Опора в тексте: «{basis.strip()}». "
-                  f"Следствие: {implication.strip()}" if valid else
-                  "По переданному тексту не могу обоснованно предложить другой ракурс для этого фокуса."),
+            # One labelled line per part, so the window bolds the labels and the
+            # reader can act on "что меняется" without reading the whole block.
+            text=(f"Ракурс (предложение модели): {frame.strip()}\n\n"
+                  f"Опора: «{basis.strip()}»\n\n"
+                  f"Что меняется: {implication.strip()}" if valid else
+                  "По переданному тексту не могу обоснованно предложить другой ракурс."),
             status="proposal" if valid else "insufficient",
             basis=basis.strip() if valid else "",
             focus=chosen_focus,

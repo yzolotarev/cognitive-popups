@@ -99,7 +99,7 @@ bindings are:
 |---|---|
 | `Alt+W` | four cues from the primary selection |
 | `Alt+F` | Feynman check for the current buffer |
-| `Alt+R` | one alternative view of the same material |
+| `Alt+R` | one alternative view of the same material (`Alt+Shift+R` adds your own question) |
 | `Alt+E` | note about a misreading, anchored to the selection |
 | `Alt+C` | explain terms, or ask a free-form question |
 | `Ctrl+Q` | compress the selection to its gist |

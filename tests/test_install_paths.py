@@ -215,11 +215,12 @@ def test_hyprland_checkout_selection_and_quoting(sandbox, mode):
                             env=env, capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
     bindings = dict(line.split("\t", 1) for line in result.stdout.splitlines())
-    assert len(bindings) == 14
+    assert len(bindings) == 15
     for key, script, arguments in (
         ("ALT + W", "cognitive-popups-signal.sh", ["seed"]),
         ("ALT + F", "cognitive-popups-signal.sh", ["feynman"]),
         ("ALT + R", "cognitive-popups-signal.sh", ["reframe"]),
+        ("ALT + SHIFT + R", "cognitive-popups-signal.sh", ["reframe-ask"]),
         ("ALT + E", "cognitive-popups-signal.sh", ["note"]),
         ("ALT + C", "cognitive-popups-signal.sh", ["clarify"]),
         ("CTRL + Q", "cognitive-popups-signal.sh", ["summary"]),

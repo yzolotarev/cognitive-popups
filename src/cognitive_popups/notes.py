@@ -29,10 +29,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-DEFAULT_DB = "~/.local/state/cognitive-popups/notes.sqlite3"
+STATE_ROOT = os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-popups"
+DEFAULT_DB = os.path.join(STATE_ROOT, "notes.sqlite3")
 ENV_DB = "COGNITIVE_NOTES_DB"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 ANCHOR_LIMIT = 200
 STATUS_OPEN = "open"
 STATUS_CLOSED = "closed"
@@ -48,6 +49,7 @@ CREATE TABLE IF NOT EXISTS error_notes (
     kind          TEXT,
     fragment_id   TEXT,
     source_hash   TEXT,
+    session_id    TEXT,
     status        TEXT    NOT NULL DEFAULT 'open',
     closed_utc    TEXT,
     resolution    TEXT
@@ -83,9 +85,11 @@ class ErrorNote:
     kind: str | None = None
     fragment_id: str | None = None
     source_hash: str | None = None
+    session_id: str | None = None
     status: str = STATUS_OPEN
     closed_utc: str | None = None
     resolution: str | None = None
+    source_text: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -111,6 +115,13 @@ class NoteStore:
             if not self._schema_ready:
                 conn.executescript(_SCHEMA)
                 conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                # Self-migrate: session_id arrived after the ledger landed, so a
+                # database created earlier lacks the column until this runs.
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(error_notes)")}
+                if "session_id" not in columns:
+                    conn.execute("ALTER TABLE error_notes ADD COLUMN session_id TEXT")
+                if "source_text" not in columns:
+                    conn.execute("ALTER TABLE error_notes ADD COLUMN source_text TEXT")
                 self._schema_ready = True
             return conn
         except (sqlite3.Error, OSError) as exc:
@@ -125,6 +136,8 @@ class NoteStore:
         kind: str | None = None,
         fragment_id: str | None = None,
         source_hash: str | None = None,
+        session_id: str | None = None,
+        source_text: str | None = None,
     ) -> ErrorNote:
         text = (comment or "").strip()
         if not text:
@@ -141,8 +154,8 @@ class NoteStore:
                 cursor = conn.execute(
                     "INSERT INTO error_notes ("
                     "created_utc, created_epoch, anchor, anchor_key, comment, kind,"
-                    " fragment_id, source_hash, status"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " fragment_id, source_hash, session_id, status, source_text"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         created_utc,
                         moment.timestamp(),
@@ -152,7 +165,9 @@ class NoteStore:
                         kind,
                         fragment_id,
                         source_hash,
+                        session_id,
                         STATUS_OPEN,
+                        source_text,
                     ),
                 )
                 conn.commit()
@@ -294,9 +309,11 @@ def _note_fields(row: sqlite3.Row) -> dict[str, Any]:
         "kind": row["kind"],
         "fragment_id": row["fragment_id"],
         "source_hash": row["source_hash"],
+        "session_id": row["session_id"],
         "status": row["status"],
         "closed_utc": row["closed_utc"],
         "resolution": row["resolution"],
+        "source_text": row["source_text"],
     }
 
 

@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-STATE_DIR="${COGNITIVE_STATE_DIR:-$HOME/.local/state/cognitive-popups}"
+# The state directory follows the checkout, so renaming or moving the project keeps
+# the hotkeys working; COGNITIVE_STATE_DIR still overrides it.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+STATE_DIR="${COGNITIVE_STATE_DIR:-$SCRIPT_DIR/../var}"
 PID_FILE="$STATE_DIR/desktop.pid"
 ACTION="${1:-}"
 REQUEST=""
@@ -12,11 +15,20 @@ case "$ACTION" in
   feynman)   SIGNAL=USR2 ;;
   prediction) SIGNAL=HUP ;;
   # GLib accepts only six signals and the four above already claim the useful
-  # ones, so `note` queues its action and wakes the daemon with SIGWINCH.
+  # ones, so `note`, `clarify` and `summary` queue their action and wake the
+  # daemon with SIGWINCH.
   note)    SIGNAL=WINCH; REQUEST=note ;;
+  clarify) SIGNAL=WINCH; REQUEST=clarify ;;
+  summary) SIGNAL=WINCH; REQUEST=summary ;;
+  reframe) SIGNAL=WINCH; REQUEST=reframe ;;
+  intent)  SIGNAL=WINCH; REQUEST=intent ;;
+  example) SIGNAL=WINCH; REQUEST=example ;;
+  # Прямой вызов остаётся прямым; отдельная команда открывает окно для
+  # своего запроса или для вставки материала, когда выделения нет.
+  example-ask) SIGNAL=WINCH; REQUEST=example-ask ;;
 
   stop)    SIGNAL=TERM ;;
-  *) echo "usage: $0 {seed|menu|feynman|prediction|note|stop}" >&2; exit 2 ;;
+  *) echo "usage: $0 {seed|menu|feynman|prediction|note|clarify|summary|reframe|intent|example|example-ask|stop}" >&2; exit 2 ;;
 esac
 
 if [[ ! -r "$PID_FILE" ]]; then

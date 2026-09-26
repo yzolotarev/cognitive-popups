@@ -87,15 +87,10 @@ def test_event_log_cli_says_so_when_empty():
     assert "no events" in err
 
 
-def test_event_log_cli_prints_timeline_then_prunes():
+def test_event_log_cli_prints_timeline():
     db = temp_db("events.sqlite3")
     event_log.EventLog(db).log("hotkey", session_id="s1", window="seed", detail="4 слова")
 
     code, out, _err = run(["--db", str(db), "--tail", "5"], event_log)
     assert code == 0
     assert "hotkey" in out
-
-    code, out, _err = run(["--db", str(db), "--prune-days", "0"], event_log)
-    assert code == 0
-    assert "removed 1 events" in out
-    assert event_log.fetch(db) == []

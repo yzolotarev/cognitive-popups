@@ -24,6 +24,13 @@ class Fragment:
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     source_hash: str = ""
     actions: list[dict[str, Any]] = field(default_factory=list)
+    #: Which prompt version and model produced this fragment. Prompt files are edited
+    #: while the daemon runs, so without these two the log cannot tell versions apart.
+    prompt_hash: str = ""
+    model: str = ""
+    artifact_id: str | None = None
+    generating_operation_id: str | None = None
+    request_ids: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.source_text = self.source_text.strip()
@@ -79,6 +86,10 @@ class FeynmanCheck:
     follow_up: str | None = None
     created_at: str = field(default_factory=now_iso)
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    #: The task and the verdict come from two different prompts; keep both hashes.
+    question_prompt_hash: str = ""
+    check_prompt_hash: str = ""
+    model: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -90,9 +101,49 @@ class PredictionCheck:
     hypothesis: str
     status: str
     mismatch: str = ""
+    #: The quotation is kept only when it was found verbatim in the material, so
+    #: an empty field means "no verbatim support found", not "nothing was said".
     evidence: str = ""
+    #: Knowledge the model added from outside the material. Kept separate from
+    #: `mismatch` so "true in the subject, absent from this text" is never read as
+    #: a verdict about the text.
+    subject_note: str = ""
     created_at: str = field(default_factory=now_iso)
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    prompt_hash: str = ""
+    model: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class Intention:
+    """One reader-written bookmark: what they want right now, in their words.
+
+    Deliberately unvalidated beyond a non-empty phrase: the bookmark is support
+    for the reader, not a SMART goal. `criterion` and `stopped_at` are optional
+    and may be filled in later. `status` is `current` for the single active
+    bookmark and `previous` for the ones it replaced; replacing never marks an
+    intention done or failed, so an older one can be made current again.
+
+    `material` is the passage the wording was grounded in, kept so the goal can
+    be reopened with the text it was about; `material_origin` says where that
+    passage was captured from, and `direction` records what the reader wanted
+    from it. All three may be empty: a goal typed by hand needs neither.
+    """
+
+    text: str
+    criterion: str = ""
+    stopped_at: str = ""
+    source: str = ""
+    material: str = ""
+    material_origin: str = ""
+    direction: str = ""
+    created_at: str = field(default_factory=now_iso)
+    updated_at: str = ""
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    status: str = "current"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -134,6 +185,7 @@ class CognitiveSession:
         return CognitiveSession()
 
     def buffer_context(self) -> str:
+        """The material the model sees: one block per fragment, terms only."""
         parts: list[str] = []
         for index, fragment in enumerate(self.fragments, 1):
             parts.append(

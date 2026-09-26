@@ -4,18 +4,40 @@ A small Linux desktop assistant for turning selected text into compact cognitive
 prompts. It runs as a Hyprland-friendly GTK utility layer and keeps the current
 reading buffer separate from the GUI.
 
+## Naming
+
+The product — and this repository — is **Cognitive Popups**. The idea was developed
+under the working name **cognitive-exoskeleton**, so older notes, commit messages
+and local folders may still use that word. Both names refer to the same project.
+
+Nothing depends on the folder name. The launchers locate their own checkout, and
+`install-user.sh` renders the absolute path into the systemd units, so the clone
+directory can be called anything; rerun the installer if you move it later.
+
 ## What it does
 
 - extracts four concise cues from the primary selection;
-- reveals those cues one word at a time, so the reader drills into a term instead
+- reveals those cues one layer at a time, so the reader drills into a term instead
   of being handed all four at once;
-- keeps those cues in a local session buffer;
-- runs a Feynman-style understanding check;
-- shows the result in compact desktop popups;
-- records every window and click in SQLite, so a reading session can be replayed;
-- keeps error notes: what the reader thought a phrase meant, and what to do about it;
+- keeps cues in a session buffer and lets the reader check one written hypothesis
+  against the source;
+- offers one alternative way to organise the same material, on request;
+- runs a Feynman-style understanding check that names a gap rather than scoring;
+- shows one concrete example, compresses a passage, explains an unknown term, or
+  answers a free-form question about the material;
+- books a goal in the reader's own words and brings it back after a break;
+- generates practice tasks with a separate solution, checks that a task is
+  answerable before showing it, and can revisit archived material for a new task;
+- keeps notes about a misreading, anchored to the text they were about;
+- offers a side panel that repeats the same actions with the mouse and quietly
+  highlights a task that is already saved;
 - archives cleared sessions locally;
+- records every window and click in SQLite, so a reading session can be replayed;
 - supports local prompt overrides.
+
+The reader drives. No window opens, no mode switches and no check is proposed unless
+a hotkey, a click or a command asks for it, and nothing here measures how well
+the reading went: a verdict from the model is a stimulus for thinking, not a grade.
 
 The project talks to an OpenAI-compatible local endpoint. The default endpoint is
 `http://127.0.0.1:8081/v1/chat/completions`; this repository does not contain API
@@ -23,9 +45,9 @@ keys, cookies, or any other credentials.
 
 ## Status
 
-This is an early desktop prototype. The core models, prompt contracts, service
-flow, history, and GTK integration are covered by tests, while the exact desktop
-integration depends on the local Linux environment.
+This is a working desktop prototype rather than a finished product. The models,
+prompt contracts, service flow, ledgers and the GTK surfaces are covered by the test
+suite, while the exact desktop integration depends on the local Linux environment.
 
 ## Requirements
 
@@ -45,13 +67,17 @@ sudo apt install python3-gi gir1.2-gtk-3.0 wl-clipboard xclip
 
 ## Install
 
-Clone the repository at the path expected by the example systemd unit:
+Clone the repository wherever you like:
 
 ```bash
 git clone https://github.com/yzolotarev/cognitive-popups.git \
   ~/projects/cognitive-popups
 cd ~/projects/cognitive-popups
 ```
+
+The clone directory name does not matter. If you keep the checkout under
+`~/projects/cognitive-popups`, the bundled Hyprland bindings find it without any
+configuration; otherwise set `COGNITIVE_PROJECT` to the checkout you use.
 
 Run the tests:
 
@@ -69,10 +95,20 @@ Install and start the user service:
 Merge `config/hypr-v2.lua` into the Hyprland user configuration. The default
 bindings are:
 
-- `Alt+W` — extract four cues from the primary selection;
-- `Alt+F` — start a Feynman check;
-- `Alt+E` — record an error note about the current selection;
-The compact panel can be opened with `./scripts/cognitive-popups-signal.sh menu`.
+| Key | Action |
+|---|---|
+| `Alt+W` | four cues from the primary selection |
+| `Alt+F` | Feynman check for the current buffer |
+| `Alt+R` | one alternative view of the same material |
+| `Alt+E` | note about a misreading, anchored to the selection |
+| `Alt+C` | explain terms, or ask a free-form question |
+| `Ctrl+Q` | compress the selection to its gist |
+| `Alt+I` | the goal bookmark: what I want right now |
+| `Alt+G` | one concrete example (`Alt+Shift+G` adds your own request) |
+| `Alt+T` | generate a practice task; `Alt+Shift+T` revisits archived material; `Alt+Y` attempts the last task |
+| `Alt+H` | show or hide the side panel |
+
+`V2.md` lists every launcher action, including the ones without a default key.
 
 Check the service with:
 

@@ -67,6 +67,7 @@ def test_chain_from_env_continues_the_parent_process():
     assert chain.env() == {
         event_log.ENV_SESSION: "parent-session",
         event_log.ENV_PARENT: "42",
+        event_log.ENV_OPERATION: chain.operation_id,
     }
 
 
@@ -153,20 +154,56 @@ def test_schema_is_versioned():
     assert version == event_log.SCHEMA_VERSION
 
 
-def test_prune_drops_only_old_events():
-    db = temp_db()
+def test_legacy_migration_backs_up_and_preserves_version(tmp_path):
+    db = tmp_path / "events.sqlite3"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(event_log._SCHEMA)
+        conn.execute("PRAGMA user_version=7")
+        conn.execute("INSERT INTO events(ts_utc,ts_epoch,session_id,origin,event) VALUES ('old',1,'s','app','old')")
     log = EventLog(db)
-    log.log("hotkey", session_id="old")
-    # Backdate the row instead of waiting a month.
-    conn = sqlite3.connect(db)
-    try:
-        conn.execute("UPDATE events SET ts_epoch = ts_epoch - ?", (40 * 86400,))
-        conn.commit()
-    finally:
-        conn.close()
-    log.log("hotkey", session_id="fresh")
+    assert log.log("new", session_id="s", payload_json={"full": "x" * 10000}, operation_id="op")
+    rows = fetch(db)
+    assert rows[0]["event"] == "old"
+    assert rows[1]["operation_id"] == "op"
+    import json
+    assert len(json.loads(rows[1]["payload_json"])["full"]) == 10000
+    backups = list(tmp_path.glob("*.backup-*.sqlite3"))
+    assert len(backups) == 1
+    with sqlite3.connect(backups[0]) as conn:
+        assert conn.execute("SELECT count(*) FROM events").fetchone()[0] == 1
+        assert "operation_id" not in {r[1] for r in conn.execute("PRAGMA table_info(events)")}
+    assert EventLog(db).log("again", session_id="s")
+    assert len(list(tmp_path.glob("*.backup-*.sqlite3"))) == 1
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert not conn.execute("SELECT name FROM sqlite_master WHERE name='model_requests'").fetchall()
 
-    removed = event_log.prune(db, older_than_days=30)
 
-    assert removed == 1
-    assert [row["session_id"] for row in fetch(db)] == ["fresh"]
+def test_dynamic_destination_and_chain_context(tmp_path, monkeypatch):
+    from cognitive_popups.operation_context import current_operation, RUN_ID
+    monkeypatch.delenv("COGNITIVE_EVENT_DB", raising=False)
+    monkeypatch.setenv("COGNITIVE_STATE_DIR", str(tmp_path / "one"))
+    first = event_log.default_log()
+    monkeypatch.setenv("COGNITIVE_STATE_DIR", str(tmp_path / "two"))
+    second = event_log.default_log()
+    assert first.path != second.path
+    chain = EventChain(second, "session", operation_id="operation")
+    assert chain.bind(current_operation)() == chain.context
+    assert current_operation() is None
+    chain.emit("event", operation_id="override", run_id="explicit")
+    chain.emit("event")
+    rows = fetch(second.path)
+    assert rows[0]["operation_id"] == "override"
+    assert rows[0]["run_id"] == "explicit"
+    assert rows[1]["operation_id"] == "operation"
+    assert rows[1]["run_id"] == RUN_ID
+    monkeypatch.setenv(event_log.ENV_SESSION, "session")
+    monkeypatch.setenv(event_log.ENV_OPERATION, "operation")
+    assert EventChain.from_env(second).context == chain.context
+
+
+def test_disable_after_construction(tmp_path, monkeypatch):
+    log = EventLog(tmp_path / "absent" / "events.sqlite3")
+    monkeypatch.setenv("COGNITIVE_OBSERVATION_DISABLE", "true")
+    assert log.log("event", session_id="s") is None
+    assert not log.path.parent.exists()

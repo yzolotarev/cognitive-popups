@@ -19,7 +19,8 @@ inside one process and exists to measure durations that wall clock changes canno
 distort.
 
 Logging never raises into the UI: a missing, locked, or read-only database
-degrades to "no log" rather than "no popup".
+degrades to "no log" rather than "no popup".  Nothing here is ever deleted by
+age: the log is meant to be kept and accumulated over years.
 """
 
 from __future__ import annotations
@@ -31,18 +32,27 @@ import sys
 import threading
 import time
 import uuid
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-DEFAULT_DB = "~/.local/state/cognitive-popups/events.sqlite3"
+from .operation_context import RUN_ID, OperationContext, bind_operation
+from .observation import backup_database, report_failure, DB_TIMEOUT, disabled
+
+#: One root for everything the app writes: `COGNITIVE_STATE_DIR` moves the whole
+#: state at once (the three databases, the pid file, the prompts), and the
+#: per-store variables below stay as finer overrides.
+STATE_ROOT = os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-popups"
+DEFAULT_DB = os.path.join(STATE_ROOT, "events.sqlite3")
 
 ENV_DB = "COGNITIVE_EVENT_DB"
 ENV_DISABLE = "COGNITIVE_EVENT_DISABLE"
 ENV_SESSION = "COGNITIVE_EVENT_SESSION"
 ENV_PARENT = "COGNITIVE_EVENT_PARENT"
+ENV_OPERATION = "COGNITIVE_OPERATION_ID"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 ITEM_LABEL_LIMIT = 120
 DETAIL_LIMIT = 400
@@ -75,7 +85,8 @@ _TRUTHY = {"1", "true", "yes", "on"}
 
 
 def resolve_db_path(path: str | Path | None = None) -> Path:
-    raw = path or os.environ.get(ENV_DB) or DEFAULT_DB
+    raw = path or os.environ.get(ENV_DB) or os.path.join(
+        os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-popups", "events.sqlite3")
     return Path(raw).expanduser()
 
 
@@ -106,17 +117,34 @@ class EventLog:
         self.path = resolve_db_path(path)
         self.enabled = enabled and os.environ.get(ENV_DISABLE, "").lower() not in _TRUTHY
         self._lock = threading.Lock()
-        self._schema_ready = False
+
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, timeout=3.0)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        if not self._schema_ready:
-            conn.executescript(_SCHEMA)
-            conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-            self._schema_ready = True
-        return conn
+        conn = sqlite3.connect(self.path, timeout=DB_TIMEOUT)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(events)")}
+            additions = {"operation_id": "TEXT", "run_id": "TEXT", "artifact_id": "TEXT",
+                         "window_instance_id": "TEXT", "payload_json": "TEXT"}
+            missing = additions.keys() - columns
+            if columns and missing:
+                backup_database(self.path)
+            for statement in _SCHEMA.split(";"):
+                if statement.strip():
+                    conn.execute(statement)
+            for name in sorted(missing):
+                conn.execute(f"ALTER TABLE events ADD COLUMN {name} {additions[name]}")
+            conn.execute("CREATE INDEX IF NOT EXISTS events_operation_idx ON events(operation_id, id)")
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if version < SCHEMA_VERSION:
+                conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            conn.commit()
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            return conn
+        except BaseException:
+            conn.close()
+            raise
 
     def log(
         self,
@@ -133,9 +161,14 @@ class EventLog:
         detail: str | None = None,
         source_hash: str | None = None,
         fragment_id: str | None = None,
+        operation_id: str | None = None,
+        run_id: str | None = None,
+        artifact_id: str | None = None,
+        window_instance_id: str | None = None,
+        payload_json: Any = None,
     ) -> int | None:
         """Write one row; return its id, or None when logging is off or failed."""
-        if not self.enabled:
+        if not self.enabled or disabled():
             return None
         moment = datetime.now(timezone.utc)
         row = (
@@ -154,8 +187,16 @@ class EventLog:
             _clip(detail, DETAIL_LIMIT),
             source_hash,
             fragment_id,
+            operation_id, run_id or RUN_ID, artifact_id, window_instance_id,
         )
         try:
+            # Strings may already contain JSON; validate without truncating them.
+            if isinstance(payload_json, str):
+                json.loads(payload_json)
+                payload = payload_json
+            else:
+                payload = json.dumps(payload_json, ensure_ascii=False) if payload_json is not None else None
+            row += (payload,)
             with self._lock:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 conn = self._connect()
@@ -164,16 +205,16 @@ class EventLog:
                         "INSERT INTO events ("
                         "ts_utc, ts_epoch, ts_mono, session_id, parent_id, origin, pid,"
                         " window, event, layer, item_index, item_label, detail,"
-                        " source_hash, fragment_id"
-                        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        " source_hash, fragment_id, operation_id, run_id, artifact_id, window_instance_id, payload_json"
+                        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         row,
                     )
                     conn.commit()
                     return int(cursor.lastrowid or 0) or None
                 finally:
                     conn.close()
-        except Exception:
-            # The UI must survive a broken log; see the module docstring.
+        except Exception as exc:
+            report_failure("event_log.write", exc)
             return None
 
 
@@ -194,13 +235,22 @@ class EventChain:
         origin: str = "app",
         pid: int | None = None,
         parent_id: int | None = None,
+        operation_id: str | None = None,
     ):
         self.log = log
         self.session_id = session_id
+        self.operation_id = operation_id or session_id
         self.origin = origin
         self.pid = pid
         self.parent_id = parent_id
         self._lock = threading.Lock()
+
+    @property
+    def context(self) -> OperationContext:
+        return OperationContext(operation_id=self.operation_id, interaction_id=self.session_id)
+
+    def bind(self, callback):
+        return bind_operation(callback, self.context)
 
     @classmethod
     def from_env(cls, log: EventLog, *, origin: str = "app", pid: int | None = None) -> "EventChain":
@@ -208,10 +258,13 @@ class EventChain:
         session = os.environ.get(ENV_SESSION) or new_session()
         raw = os.environ.get(ENV_PARENT, "")
         parent = int(raw) if raw.isdigit() else None
-        return cls(log, session, origin=origin, pid=pid, parent_id=parent)
+        return cls(log, session, origin=origin, pid=pid, parent_id=parent,
+                   operation_id=os.environ.get(ENV_OPERATION) or session)
 
     def emit(self, event: str, **fields: Any) -> int | None:
         with self._lock:
+            fields.setdefault("operation_id", self.operation_id)
+            fields.setdefault("run_id", RUN_ID)
             row = self.log.log(
                 event,
                 session_id=self.session_id,
@@ -227,7 +280,7 @@ class EventChain:
     def env(self) -> dict[str, str]:
         """Environment for a child process so its events attach to this chain."""
         with self._lock:
-            env = {ENV_SESSION: self.session_id}
+            env = {ENV_SESSION: self.session_id, ENV_OPERATION: self.operation_id}
             if self.parent_id is not None:
                 env[ENV_PARENT] = str(self.parent_id)
             return env
@@ -240,7 +293,8 @@ _default_lock = threading.Lock()
 def default_log() -> EventLog:
     global _default
     with _default_lock:
-        if _default is None:
+        if (_default is None or _default.path != resolve_db_path()
+                or _default.enabled != (os.environ.get(ENV_DISABLE, "").lower() not in _TRUTHY)):
             _default = EventLog()
         return _default
 
@@ -275,25 +329,6 @@ def fetch(
     finally:
         conn.close()
     return rows[-tail:] if tail else rows
-
-
-def prune(path: str | Path | None = None, *, older_than_days: float = 30) -> int:
-    """Drop telemetry older than a cutoff; return how many rows went.
-
-    Only events are pruned. Error notes are the reader's own words and are never
-    expired automatically (see notes.py).
-    """
-    db = resolve_db_path(path)
-    if not db.exists():
-        return 0
-    cutoff = time.time() - older_than_days * 86400
-    conn = sqlite3.connect(db, timeout=3.0)
-    try:
-        cursor = conn.execute("DELETE FROM events WHERE ts_epoch < ?", (cutoff,))
-        conn.commit()
-        return int(cursor.rowcount or 0)
-    finally:
-        conn.close()
 
 
 def local_time(ts_utc: str) -> str:
@@ -361,18 +396,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--session", default=None, help="only this session id")
     parser.add_argument("--tail", type=int, default=40, help="last N events (0 = all)")
     parser.add_argument("--json", action="store_true", help="raw rows as JSON")
-    parser.add_argument(
-        "--prune-days",
-        type=float,
-        default=None,
-        help="delete events older than N days and exit (notes are never pruned)",
-    )
     args = parser.parse_args(argv)
-
-    if args.prune_days is not None:
-        removed = prune(args.db, older_than_days=args.prune_days)
-        print(f"removed {removed} events from {resolve_db_path(args.db)}")
-        return 0
 
     rows = fetch(args.db, session=args.session, tail=args.tail or None)
     if not rows:

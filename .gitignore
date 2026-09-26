@@ -8,6 +8,6 @@ __pycache__/
 .pytest_cache/
 graphify-out/
 
-# на случай, если кто-то прогонит gather.sh с секретами
+# local credentials never belong in this repository
 .config/cognitive-tools.env
 cookie.json*

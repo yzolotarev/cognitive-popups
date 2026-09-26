@@ -1,7 +1,9 @@
 [Unit]
-Description=Cognitive Popups desktop layer
-Requires=gemini-web2api.service
-After=graphical-session.target gemini-web2api.service
+Description=Cognitive Popups side panel
+After=graphical-session.target cognitive-popups.service
+# The panel is a second way into the same daemon; without the daemon it has
+# nothing to show, so it lives and dies with the service.
+PartOf=cognitive-popups.service
 
 [Service]
 Type=simple
@@ -9,13 +11,13 @@ Type=simple
 WorkingDirectory=@COGNITIVE_PROJECT@
 Environment="PYTHONPATH=@COGNITIVE_PROJECT@/src"
 Environment="COGNITIVE_PROJECT=@COGNITIVE_PROJECT@"
-# Everything the app writes (databases, prompts, pid) lives in the checkout.
+# Everything the app writes (databases, prompts, pid, panel state) lives here.
 Environment="COGNITIVE_STATE_DIR=@COGNITIVE_PROJECT@/var"
 Environment=GDK_BACKEND=x11
 Environment=DISPLAY=:0
 Environment=WAYLAND_DISPLAY=wayland-1
 Environment=XDG_RUNTIME_DIR=%t
-ExecStart=/usr/bin/python3 -m cognitive_popups
+ExecStart=/usr/bin/python3 -m cognitive_popups.hud
 Restart=on-failure
 RestartSec=3
 

@@ -146,6 +146,31 @@ def test_render_shows_anchor_and_resolution():
     assert "worked through the definition" in text
 
 
+def test_full_source_roundtrip(tmp_path):
+    store = NoteStore(tmp_path / "notes.sqlite3")
+    source = "  Строка\n\t" * 5000
+    note = store.add("комментарий", anchor=source, source_text=source)
+    assert len(note.anchor) == ANCHOR_LIMIT
+    reopened = NoteStore(store.path)
+    assert reopened.get(note.id).source_text == source
+    assert reopened.list()[0].to_dict()["source_text"] == source
+    assert reopened.close(note.id).source_text == source
+
+
+def test_legacy_schema_migrates_without_inventing_source(tmp_path):
+    path = tmp_path / "notes.sqlite3"
+    from cognitive_popups.notes import _SCHEMA
+    with sqlite3.connect(path) as conn:
+        conn.executescript(_SCHEMA)
+        conn.execute("INSERT INTO error_notes (created_utc, created_epoch, comment, anchor) "
+                     "VALUES ('old', 1, 'old comment', 'clipped…')")
+        conn.execute("PRAGMA user_version=1")
+    store = NoteStore(path)
+    assert store.get(1).source_text is None
+    assert store.get(1).anchor == "clipped…"
+    assert store.add("new", source_text="full").source_text == "full"
+
+
 def test_schema_is_versioned():
     store = temp_store()
     store.add("...")

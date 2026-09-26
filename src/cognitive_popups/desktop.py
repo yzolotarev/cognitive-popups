@@ -63,6 +63,28 @@ NOTES = NoteStore(os.environ.get("COGNITIVE_NOTES_DB") or STATE_DIR / "notes.sql
 # is a lost day, so its methods raise instead of swallowing (see records.py).
 RECORDS = RecordStore(os.environ.get("COGNITIVE_RECORD_DB") or STATE_DIR / "records.sqlite3")
 
+#: The shortcut reference opened by Alt+K, and offered in the panel. Order is the
+#: order a reading session tends to meet them in, not alphabetical: orient, ask,
+#: then practise. A row with no key of its own names where the action lives instead
+#: of inventing a combination, so nothing here promises a key that does not work.
+KEYS_REFERENCE = (
+    ("Alt+W", "четыре слова из выделенного текста"),
+    ("Alt+F", "проверка понимания по Фейнману"),
+    ("Alt+R", "другой ракурс к тому же материалу"),
+    ("Alt+E", "заметка к выделенному месту"),
+    ("Alt+C", "объяснить слово или задать вопрос"),
+    ("Ctrl+Q", "сжать выделение до сути"),
+    ("Alt+I", "закладка «сейчас хочу»"),
+    ("Alt+G", "один конкретный пример"),
+    ("Alt+Shift+G", "пример со своим запросом"),
+    ("Alt+T", "меню тренировочных задач"),
+    ("Alt+Shift+T", "новая задача по старому материалу"),
+    ("Alt+Y", "попытка последней задачи"),
+    ("Alt+H", "боковая панель действий"),
+    ("—", "проверка гипотезы: кнопка «…» в панели"),
+    ("Alt+K", "эта справка по клавишам"),
+)
+
 MODE_MENU = [
     {"label": "Покажи на примере", "action": "example"},
     {"label": "Сейчас хочу", "action": "intent"},
@@ -71,6 +93,7 @@ MODE_MENU = [
     {"label": "Моя гипотеза", "action": "prediction"},
     {"label": "Другой ракурс", "action": "reframe"},
     {"label": "Спросить / объяснить", "action": "clarify"},
+    {"label": "Клавиши", "action": "keys"},
 ]
 
 #: Where the side panel's actions land (see hud.py). A fixed set of names: the
@@ -85,6 +108,7 @@ HUD_ACTIONS = {
     "feynman": "start_feynman",
     "prediction": "start_prediction",
     "summary": "summarize_text",
+    "keys": "show_keys",
     "menu": "show_mode_menu",
 }
 
@@ -423,6 +447,42 @@ class FlashWindow:
         except (OSError, subprocess.SubprocessError):
             return
 
+    def show_keys(self, rows: Sequence[Sequence[str]]) -> None:
+        """Open the shortcut reference in its own window.
+
+        Nothing is reported back — the reader looks and closes it — so the window
+        is spawned like the cue flash rather than waited on. The rows are already
+        in memory, so this is the one action that costs no model call and no
+        ledger write at all, and it opens instantly even mid-request.
+        """
+        command = popup_helper_command()
+        if command is None:
+            emit("error", window="keys", detail="popup helper missing")
+            return
+        try:
+            payload: dict[str, object] = {
+                "mode": "keys",
+                "rows": [list(row) for row in rows],
+            }
+            position = cursor_position()
+            if position:
+                payload["x"], payload["y"] = position
+            payload = prepare_popup(payload, "keys")
+            proc = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                start_new_session=True,
+                env=popup_env(),
+            )
+            if proc.stdin is not None:
+                proc.stdin.write(json.dumps(payload, ensure_ascii=False))
+                proc.stdin.close()
+        except (OSError, subprocess.SubprocessError):
+            return
+
     def show_text(self, text: str, title: str = "Result", *, expanded: bool = False, note: str = "") -> None:
         command = popup_helper_command()
         if not text or command is None:
@@ -705,11 +765,23 @@ class DesktopApp:
             self.start_reframe()
         elif mode == "clarify":
             self.explain_terms()
+        elif mode == "keys":
+            self.show_keys()
         elif mode == "example":
             self.show_example()
         elif mode == "intent":
             self.show_intent()
         return False
+
+    def show_keys(self) -> None:
+        """Alt+K: the shortcut reference, from a table already in memory.
+
+        The hotkeys are the primary way in, so a key the reader cannot recall is a
+        feature they do not have. This asks the model for nothing and writes
+        nothing to the ledger, and it works with an empty buffer.
+        """
+        self.flash.show_keys(KEYS_REFERENCE)
+        emit("action", window="keys", detail=f"{len(KEYS_REFERENCE)} rows")
 
     def _log_prompt(self, window: str, key: str) -> None:
         """Record which prompt version the next model call uses.
@@ -2065,6 +2137,11 @@ class DesktopApp:
             begin_interaction("hotkey", window="summary", detail="сжат текст (Ctrl+Q)")
             self._split_idle_session()
             self.summarize_text()
+            return True
+        if request == "keys":
+            begin_interaction("hotkey", window="keys", detail="справка по клавишам")
+            self._split_idle_session()
+            self.show_keys()
             return True
         if request == "intent":
             begin_interaction("hotkey", window="intent", detail="намерение")

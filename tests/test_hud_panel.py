@@ -82,7 +82,8 @@ def test_hud_captions_match_existing_shortcuts(hud):
     captions = {action: caption for action, _icon, caption, _tip in hud.BUTTONS}
     assert captions == {
         "goal": "Alt+I", "four_words": "Alt+W", "example": "Alt+G",
-        "note": "Alt+E", "practice": "Alt+T", "menu": "Ещё", "background": "Фон",
+        "note": "Alt+E", "practice": "Alt+T", "keys": "Alt+K",
+        "menu": "Ещё", "background": "Фон",
     }
     assert all(icon for _action, icon, _caption, _tip in hud.BUTTONS)
 

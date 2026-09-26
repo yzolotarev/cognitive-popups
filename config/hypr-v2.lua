@@ -45,6 +45,8 @@ hl.bind("ALT + T", hl.dsp.exec_cmd(tasks))
 hl.bind("ALT + SHIFT + T", hl.dsp.exec_cmd(tasks .. " --revisit-menu"))
 -- Явно перейти к попытке последней сгенерированной задачи и получить обратную связь.
 hl.bind("ALT + Y", hl.dsp.exec_cmd(tasks .. " --practice"))
+-- Справка по клавишам: минималистичное окно «клавиша — что делает».
+hl.bind("ALT + K", hl.dsp.exec_cmd(signal .. " keys"))
 -- Боковая панель: те же действия мышью и тихая подсветка готовой задачи.
 -- Первое нажатие запускает панель, следующие показывают и скрывают её.
 hl.bind("ALT + H", hl.dsp.exec_cmd(hud))

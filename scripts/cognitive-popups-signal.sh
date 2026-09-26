@@ -21,6 +21,7 @@ case "$ACTION" in
   clarify) SIGNAL=WINCH; REQUEST=clarify ;;
   summary) SIGNAL=WINCH; REQUEST=summary ;;
   reframe) SIGNAL=WINCH; REQUEST=reframe ;;
+  keys)    SIGNAL=WINCH; REQUEST=keys ;;
   intent)  SIGNAL=WINCH; REQUEST=intent ;;
   example) SIGNAL=WINCH; REQUEST=example ;;
   # Прямой вызов остаётся прямым; отдельная команда открывает окно для
@@ -28,7 +29,7 @@ case "$ACTION" in
   example-ask) SIGNAL=WINCH; REQUEST=example-ask ;;
 
   stop)    SIGNAL=TERM ;;
-  *) echo "usage: $0 {seed|menu|feynman|prediction|note|clarify|summary|reframe|intent|example|example-ask|stop}" >&2; exit 2 ;;
+  *) echo "usage: $0 {seed|menu|feynman|prediction|note|clarify|summary|reframe|keys|intent|example|example-ask|stop}" >&2; exit 2 ;;
 esac
 
 if [[ ! -r "$PID_FILE" ]]; then

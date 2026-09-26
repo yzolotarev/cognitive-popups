@@ -215,7 +215,7 @@ def test_hyprland_checkout_selection_and_quoting(sandbox, mode):
                             env=env, capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
     bindings = dict(line.split("\t", 1) for line in result.stdout.splitlines())
-    assert len(bindings) == 13
+    assert len(bindings) == 14
     for key, script, arguments in (
         ("ALT + W", "cognitive-popups-signal.sh", ["seed"]),
         ("ALT + F", "cognitive-popups-signal.sh", ["feynman"]),
@@ -229,6 +229,7 @@ def test_hyprland_checkout_selection_and_quoting(sandbox, mode):
         ("ALT + T", "cognitive-tasks.sh", []),
         ("ALT + SHIFT + T", "cognitive-tasks.sh", ["--revisit-menu"]),
         ("ALT + Y", "cognitive-tasks.sh", ["--practice"]),
+        ("ALT + K", "cognitive-popups-signal.sh", ["keys"]),
         ("ALT + H", "cognitive-hud.sh", []),
     ):
         assert shlex.split(bindings[key]) == [str(selected / "scripts" / script), *arguments]

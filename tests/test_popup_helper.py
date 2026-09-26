@@ -1,4 +1,4 @@
-from cognitive_popups.popup_helper import estimate_text_size
+from cognitive_popups.popup_helper import estimate_keys_size, estimate_text_size
 
 
 def test_prediction_result_uses_expanded_text_geometry():
@@ -34,6 +34,29 @@ def test_prediction_size_shrinks_for_shorter_text():
 
     assert short_width <= long_width
     assert short_height <= long_height
+
+
+def test_keys_reference_grows_with_rows_but_stays_a_reading_column():
+    rows = [
+        ("Alt+W", "четыре слова из выделенного текста"),
+        ("Alt+Shift+T", "новая задача по старому материалу"),
+    ]
+    width, height = estimate_keys_size(rows)
+
+    assert 320 <= width <= 560
+    assert height > 0
+    # More rows means a taller window, up to the cap.
+    assert estimate_keys_size(rows * 6)[1] > height
+    # One very long action wraps instead of widening the window without bound.
+    long_width, _ = estimate_keys_size([("Alt+K", "длинный текст " * 40)])
+    assert long_width <= 560
+
+
+def test_keys_size_survives_an_empty_reference():
+    width, height = estimate_keys_size([])
+
+    assert width >= 320
+    assert height > 0
 
 
 def test_prediction_size_respects_small_monitor():

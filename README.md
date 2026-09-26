@@ -107,6 +107,7 @@ bindings are:
 | `Alt+G` | one concrete example (`Alt+Shift+G` adds your own request) |
 | `Alt+T` | generate a practice task; `Alt+Shift+T` revisits archived material; `Alt+Y` attempts the last task |
 | `Alt+H` | show or hide the side panel |
+| `Alt+K` | the shortcut reference: what each key does |
 
 `V2.md` lists every launcher action, including the ones without a default key.
 

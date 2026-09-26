@@ -58,6 +58,12 @@ ROW_PX = 32
 #: sentence that happens to contain a colon. See `label_split`.
 LABEL_MAX_CHARS = 28
 
+#: The key column of the shortcut reference: fixed so the actions line up as one
+#: block, capped so an unusual combination cannot push the window wider than a
+#: reading column.
+KEYS_KEY_MAX_CHARS = 14
+KEYS_ACTION_MAX_CHARS = 46
+
 
 class PopupObservation:
     """One helper invocation, with no inference from process start to display."""
@@ -143,6 +149,33 @@ def load_payload():
 def chars_for(width_px, padding=24):
     """How many glyphs fit in `width_px` at FONT_SIZE_PX, for a wrapping label."""
     return max(8, min(60, int((width_px - padding) / CHAR_PX)))
+
+
+def estimate_keys_size(rows, width=None):
+    """Compact geometry for the shortcut reference.
+
+    The height comes from the *wrapped* actions rather than from the row count,
+    so one long entry cannot push the last row past the bottom edge. Both numbers
+    are computed the same way the window is built, so they cannot disagree.
+    """
+    rows = [(str(key), str(action)) for key, action in rows]
+    key_chars = min(max(max((len(key) for key, _ in rows), default=4), 6), KEYS_KEY_MAX_CHARS)
+    longest = max((len(action) for _, action in rows), default=20)
+    if width is None:
+        width = min(
+            max(320, int((key_chars + 2 + min(longest, KEYS_ACTION_MAX_CHARS)) * CHAR_PX)
+                + TEXT_PADDING_PX),
+            560,
+        )
+    action_chars = max(16, chars_for(width, padding=TEXT_PADDING_PX) - key_chars - 2)
+    lines = 0
+    for _key, action in rows:
+        wrapped = textwrap.wrap(
+            action, width=action_chars, break_long_words=True, break_on_hyphens=False
+        )
+        lines += max(1, len(wrapped))
+    height = min(max(ROW_PX + 12, lines * LINE_PX + len(rows) * 6 + 20), 560)
+    return width, height
 
 
 def estimate_objects_size(items):
@@ -603,6 +636,127 @@ def show_objects_popup(items, px=None, py=None):
     popup = Popup(items, px, py)
     _rendered(objects=items)
     _emit('window_open', window='objects', detail=f'{len(items)} objects')
+    Gtk.main()
+    return 0
+
+
+def show_keys_popup(rows, px=None, py=None, title='Keys'):
+    """The shortcut reference: one row per key, the action written after it.
+
+    Local by construction — the rows arrive in the payload and nothing is asked of
+    the model — so the window opens instantly even while a request is in flight.
+    The key column keeps a fixed width so the actions read as one aligned block,
+    which is what makes the list scannable at a glance instead of a wall of text.
+    """
+    try:
+        import gi
+        gi.require_version('Gtk', '3.0')
+        gi.require_version('Gdk', '3.0')
+        from gi.repository import Gtk, Gdk, GLib
+        apply_popup_font(Gtk, Gdk)
+    except Exception:
+        return 1
+
+    width, height = estimate_keys_size(rows)
+    key_chars = min(max(max((len(str(key)) for key, _ in rows), default=4), 6), KEYS_KEY_MAX_CHARS)
+
+    class KeysPopup(Gtk.Window):
+        def __init__(self, rows, px=None, py=None):
+            super().__init__(type=Gtk.WindowType.TOPLEVEL)
+            self.rows = list(rows)
+            self.px = px
+            self.py = py
+            self._opened = time.monotonic()
+            self.set_decorated(False)
+            self.set_resizable(False)
+            self.set_skip_taskbar_hint(True)
+            self.set_skip_pager_hint(True)
+            self.set_keep_above(True)
+            self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
+            self.set_title(title)
+            self.set_border_width(0)
+            self.connect('key-press-event', self.on_key)
+            self.connect('focus-out-event', lambda *a: False)
+
+            outer = Gtk.EventBox()
+            outer.set_visible_window(True)
+            outer.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+            outer.connect('button-press-event', self.on_click)
+            self.add(outer)
+
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+            box.set_margin_top(8)
+            box.set_margin_bottom(8)
+            box.set_margin_start(10)
+            box.set_margin_end(10)
+            outer.add(box)
+
+            action_chars = max(16, chars_for(width, padding=TEXT_PADDING_PX) - key_chars - 2)
+            for key, action in self.rows:
+                row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+                row.set_margin_top(2)
+                row.set_margin_bottom(2)
+                key_label = Gtk.Label(xalign=0)
+                key_label.set_markup('<b>' + _escape_markup(key) + '</b>')
+                key_label.set_width_chars(key_chars)
+                key_label.set_max_width_chars(key_chars)
+                # Top-aligned: a wrapped action must not drag its key to the middle.
+                key_label.set_valign(Gtk.Align.START)
+                action_label = Gtk.Label(label=action, xalign=0)
+                action_label.set_line_wrap(True)
+                action_label.set_justify(Gtk.Justification.LEFT)
+                action_label.set_max_width_chars(action_chars)
+                row.pack_start(key_label, False, False, 0)
+                row.pack_start(action_label, True, True, 0)
+                box.pack_start(row, False, False, 0)
+
+            button_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            copy_btn = Gtk.Button(label='Copy')
+            copy_btn.connect('clicked', self.on_copy)
+            # The reference closes on a click like every other popup; the Copy
+            # button must survive its own click, so its press stops here.
+            copy_btn.connect('button-press-event', lambda *a: True)
+            button_row.pack_start(copy_btn, False, False, 0)
+            box.pack_start(button_row, False, False, 0)
+
+            self.set_size_request(width, height + 34)
+            self.show_all()
+            GLib.idle_add(self.apply_geometry)
+            GLib.idle_add(self.present)
+
+        def apply_geometry(self):
+            self.resize(width, height + 34)
+            self.move_to(self.px, self.py)
+            return False
+
+        def move_to(self, px, py):
+            if px is None or py is None:
+                px, py = get_mouse_position()
+            self.move(int(px) + 12, int(py) + 12)
+
+        def on_copy(self, *args):
+            copy_text_to_clipboard('\n'.join(f'{key} — {action}' for key, action in self.rows))
+            _emit('copy', window='keys', detail=f'{len(self.rows)} shortcuts')
+            return True
+
+        def on_click(self, *args):
+            return self.close_and_quit(reason='click')
+
+        def on_key(self, widget, event):
+            if event.keyval in (Gdk.KEY_Escape, Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+                return self.close_and_quit()
+            return False
+
+        def close_and_quit(self, reason='key'):
+            _emit('window_close', window='keys',
+                  detail=f'{reason} after {time.monotonic() - self._opened:.1f}s')
+            self.destroy()
+            Gtk.main_quit()
+            return True
+
+    KeysPopup(rows, px, py)
+    _rendered(rows=[[key, action] for key, action in rows], title=title)
+    _emit('window_open', window='keys', detail=f'{len(rows)} shortcuts')
     Gtk.main()
     return 0
 
@@ -2158,6 +2312,27 @@ def _dispatch(payload, mode):
                 focusable=bool(payload.get('focusable', False)),
             )
         return 0
+
+    if mode == 'keys':
+        raw_rows = payload.get('rows', [])
+        rows = []
+        if isinstance(raw_rows, list):
+            for row in raw_rows:
+                if isinstance(row, dict):
+                    key = str(row.get('key', '')).strip()
+                    action = str(row.get('action', '')).strip()
+                elif isinstance(row, (list, tuple)) and len(row) >= 2:
+                    key = str(row[0]).strip()
+                    action = str(row[1]).strip()
+                else:
+                    continue
+                if key and action:
+                    rows.append((key, action))
+        if not rows:
+            return 0
+        return show_keys_popup(
+            rows, payload.get('x'), payload.get('y'), str(payload.get('title', 'Keys'))
+        )
 
     if mode == 'dual':
         items = payload.get('items', [])

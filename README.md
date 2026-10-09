@@ -16,24 +16,37 @@ directory can be called anything; rerun the installer if you move it later.
 
 ## What it does
 
-- extracts four concise cues from the primary selection;
-- reveals those cues one layer at a time, so the reader drills into a term instead
-  of being handed all four at once;
+- extracts four concise cues from the primary selection and shows them as an
+  orbital cluster that the reader unfolds one word at a time, so they drill into a
+  term instead of being handed all four at once;
+- runs a series of three views on the same passage, with a pause for the reader's
+  own mind map between them and one closing thesis at the end;
+- runs an explicit 15-minute reading step that the reader starts themselves: one
+  goal per session (skippable), a passive countdown ring, and at the end a single
+  "did you make the step?" window with one line for what was taken away;
 - keeps cues in a session buffer and lets the reader check one written hypothesis
   against the source;
-- offers one alternative way to organise the same material, on request;
 - runs a Feynman-style understanding check that names a gap rather than scoring;
 - shows one concrete example, compresses a passage, explains an unknown term, or
   answers a free-form question about the material;
-- books a goal in the reader's own words and brings it back after a break;
 - generates practice tasks with a separate solution, checks that a task is
   answerable before showing it, and can revisit archived material for a new task;
 - keeps notes about a misreading, anchored to the text they were about;
-- offers a side panel that repeats the same actions with the mouse and quietly
-  highlights a task that is already saved;
+- builds a "reader's universe" in the background: the reader's own notes,
+  hypotheses and explanations are kept word for word, and the model only names
+  the concepts in them and the links between them;
+- prints one timeline of a study day from all local stores;
 - archives cleared sessions locally;
 - records every window and click in SQLite, so a reading session can be replayed;
-- supports local prompt overrides.
+- supports local prompt overrides and optional, private sound cues (no audio is
+  bundled).
+
+Background work only uses attention nobody is using: it waits while a step is
+running, a window is open or a key was pressed in the last few seconds, and sends
+one small request at a time.
+
+Frozen for now, code kept: the "another view" action (`Alt+R`), the side panel
+(`Alt+H`) and most sound cues.
 
 The reader drives. No window opens, no mode switches and no check is proposed unless
 a hotkey, a click or a command asks for it, and nothing here measures how well
@@ -98,16 +111,23 @@ bindings are:
 | Key | Action |
 |---|---|
 | `Alt+W` | four cues from the primary selection |
+| `Ctrl+Alt+W` | three views in a row with a mind-map pause, then one thesis |
 | `Alt+F` | Feynman check for the current buffer |
-| `Alt+R` | one alternative view of the same material (`Alt+Shift+R` adds your own question) |
 | `Alt+E` | note about a misreading, anchored to the selection |
 | `Alt+C` | explain terms, or ask a free-form question |
 | `Ctrl+Q` | compress the selection to its gist |
-| `Alt+I` | the goal bookmark: what I want right now |
+| `Alt+I` | start a 15-minute reading step (type another number first for a different length) |
 | `Alt+G` | one concrete example (`Alt+Shift+G` adds your own request) |
 | `Alt+T` | generate a practice task; `Alt+Shift+T` revisits archived material; `Alt+Y` attempts the last task |
-| `Alt+H` | show or hide the side panel |
 | `Alt+K` | the shortcut reference: what each key does |
+
+The installer also enables `cognitive-universe.timer`, which runs the background
+concept naming. Two read-only helpers show what was stored:
+
+```bash
+./scripts/cognitive-universe.sh query "some text"   # which of your past thoughts this text touches
+./scripts/cognitive-timeline.sh                     # today's study timeline
+```
 
 `V2.md` lists every launcher action, including the ones without a default key.
 

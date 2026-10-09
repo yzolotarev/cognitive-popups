@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from dataclasses import asdict, dataclass, replace
 from contextvars import ContextVar
@@ -33,9 +34,10 @@ class CueList(list):
 
 
 class GeneratedQuestion(str):
-    def __new__(cls, text, prompt_hash=""):
+    def __new__(cls, text, prompt_hash="", rubric=""):
         value = super().__new__(cls, text)
         value.prompt_hash = prompt_hash
+        value.rubric = rubric
         return value
 
 
@@ -92,6 +94,7 @@ from .prompt_settings import PromptSettings
 from .prompts import (
     clarify_prompt,
     clarify_question_prompt,
+    clarify_universe_prompt,
     example_prompt,
     feynman_check_prompt,
     feynman_question_prompt,
@@ -116,6 +119,9 @@ MAX_CLARIFY_TERMS = 4
 #: eleven-word cap produced dictionary fragments and made a reader's request for
 #: an accessible explanation fail before the key relation could be stated.
 CLARIFY_WORDS = 80
+#: Alt+C from the universe reads the passage in front of the reader, not the
+#: whole buffer; a long selection is cut rather than sent whole.
+UNIVERSE_PASSAGE_CHARS = 2500
 
 
 @dataclass
@@ -138,6 +144,51 @@ class Clarification:
     lines: list[dict[str, str]]
     omitted: list[str]
     truncated: list[str]
+
+
+from . import prediction_nodes as nodes  # noqa: E402  (module-level import kept next to its only users)
+
+VERDICT_STATUS = {"match": "confirmed", "partly": "partially_confirmed",
+                  "miss": "contradicted", "broken": "unclear"}
+_CONTENT_WORD = re.compile(r"[A-Za-zА-Яа-яЁё]{4,}")
+
+
+def _content_stems(text: str) -> set[str]:
+    return {word.lower().replace("ё", "е")[:5] for word in _CONTENT_WORD.findall(text or "")}
+
+
+def hypothesis_answer(data: dict, hypothesis: str, sources: list[str]) -> dict[str, str]:
+    """The shown answer is the model's reply as written; only the quote is checked.
+
+    `quote` is kept only when it is verbatim in the material (a fabricated quote
+    never reaches the log as evidence). Nothing is asked of the reader.
+    """
+    reply = " ".join(str(data.get("reply") or "").split()).strip()
+    verdict = str(data.get("verdict", ""))
+    if verdict == "broken" and not reply:
+        reply = "Текст здесь испорчен распознаванием - сверить нельзя."
+    quote = str(data.get("quote") or "").strip()
+    if not (quote and any(_normalise_grounding(quote) in source for source in sources)):
+        quote = ""
+    return {"display": reply or "Не получилось ответить на эту мысль.", "origin": "", "look": quote, "ask": ""}
+
+
+@dataclass
+class UniverseAnswer:
+    """Alt+C answered from the reader's own world (see `answer_from_universe`).
+
+    `used` names the past thought the explanation leans on, or is empty when the
+    model judged the link too weak. `gap` is set only when the reader's guess or
+    past claim disagrees with the passage. A reading aid, never evidence.
+    """
+
+    question: str
+    bridge: str
+    gap: str = ""
+    nudge: str = ""
+    used: str = ""
+    prompt_hash: str = ""
+    model: str = ""
 
 
 @dataclass
@@ -351,11 +402,13 @@ class CognitiveService:
                 self._model_name(), str(getattr(self.client, "url", "")))
 
     @observed_operation("cues")
-    def extract_cues(self, source_text: str) -> list[dict[str, str]]:
+    def extract_cues(self, source_text: str, perspective: str = "") -> list[dict[str, str]]:
         text = source_text.strip()
         if not text:
             raise ValueError("source text must not be empty")
         system_prompt = self._prompt("four_words")
+        if perspective:
+            system_prompt += "\\n\\nРАКУРС ЭТОГО ПРОХОДА: " + perspective + ". Выбери четыре опоры именно с этого ракурса, не повторяя набор предыдущего прохода, если текст позволяет."
         model = self._model_name()
         cache_key = (source_text, prompt_hash(system_prompt), model, str(getattr(self.client, "url", "")))
         problems: list[str] = []
@@ -458,7 +511,7 @@ class CognitiveService:
             if attempt:
                 repair = (
                     "\nПредыдущий вопрос не прошёл проверку: " + "; ".join(problems)
-                    + ". Верни новый JSON; дословно назови два term из CUES одного фрагмента."
+                    + ". Верни новый JSON с непустым простым вопросом по материалу."
                 )
             data = parse_json_object(self.client.complete(
                 feynman_question_prompt(
@@ -471,18 +524,11 @@ class CognitiveService:
             if not isinstance(question, str) or not question.strip():
                 problems.append("вопрос пуст")
                 continue
-            folded = _normalise_grounding(question)
-            grounded = any(
-                sum(
-                    1
-                    for cue in fragment.cue_details
-                    if _normalise_grounding(cue.get("term", "")) in folded
-                ) >= 2
-                for fragment in self.session.fragments
+            rubric = data.get("rubric", "")
+            return GeneratedQuestion(
+                question.strip(), question_prompt_hash,
+                rubric.strip() if isinstance(rubric, str) else "",
             )
-            if grounded:
-                return GeneratedQuestion(question.strip(), question_prompt_hash)
-            problems.append("вопрос не называет два term из одного фрагмента")
         raise Web2APIError("не удалось привязать вопрос Фейнмана к материалу: " + "; ".join(problems))
 
     @observed_operation("feynman_check")
@@ -545,6 +591,90 @@ class CognitiveService:
         if not material:
             raise ValueError("the common buffer is empty")
         return material
+
+    def check_prediction_nodes(self, hypothesis: str, material, *, history: dict | None = None,
+                               mine: list[str] | None = None) -> PredictionCheck:
+        """Mark the reader's guess and give four nodes (nodes.py); nothing is explained."""
+        statement = hypothesis.strip()
+        if not statement:
+            raise ValueError("hypothesis must not be empty")
+        ground = material.selection or (self.session.fragments[-1].source_text if self.session.fragments else "")
+        if not ground.strip():
+            raise ValueError("the common buffer is empty")
+        history = history or {}
+        system_prompt = self._prompt("prediction_nodes")
+        used = nodes.recent_words(history)
+        blocks = [f"<SELECTED>\n{ground[:UNIVERSE_PASSAGE_CHARS]}\n</SELECTED>"]
+        if used:
+            blocks.append(f"<USED>\n{', '.join(used)}\n</USED>")
+        if mine:
+            blocks.append("<MINE>\n" + "\n".join(f"- {text[:200]}" for text in mine[:3]) + "\n</MINE>")
+        blocks.append(f"<HYPOTHESIS>\n{statement}\n</HYPOTHESIS>")
+        data = parse_json_object(self.client.complete(
+            [{"role": "system", "content": system_prompt}, {"role": "user", "content": "\n\n".join(blocks)}],
+            max_tokens=400))
+        shown = nodes.assemble(data, statement, ground, history)
+        sources = [_normalise_grounding(text) for text in material.passages()] or [_normalise_grounding(ground)]
+        quote = str(data.get("gap_quote") or "").strip()
+        check = PredictionCheck(
+            buffer_fragment_ids=[f.id for f in self.session.fragments
+                                 if any(_normalise_grounding(f.source_text) in s for s in sources)],
+            hypothesis=statement,
+            status=nodes.STATUS_OF_MARK.get(shown["raw_mark"], "unclear"),
+            evidence=quote if quote and any(_normalise_grounding(quote) in s for s in sources) else "",
+            one_delta=" · ".join(shown["words"]),
+            prompt_hash=prompt_hash(system_prompt),
+            model=self._model_name(),
+            display=nodes.describe(shown["mark"], shown["words"]),
+            nodes=shown["words"],
+            mark=shown["mark"],
+        )
+        self.session.add_prediction_check(check)
+        return check
+
+    @observed_operation("clarify")
+    def answer_from_universe(self, question: str, passage: str,
+                             mine: list[dict[str, str]] | None = None, *,
+                             recent: str = "", step: str = "") -> UniverseAnswer:
+        """Alt+C with the reader's universe: explain from their own past thought.
+
+        The ground is the passage in front of the reader (the selection, else the
+        last captured fragment), not the whole buffer: on a long buffer the model
+        answered about the wrong place. `mine` is at most the one thought already
+        shown to the reader, so the window and the answer cannot disagree.
+        """
+        asked = " ".join(question.split()).strip()
+        if not asked:
+            raise ValueError("question must not be empty")
+        ground = passage.strip()
+        if not ground and self.session.fragments:
+            ground = self.session.fragments[-1].source_text.strip()
+        if not ground:
+            raise ValueError("the common buffer is empty")
+        system_prompt = self._prompt("clarify_universe")
+        data = parse_json_object(self.client.complete(
+            clarify_universe_prompt(ground[:UNIVERSE_PASSAGE_CHARS], asked, mine or [], system_prompt,
+                                    recent=recent, step=step),
+            max_tokens=600,
+        ))
+
+        def tidy(key: str) -> str:
+            return " ".join(str(data.get(key, "") or "").split()).strip()
+
+        bridge = tidy("answer") or tidy("bridge")
+        if not bridge:
+            raise Web2APIError("empty model response")
+        known = {str(item.get("id", "")) for item in (mine or [])}
+        used = tidy("used")
+        return UniverseAnswer(
+            question=asked,
+            bridge=bridge,
+            gap=tidy("beyond_text"),   # logged only: where the answer left the text
+            nudge="",
+            used=used if used in known else "",
+            prompt_hash=prompt_hash(system_prompt),
+            model=self._model_name(),
+        )
 
     @observed_operation("clarify")
     def clarify_terms(self, terms: list[str], fallback_text: str = "") -> Clarification:
@@ -771,7 +901,7 @@ class CognitiveService:
         )
 
     @observed_operation("prediction")
-    def check_prediction(self, hypothesis: str) -> PredictionCheck:
+    def check_prediction(self, hypothesis: str, material=None) -> PredictionCheck:
         """Judge one hypothesis against the buffer.
 
         A missing quotation is not a failure. The verdict answers "does the
@@ -781,15 +911,21 @@ class CognitiveService:
         (verbatim text not in the material) from no quotation at all, instead of
         refusing the whole answer and losing the reader's interaction with it.
 
-        An unverified quotation is never displayed as if it stood in the text;
-        it is dropped, the model's own words remain in the observation log, and
-        the window says plainly that no verbatim support was found.
+        An unverified quotation triggers one repair attempt; if it remains
+        unverified, the result is rejected. Empty evidence is allowed. Quotes
+        must belong to one source fragment, not span buffer metadata or joins.
+        The smallest correction is primary (`check.text`); the verdict, quote
+        and external subject note remain separately accessible metadata.
 
         `subject_note` carries knowledge the model added from outside the
         material, kept apart so that "true in the subject but absent here" is
         never read as "confirmed by the text".
+
+        `material` (a context.Pack) replaces the whole buffer with what this
+        moment needs: the selection plus the few passages taken just before.
+        Quotes are then checked against those passages.
         """
-        if not self.session.fragments:
+        if material is None and not self.session.fragments:
             raise ValueError("the common buffer is empty")
         statement = hypothesis.strip()
         if not statement:
@@ -802,7 +938,16 @@ class CognitiveService:
             "contradicted",
             "unclear",
         }
-        source = _normalise_grounding("\n".join(f.source_text for f in self.session.fragments))
+        if material is not None:
+            ground = material.material()
+            sources = [_normalise_grounding(text) for text in material.passages()]
+            # Link the hypothesis to the captured fragments it actually read.
+            used = [f for f in self.session.fragments
+                    if any(_normalise_grounding(f.source_text) in source for source in sources)]
+        else:
+            ground = self.session.buffer_context()
+            sources = [_normalise_grounding(f.source_text) for f in self.session.fragments]
+            used = list(self.session.fragments)
         problems: list[str] = []
         data: dict[str, Any] = {}
         status = ""
@@ -819,19 +964,28 @@ class CognitiveService:
                 )
             data = parse_json_object(self.client.complete(
                 prediction_check_prompt(
-                    self.session.buffer_context(),
+                    ground,
                     statement,
                     system_prompt + repair,
                 ),
-                max_tokens=400,
+                max_tokens=700,
             ))
+            if "verdict" in data:
+                # The 2026-10-07 contract: parts are checked here, not trusted.
+                status = VERDICT_STATUS.get(str(data.get("verdict", "")), "")
+                problems = [] if status else ["неизвестный verdict"]
+                if not problems:
+                    break
+                continue
             status = str(data.get("status", ""))
             evidence = data.get("evidence", "")
             evidence_text = evidence.strip() if isinstance(evidence, str) else ""
             problems = []
             if status not in allowed:
                 problems.append("неизвестный status")
-            if evidence_text and _normalise_grounding(evidence_text) not in source:
+            if evidence_text and not any(
+                _normalise_grounding(evidence_text) in source for source in sources
+            ):
                 problems.append("evidence не является дословной цитатой исходного текста")
             if not problems:
                 break
@@ -839,16 +993,35 @@ class CognitiveService:
             # Only a verdict that never arrived is fatal: there is then nothing
             # to show. The reader's hypothesis is kept by the caller.
             raise Web2APIError("не удалось проверить гипотезу: " + "; ".join(problems))
+        if "verdict" in data:
+            shown = hypothesis_answer(data, statement, sources)
+            check = PredictionCheck(
+                buffer_fragment_ids=[fragment.id for fragment in used],
+                hypothesis=statement,
+                status=status,
+                one_delta=shown["display"],     # the reply, so the universe reads it as before
+                evidence=shown["look"],         # verified verbatim pointer
+                prompt_hash=prompt_hash(system_prompt),
+                model=self._model_name(),
+                display=shown["display"],
+                ask=shown["ask"],
+            )
+            self.session.add_prediction_check(check)
+            return check
         mismatch = data.get("mismatch", "")
         subject_note = data.get("subject_note", "")
+        one_delta = data.get("one_delta", "")
+        if not isinstance(one_delta, str):
+            one_delta = ""
         check = PredictionCheck(
-            buffer_fragment_ids=[fragment.id for fragment in self.session.fragments],
+            buffer_fragment_ids=[fragment.id for fragment in used],
             hypothesis=statement,
             status=status,
             mismatch=mismatch.strip() if isinstance(mismatch, str) else "",
             # Kept only when it was found in the material, so an empty field
             # means "no verbatim support was found", not "the model said nothing".
-            evidence=evidence_text if _normalise_grounding(evidence_text) in source else "",
+            evidence=evidence_text,
+            one_delta="" if status == "confirmed" else one_delta.strip(),
             subject_note=subject_note.strip() if isinstance(subject_note, str) else "",
             prompt_hash=prompt_hash(system_prompt),
             model=self._model_name(),

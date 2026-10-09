@@ -29,6 +29,8 @@ PROMPT_ATTRS: Mapping[str, str] = {
     "prediction": "PREDICTION_SYSTEM",
     "clarify": "CLARIFY_SYSTEM",
     "clarify_question": "CLARIFY_QUESTION_SYSTEM",
+    "clarify_universe": "CLARIFY_UNIVERSE_SYSTEM",
+    "prediction_nodes": "NODES_SYSTEM",
     "summary": "SUMMARY_SYSTEM",
     "example": "EXAMPLE_SYSTEM",
     "reframe": "REFRAME_SYSTEM",

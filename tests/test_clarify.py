@@ -300,7 +300,10 @@ class _SyncThread:
         self._target()
 
 
-def _clarify_app(desktop, monkeypatch, raw_input, service, shown):
+def _clarify_app(desktop, monkeypatch, raw_input, service, shown, *, universe=False, asked=None):
+    if not universe:
+        # The legacy Alt+C path: the universe switched off for these tests.
+        monkeypatch.setattr(desktop.universe_mod, "clarify_enabled", lambda *args: False)
     app = desktop.DesktopApp.__new__(desktop.DesktopApp)
     app.service = service
     app._busy = False
@@ -308,7 +311,11 @@ def _clarify_app(desktop, monkeypatch, raw_input, service, shown):
         show_text=lambda text, title="Result", **kwargs: shown.append((text, kwargs))
     )
     monkeypatch.setattr(desktop, "selected_text", lambda: "Working memory holds about four chunks.")
-    monkeypatch.setattr(desktop, "popup_input", lambda *args, **kwargs: raw_input)
+    def popup(*args, **kwargs):
+        if asked is not None:
+            asked.append(kwargs)
+        return raw_input
+    monkeypatch.setattr(desktop, "popup_input", popup)
     monkeypatch.setattr(desktop, "threading", SimpleNamespace(Thread=_SyncThread))
     return app
 
@@ -354,3 +361,78 @@ def test_explain_terms_reports_the_grounding_of_an_answer(desktop, monkeypatch):
 
     assert shown[0][0] == "Общий ответ."
     assert shown[0][1]["note"] == "Этого в тексте нет: общий ответ."
+
+
+# ── Alt+C from the reader's universe ─────────────────────────────────────────
+
+def _seed_universe(desktop, text="память как верстак: держит мало, но под рукой",
+                   concept="working memory"):
+    from cognitive_popups.universe import Universe
+    store = Universe(root=desktop.STATE_DIR)
+    with store._db() as db:
+        db.execute("insert into thoughts (id, kind, text, anchor, created_utc, extracted_utc)"
+                   " values ('note:1', 'note', ?, 'Working memory holds', '2026-09-20T10:00:00+00:00',"
+                   " '2026-09-20T10:00:00+00:00')", (text,))
+        db.execute("insert into thought_concepts values ('note:1', ?)", (concept,))
+    return store
+
+
+def test_universe_shows_the_readers_thought_and_answers_from_it(desktop, monkeypatch):
+    _seed_universe(desktop)
+    reply = ('{"used":"note:1","answer":"Рабочая память держит около четырёх кусков.",'
+             '"beyond_text":"Верстак не забывает, а память забывает."}')
+    client = CaptureClient(reply)
+    service = CognitiveService(client)
+    shown, opened = [], []
+    app = _clarify_app(desktop, monkeypatch, "это как верстак?", service, shown,
+                       universe=True, asked=opened)
+    desktop.begin_interaction("hotkey", window="clarify")
+
+    app.explain_terms()
+
+    assert not opened[0].get("quote")  # the field opens empty: the question is the reader's
+    # The background naming of the passage may run first; check the answer request.
+    content = next(c[1]["content"] for c in client.calls if "<SOURCE>" in c[1]["content"])
+    assert "Working memory holds about four chunks." in content and "note:1" in content
+    # Question and answer only: no counter-question, no task, no hidden extras.
+    # The thought is shown above the answer because the answer used it.
+    assert shown[0][0] == ("«память как верстак: держит мало, но под рукой»\n\n"
+                           "это как верстак?\n\nРабочая память держит около четырёх кусков.")
+    assert "more" not in shown[0][1]
+    assert app._busy is False
+
+
+def test_universe_stays_silent_on_a_weak_link_and_drops_invented_ids(desktop, monkeypatch):
+    _seed_universe(desktop, concept="теория галуа")
+    client = CaptureClient('{"used":"note:99","bridge":"Ответ.","gap":"","nudge":""}')
+    shown, opened = [], []
+    app = _clarify_app(desktop, monkeypatch, "что это?", CognitiveService(client), shown,
+                       universe=True, asked=opened)
+    desktop.begin_interaction("hotkey", window="clarify")
+
+    app.explain_terms()
+
+    assert not opened[0].get("quote")  # empty quote: the window opens without it
+    answer_request = next(c[1]["content"] for c in client.calls if "<SOURCE>" in c[1]["content"])
+    assert '<MINE>\n[]' in answer_request
+    assert shown[0][0] == "что это?\n\nОтвет."
+
+
+def test_universe_switch_is_a_file_in_the_state_directory(tmp_path):
+    from cognitive_popups import universe
+    assert universe.clarify_enabled(tmp_path)
+    (tmp_path / universe.CLARIFY_OFF).touch()
+    assert not universe.clarify_enabled(tmp_path)
+
+
+def test_answer_from_universe_reads_the_passage_not_the_buffer():
+    service, client = buffered('{"used":"","bridge":"","gap":"","nudge":""}')
+    try:
+        service.answer_from_universe("что такое предел?", "Предел - граница, к которой подходят.")
+    except Web2APIError:
+        pass
+    else:
+        raise AssertionError("an empty bridge must not pass as an answer")
+    content = client.calls[0][1]["content"]
+    assert "Предел - граница" in content
+    assert "Working memory holds" not in content

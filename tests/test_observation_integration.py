@@ -102,7 +102,7 @@ def test_note_snapshots_new_clipboard_without_seeding(desktop, monkeypatch, tmp_
     old = Fragment(source_text="старый источник", cues=["a", "b", "c", "d"])
     session = SimpleNamespace(id="before-popup", fragments=[old])
     app.service = SimpleNamespace(session=session)
-    app.flash = SimpleNamespace(show_cues=lambda *args: None)
+    app.flash = SimpleNamespace(show_cues=lambda *args: None, show_notice=lambda *args, **kwargs: None)
     calls = []
 
     def probe(command):
@@ -143,7 +143,7 @@ def test_note_fragment_link_requires_unambiguous_source(desktop, monkeypatch, so
     fragments = [Fragment(source_text=text, cues=["selected", "b", "c", "d"]) for text in sources]
     app = desktop.DesktopApp.__new__(desktop.DesktopApp)
     app.service = SimpleNamespace(session=SimpleNamespace(id="session", fragments=fragments))
-    app.flash = SimpleNamespace(show_cues=lambda *args: None)
+    app.flash = SimpleNamespace(show_cues=lambda *args: None, show_notice=lambda *args, **kwargs: None)
     monkeypatch.setattr(desktop, "selected_text", lambda: "selected")
     monkeypatch.setattr(desktop, "run_popup", lambda *args, **kwargs: "comment")
     desktop.begin_interaction("hotkey", window="note")
@@ -418,7 +418,8 @@ def test_rendered_check_is_ui_text_not_the_unfiltered_model_result(desktop, monk
     assert sent[0]["text"] == expected
     artifact = next(r for r in rows("obs_artifacts") if r["kind"] == "rendered_payload")
     assert payload(artifact) == {"mode": "text", "text": expected,
-                                 "title": "Фейнман: пробел", "expanded": False}
+                                 "title": "Фейнман: пробел", "expanded": False,
+                                 "semantic_role": "correction"}
     assert artifact["source_artifact_id"] == generated
     assert all(r["event"] == "spawn" for r in rows("obs_presentations"))
 

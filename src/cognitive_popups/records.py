@@ -37,7 +37,7 @@ STATE_ROOT = os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-
 DEFAULT_DB = os.path.join(STATE_ROOT, "records.sqlite3")
 ENV_DB = "COGNITIVE_RECORD_DB"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 8
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS predictions (
     status        TEXT,
     mismatch      TEXT,
     evidence      TEXT,
+    one_delta     TEXT NOT NULL DEFAULT '',
     created_utc   TEXT NOT NULL,
     created_epoch REAL NOT NULL,
     prompt_hash   TEXT,
@@ -160,6 +161,29 @@ CREATE INDEX IF NOT EXISTS preparations_context_idx
     ON practice_preparations(context_key);
 CREATE INDEX IF NOT EXISTS preparations_epoch_idx
     ON practice_preparations(created_epoch);
+CREATE TABLE IF NOT EXISTS steps (
+    id            TEXT PRIMARY KEY,
+    session_key   TEXT NOT NULL,
+    text          TEXT NOT NULL,
+    minutes       REAL NOT NULL,
+    goal_id       TEXT,
+    started_utc   TEXT NOT NULL,
+    started_epoch REAL NOT NULL,
+    deadline_epoch REAL NOT NULL,
+    finished_utc  TEXT,
+    finished_epoch REAL,
+    outcome       TEXT,
+    takeaway      TEXT
+);
+CREATE INDEX IF NOT EXISTS steps_started_idx ON steps(started_epoch);
+CREATE TABLE IF NOT EXISTS step_closures (
+    session_key   TEXT PRIMARY KEY,
+    goal_id       TEXT,
+    outcome       TEXT,
+    remaining     TEXT,
+    closed_utc    TEXT NOT NULL,
+    closed_epoch  REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS intents (
     id            TEXT PRIMARY KEY,
     text          TEXT NOT NULL,
@@ -213,6 +237,7 @@ _ADDED_COLUMNS = (
     ("predictions", "prompt_hash", "TEXT"),
     ("predictions", "model", "TEXT"),
     ("predictions", "subject_note", "TEXT"),
+    ("predictions", "one_delta", "TEXT NOT NULL DEFAULT ''"),
     ("feynman_checks", "question_prompt_hash", "TEXT"),
     ("feynman_checks", "check_prompt_hash", "TEXT"),
     ("feynman_checks", "model", "TEXT"),
@@ -708,8 +733,8 @@ class RecordStore:
             conn.execute("DELETE FROM predictions WHERE id = ?", (check.id,))
             conn.execute(
                 "INSERT INTO predictions (id, session_id, hypothesis, status, mismatch,"
-                " evidence, subject_note, created_utc, created_epoch, prompt_hash, model)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " evidence, subject_note, one_delta, created_utc, created_epoch, prompt_hash, model)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     check.id,
                     session.id,
@@ -718,6 +743,7 @@ class RecordStore:
                     check.mismatch,
                     check.evidence,
                     check.subject_note,
+                    check.one_delta,
                     check.created_at or now_iso(),
                     _epoch(check.created_at),
                     check.prompt_hash or None,
@@ -935,6 +961,75 @@ class RecordStore:
         rows = self._load_intents("id = ?", (intention_id,))
         return rows[0] if rows else None
 
+    # ── 15-minute steps (Alt+I) ─────────────────────────────────────────────
+
+    def _write(self, sql: str, args: tuple, what: str) -> int:
+        conn = self._connect()
+        try:
+            cursor = conn.execute(sql, args)
+            conn.commit()
+            return cursor.rowcount
+        except (sqlite3.Error, OSError) as exc:
+            raise RecordError(f"cannot write {what} to {self.path}: {exc}") from exc
+        finally:
+            conn.close()
+
+    def _read(self, sql: str, args: tuple = ()) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            return [dict(row) for row in conn.execute(sql, args)]
+        except (sqlite3.Error, OSError) as exc:
+            raise RecordError(f"cannot read {self.path}: {exc}") from exc
+        finally:
+            conn.close()
+
+    def add_step(self, step_id: str, text: str, *, session_key: str, minutes: float,
+                 goal_id: str = "", started_epoch: float, deadline_epoch: float) -> None:
+        started = datetime.fromtimestamp(started_epoch, timezone.utc).isoformat(timespec="seconds")
+        self._write(
+            "INSERT INTO steps (id, session_key, text, minutes, goal_id, started_utc,"
+            " started_epoch, deadline_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (step_id, session_key, " ".join(text.split()), minutes, goal_id or None,
+             started, started_epoch, deadline_epoch), "step")
+
+    def finish_step(self, step_id: str, outcome: str, takeaway: str = "",
+                    finished_utc: str | None = None) -> bool:
+        moment = finished_utc or now_iso()
+        return self._write(
+            "UPDATE steps SET outcome = ?, takeaway = ?, finished_utc = ?, finished_epoch = ?"
+            " WHERE id = ?",
+            (outcome, " ".join((takeaway or "").split()) or None, moment, _epoch(moment), step_id),
+            "step outcome") == 1
+
+    def step(self, step_id: str) -> dict[str, Any] | None:
+        rows = self._read("SELECT * FROM steps WHERE id = ?", (step_id,))
+        return rows[0] if rows else None
+
+    def last_step(self) -> dict[str, Any] | None:
+        rows = self._read("SELECT * FROM steps ORDER BY started_epoch DESC LIMIT 1")
+        return rows[0] if rows else None
+
+    def session_steps(self, session_key: str) -> list[dict[str, Any]]:
+        return self._read("SELECT * FROM steps WHERE session_key = ? ORDER BY started_epoch",
+                          (session_key,))
+
+    def close_study_session(self, session_key: str, *, goal_id: str = "", outcome: str = "",
+                            remaining: str = "", closed_utc: str | None = None) -> None:
+        moment = closed_utc or now_iso()
+        self._write(
+            "INSERT OR REPLACE INTO step_closures (session_key, goal_id, outcome, remaining,"
+            " closed_utc, closed_epoch) VALUES (?, ?, ?, ?, ?, ?)",
+            (session_key, goal_id or None, outcome or None,
+             " ".join((remaining or "").split()) or None, moment, _epoch(moment)), "session closure")
+
+    def closure(self, session_key: str) -> dict[str, Any] | None:
+        rows = self._read("SELECT * FROM step_closures WHERE session_key = ?", (session_key,))
+        return rows[0] if rows else None
+
+    def last_closure(self) -> dict[str, Any] | None:
+        rows = self._read("SELECT * FROM step_closures ORDER BY closed_epoch DESC LIMIT 1")
+        return rows[0] if rows else None
+
     def intention_history(self, *, tail: int | None = None) -> list[Intention]:
         """Replaced bookmarks, newest first; the current one is not repeated."""
         rows = self._load_intents("status = 'previous' ORDER BY created_epoch DESC, id DESC")
@@ -1058,6 +1153,7 @@ class RecordStore:
                     mismatch=row["mismatch"] or "",
                     evidence=row["evidence"] or "",
                     subject_note=row["subject_note"] or "",
+                    one_delta=row["one_delta"] or "",
                     created_at=row["created_utc"],
                     id=row["id"],
                     prompt_hash=row["prompt_hash"] or "",
@@ -1181,6 +1277,8 @@ def render_day(data: dict[str, Any]) -> str:
             lines.append(f"  {_fragment_line(fragment)}")
         for check in session["predictions"]:
             lines.append(f"  {_clock(check['created_at'])}  гипотеза   [{check['status']}]  {check['hypothesis']}")
+            if check.get("one_delta"):
+                lines.append(f"    поправка: {check['one_delta']}")
         for check in session["feynman"]:
             lines.append(f"  {_clock(check['created_at'])}  фейнман    [{check['status']}]  {check['question']}")
         for note in session["notes"]:
@@ -1209,6 +1307,8 @@ def render_session(data: dict[str, Any]) -> str:
     for check in data["predictions"]:
         lines.append(f"\n{_clock(check['created_at'])}  гипотеза  [{check['status']}]")
         lines.append(f"    {check['hypothesis']}")
+        if check.get("one_delta"):
+            lines.append(f"    поправка: {check['one_delta']}")
         if check.get("evidence"):
             lines.append(f"    в тексте: {check['evidence']}")
         if check.get("mismatch"):

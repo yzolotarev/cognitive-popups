@@ -163,13 +163,8 @@ def test_prediction_result_continues_only_after_explicit_click(desktop, monkeypa
 
     app._prediction_done(check, None)
 
-    # Closing the result is a complete answer: nothing runs on its own.
-    assert payloads[0]["actions"] == [{"label": "Другой ракурс", "action": "reframe"}]
+    # "Another angle" is frozen: the result offers no continuation, and
+    # closing it runs nothing on its own.
+    assert "actions" not in payloads[0]
     assert actions == []
     assert shown == []
-
-    monkeypatch.setattr(desktop, "run_popup", lambda payload, **kwargs:
-                        '{"action":"reframe"}')
-    app._prediction_done(check, None)
-
-    assert actions == [{"from_check": check, "material_snapshot": "источник"}]

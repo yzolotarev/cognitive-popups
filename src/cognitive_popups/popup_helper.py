@@ -12,6 +12,7 @@ Invoked as `python -m cognitive_popups.popup_helper` with a JSON payload on
 stdin; the selected action or typed text goes back on stdout.
 """
 import json
+import math
 import os
 import subprocess
 import sys
@@ -26,10 +27,14 @@ if __package__ in (None, ""):
     from cognitive_popups.event_log import EventChain, EventLog
     from cognitive_popups import observation
     from cognitive_popups.operation_context import operation_scope
+    from cognitive_popups.sound import play_close_sound
+    from cognitive_popups import sound, orbital, slack
 else:
     from .event_log import EventChain, EventLog
     from . import observation
     from .operation_context import operation_scope
+    from .sound import play_close_sound
+    from . import sound, orbital, slack
 
 _LOG = EventLog()
 _CHAIN = EventChain.from_env(_LOG, origin="popup", pid=os.getpid())
@@ -90,10 +95,18 @@ class PopupObservation:
                 self.opened = True
             if event == "window_close":
                 self.closed = True
-            if event in {"window_open", "layer_open", "layer_toggle"}:
+                # One sound per window, on the same accepted close that the log
+                # records: `self.closed` guards against a second playback.
+                if not fields.pop('silent', False):
+                    play_close_sound()
+            if event in {"window_open", "layer_open", "layer_toggle", "orbital_open",
+                         "cue_select", "term_reveal", "meaning_reveal", "cue_collapse",
+                         "evidence_reveal"}:
                 self.rendered_artifact = self.store.record_artifact("rendered_view", self.content,
                     source_artifact_id=self.artifact)
-            if event in {"window_open", "window_close", "layer_open", "layer_toggle"}:
+            if event in {"window_open", "window_close", "layer_open", "layer_toggle",
+                         "orbital_open", "cue_select", "term_reveal", "meaning_reveal",
+                         "cue_collapse", "evidence_reveal"}:
                 self.store.record_presentation(self.artifact,
                     window_instance_id=self.instance, event=event,
                     payload={**fields, "rendered": self.content,
@@ -297,13 +310,11 @@ def get_mouse_position():
 def _monitor_workarea(Gdk, px=None, py=None):
     """Return the GTK logical work area for the monitor containing the popup."""
     try:
-        screen = Gdk.Screen.get_default()
         display = Gdk.Display.get_default()
         monitor = display.get_monitor_at_point(int(px or 0), int(py or 0))
         if monitor is None:
             monitor = display.get_primary_monitor()
-        index = display.get_monitor_number(monitor)
-        area = screen.get_monitor_workarea(index)
+        area = monitor.get_workarea()
         return area.x, area.y, area.width, area.height
     except Exception:
         return 0, 0, 1280, 720
@@ -312,13 +323,179 @@ def _monitor_workarea(Gdk, px=None, py=None):
 def apply_popup_font(Gtk, Gdk):
     provider = Gtk.CssProvider()
     provider.load_from_data(
-        '* { font-family: "Noto Sans"; font-size: %dpx; }' % FONT_SIZE_PX
+        ('* { font-family: "Noto Sans"; font-size: %dpx; }' % FONT_SIZE_PX).encode('utf-8')
     )
     screen = Gdk.Screen.get_default()
     if screen is not None:
         Gtk.StyleContext.add_provider_for_screen(
             screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
+
+
+def _focus_halo_extent(monitor_width):
+    """Logical pixels from EACH content edge, not the total shadow width."""
+    return max(1, min(640, int(monitor_width) // 3))
+
+
+def _focus_halo_mode():
+    return os.environ.get('COGNITIVE_POPUP_HALO', 'off').strip().lower()
+
+
+def _focus_halo_pixels(width, height, popup_width, popup_height, mode):
+    """Hyprland-style fourth-power falloff with circular corners and a clear hole."""
+    peak = 209 if mode == 'dark' else 98
+    rgb = (0, 0, 0) if mode == 'dark' else (255, 255, 255)
+    left = (width - popup_width) // 2
+    top = (height - popup_height) // 2
+    extent = max(1, min(left, top))
+    dxs = [max(left - x, 0, x - (left + popup_width - 1)) for x in range(width)]
+    pixels = bytearray(width * height * 4)
+    # Reuse symmetric rows; only the alpha channel changes across the field.
+    rows = {}
+    for y in range(height):
+        dy = max(top - y, 0, y - (top + popup_height - 1))
+        inside_y = top <= y < top + popup_height
+        key = (dy, inside_y)
+        if key not in rows:
+            row = bytearray(width * 4)
+            for x, dx in enumerate(dxs):
+                if inside_y and left <= x < left + popup_width:
+                    continue
+                distance = math.hypot(dx, dy)
+                alpha = int(peak * max(0.0, 1.0 - distance / extent) ** 4)
+                if alpha:
+                    row[x * 4:x * 4 + 4] = bytes((*rgb, alpha))
+            rows[key] = row
+        pixels[y * width * 4:(y + 1) * width * 4] = rows[key]
+    return bytes(pixels)
+
+
+def _focus_halo(payload):
+    """Attach a click-through X11 shadow; unmanaged geometry cannot drift in the WM."""
+    mode = _focus_halo_mode()
+    if mode not in {'dark', 'light'}:
+        return None
+    try:
+        import gi
+        gi.require_version('Gtk', '3.0')
+        gi.require_version('Gdk', '3.0')
+        gi.require_version('GdkPixbuf', '2.0')
+        gi.require_version('GdkX11', '3.0')
+        from gi.repository import Gdk, GdkPixbuf, GdkX11, GLib, Gtk
+
+        screen = Gdk.Screen.get_default()
+        display = Gdk.Display.get_default()
+        if (screen is None or not isinstance(display, GdkX11.X11Display)
+                or not screen.is_composited()):
+            return None
+        px, py = int(payload.get('x') or 0), int(payload.get('y') or 0)
+        monitor = display.get_monitor_at_point(px, py)
+        if monitor is None:
+            monitor = display.get_primary_monitor()
+        if monitor is None:
+            return None
+        visual = screen.get_rgba_visual()
+        if visual is None:
+            return None
+        # POPUP is X11 override-redirect: unlike the old managed TOPLEVEL,
+        # Hyprland cannot tile, clamp, animate or independently place this surface.
+        overlay = Gtk.Window(type=Gtk.WindowType.POPUP)
+        overlay.set_wmclass('cognitive-shadow', 'cognitive-shadow')
+        overlay.set_decorated(False)
+        overlay.set_resizable(False)
+        overlay.set_name('focus-halo')
+        overlay.set_accept_focus(False)
+        overlay.set_focus_on_map(False)
+        overlay.set_skip_taskbar_hint(True)
+        overlay.set_skip_pager_hint(True)
+        overlay.set_type_hint(Gdk.WindowTypeHint.UTILITY)
+        overlay.set_visual(visual)
+        transparent = Gtk.CssProvider()
+        transparent.load_from_data(
+            b'#focus-halo { background-color: transparent; background-image: none; box-shadow: none; }'
+        )
+        overlay.get_style_context().add_provider(transparent, Gtk.STYLE_PROVIDER_PRIORITY_USER + 1)
+        image = Gtk.Image()
+        overlay.add(image)
+        overlay.realize()
+        overlay.get_window().set_pass_through(True)
+        lifecycle = {'popup': None, 'destroyed': False}
+
+        def halo_destroyed(*_args):
+            lifecycle['destroyed'] = True
+
+        overlay.connect('destroy', halo_destroyed)
+        previous = {'size': None, 'position': None, 'content_size': None}
+
+        def make_field(width, height, popup_width, popup_height):
+            pixels = _focus_halo_pixels(width, height, popup_width, popup_height, mode)
+            return GdkPixbuf.Pixbuf.new_from_bytes(
+                GLib.Bytes.new(pixels), GdkPixbuf.Colorspace.RGB,
+                True, 8, width, height, width * 4,
+            )
+
+        def popup_state_changed(*_args):
+            track_popup()
+            return False
+
+        def track_popup():
+            if lifecycle['destroyed']:
+                return False
+            window = lifecycle['popup']
+            if window is None:
+                for candidate in Gtk.Window.list_toplevels():
+                    if candidate is not overlay and candidate.get_mapped():
+                        window = candidate
+                        lifecycle['popup'] = window
+                        overlay.set_transient_for(window)
+
+                        window.connect('window-state-event', popup_state_changed)
+                        window.connect('configure-event', popup_state_changed)
+                        window.connect('map-event', popup_state_changed)
+                        window.connect('unmap-event', popup_state_changed)
+                        window.connect('destroy', lambda *_args: overlay.destroy())
+                        break
+            if window is None:
+                return True
+            native = window.get_window()
+            if (native is None or not window.get_mapped()
+                    or native.get_state() & (Gdk.WindowState.ICONIFIED | Gdk.WindowState.WITHDRAWN)):
+                overlay.hide()
+                return True
+            x, y = native.get_root_origin()
+            popup_width, popup_height = window.get_size()
+            if popup_width > 10 and popup_height > 10:
+                area = _monitor_workarea(Gdk, x + popup_width // 2, y + popup_height // 2)
+                extent = _focus_halo_extent(area[2])
+                patch_width = popup_width + 2 * extent
+                patch_height = popup_height + 2 * extent
+                position = (
+                    x - (patch_width - popup_width) // 2,
+                    y - (patch_height - popup_height) // 2,
+                )
+                size = (patch_width, patch_height)
+                content_size = (popup_width, popup_height)
+                if previous['size'] != size or previous['content_size'] != content_size:
+                    image.set_from_pixbuf(make_field(*size, *content_size))
+                    overlay.resize(*size)
+                    previous['size'] = size
+                    previous['content_size'] = content_size
+                if previous['position'] != position:
+                    overlay.get_window().move(*position)
+                    previous['position'] = position
+                if not overlay.get_visible():
+                    overlay.show_all()
+                    overlay.get_window().move(*position)
+                # Ask for the lower layer; the transparent popup cutout also
+                # protects its content when a compositor ignores X11 restacking.
+                overlay.get_window().set_pass_through(True)
+                overlay.get_window().restack(native, False)
+            return True
+
+        GLib.timeout_add(100, track_popup)
+        return overlay
+    except Exception:
+        return None
 
 
 def apply_zoom(Gtk, Gdk, scale):
@@ -366,7 +543,9 @@ def fill_readable(view, text):
     """Show `text` with its field labels emphasised (see `label_split`)."""
     buffer = view.get_buffer()
     buffer.set_text(text)
-    tag = buffer.create_tag('field-label', weight=700)
+    tag = buffer.get_tag_table().lookup('field-label')
+    if tag is None:
+        tag = buffer.create_tag('field-label', weight=700)
     offset = 0
     for line in text.split('\n'):
         index = label_split(line)
@@ -413,7 +592,102 @@ def copy_text_to_clipboard(text):
         return False
 
 
-def show_input_popup(prompt_text, px=None, py=None, initial=''):
+#: "шаг · text · 9:37" while a 15-minute step runs (set from the payload in
+#: main): every window carries one quiet line of why the reader is here.
+STEP_LINE = ''
+
+
+def step_line_label(Gtk):
+    """The step line as a small grey label, or None when no step runs."""
+    if not STEP_LINE:
+        return None
+    from gi.repository import Pango
+    label = Gtk.Label(xalign=0)
+    label.set_markup('<span size="small" foreground="#8a8a8a"><span foreground="#e8c27a">●</span>'
+                     ' шаг · %s</span>' % _escape_markup(STEP_LINE))
+    label.set_ellipsize(Pango.EllipsizeMode.END)
+    label.set_max_width_chars(60)
+    return label
+
+
+def show_notice_popup(text, px=None, py=None, hold_ms=1200, fade_ms=300):
+    """A one-line status plaque by the cursor that goes away on its own.
+
+    Status ("Заметка сохранена", "нет выделения") must not wait for a right
+    click the way the four-word window does: it never takes focus, cannot be
+    clicked away by mistake, and fades out after a moment.
+    """
+    try:
+        import gi
+        gi.require_version('Gtk', '3.0')
+        gi.require_version('Gdk', '3.0')
+        from gi.repository import Gtk, Gdk, GLib
+        apply_popup_font(Gtk, Gdk)
+    except Exception:
+        return 1
+    window = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
+    window.set_wmclass('cognitive-flash', 'cognitive-flash')
+    window.set_title('notice')
+    window.set_decorated(False)
+    window.set_resizable(False)
+    window.set_keep_above(True)
+    window.set_accept_focus(False)
+    window.set_focus_on_map(False)
+    window.set_skip_taskbar_hint(True)
+    window.set_skip_pager_hint(True)
+    window.set_type_hint(Gdk.WindowTypeHint.NOTIFICATION)
+    label = Gtk.Label(label=str(text))
+    label.set_margin_top(7)
+    label.set_margin_bottom(7)
+    label.set_margin_start(12)
+    label.set_margin_end(12)
+    window.add(label)
+    if px is None or py is None:
+        px, py = get_mouse_position()
+    window.move(int(px) + 14, int(py) + 14)
+    window.show_all()
+    _emit('window_open', window='notice', detail=str(text)[:60])
+    steps = max(1, fade_ms // 30)
+
+    def fade(left=[steps]):
+        left[0] -= 1
+        window.set_opacity(max(0.0, left[0] / steps))
+        if left[0] <= 0:
+            _emit('window_close', window='notice', detail='faded')
+            Gtk.main_quit()
+            return False
+        return True
+
+    GLib.timeout_add(hold_ms, lambda: (GLib.timeout_add(30, fade), False)[1])
+    Gtk.main()
+    return 0
+
+
+#: The reader's own words look the same everywhere they come back: italic, one
+#: colour, a thin bar. No label: the look itself says "this is yours".
+OWN_WORDS_RGB = '#9fc3e8'
+
+
+def take_keyboard_focus():
+    """Ask Hyprland to give this window the keyboard.
+
+    A window that opens under the pointer is still not always focused (07.10:
+    typing went on into the PDF, or letters were lost). Asking the compositor by
+    this process's pid is robust to window rules; failure is not an error.
+    """
+    try:
+        clients = json.loads(subprocess.run(['hyprctl', 'clients', '-j'], capture_output=True,
+                                            text=True, timeout=1).stdout or '[]')
+        mine = [c for c in clients if c.get('pid') == os.getpid()]
+        if mine:
+            subprocess.run(['hyprctl', 'dispatch', 'focuswindow', 'address:' + mine[0]['address']],
+                           capture_output=True, timeout=1)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+
+
+def show_input_popup(prompt_text, px=None, py=None, initial='', preserve_raw=False,
+                     quote='', quote_hint=''):
     try:
         import gi
         gi.require_version('Gtk', '3.0')
@@ -426,6 +700,7 @@ def show_input_popup(prompt_text, px=None, py=None, initial=''):
     class Prompt(Gtk.Window):
         def __init__(self, prompt, px=None, py=None):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
+            self.set_wmclass("cognitive-input", "cognitive-input")
             self.px = px
             self.py = py
             self.set_decorated(False)
@@ -448,6 +723,31 @@ def show_input_popup(prompt_text, px=None, py=None, initial=''):
             box.set_margin_start(10)
             box.set_margin_end(10)
             outer.add(box)
+
+            line = step_line_label(Gtk)
+            if line is not None:
+                box.pack_start(line, False, False, 0)
+            if quote:
+                # The reader's past thought, shown before they ask: a hook to
+                # think from while the question forms. Date and place stay out of
+                # sight and appear on hover only.
+                row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+                bar = Gtk.Box()
+                bar.set_size_request(2, -1)
+                css = Gtk.CssProvider()
+                css.load_from_data(('box { background-color: %s; }' % OWN_WORDS_RGB).encode())
+                bar.get_style_context().add_provider(css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+                said = Gtk.Label(xalign=0)
+                said.set_markup('<i><span foreground="%s">«%s»</span></i>'
+                                % (OWN_WORDS_RGB, _escape_markup(quote)))
+                said.set_line_wrap(True)
+                said.set_max_width_chars(48)
+                if quote_hint:
+                    said.set_tooltip_text(quote_hint)
+                row.pack_start(bar, False, False, 0)
+                row.pack_start(said, True, True, 0)
+                box.pack_start(row, False, False, 2)
+                self.quote_label = said
 
             label = Gtk.Label(xalign=0)
             self.prompt_label = label
@@ -491,6 +791,7 @@ def show_input_popup(prompt_text, px=None, py=None, initial=''):
             # the window_open event is the only proof the popup ever appeared.
             self.move_to(self.px, self.py)
             self.present()
+            GLib.timeout_add(120, lambda: (take_keyboard_focus(), False)[1])
             self.entry.grab_focus()
             self.entry.set_position(-1)
             _rendered(prompt=self.prompt_label.get_text(), title='Enter nucleus')
@@ -500,12 +801,14 @@ def show_input_popup(prompt_text, px=None, py=None, initial=''):
         def move_to(self, px, py):
             if px is None or py is None:
                 px, py = get_mouse_position()
-            self.move(int(px) + 12, int(py) + 12)
+            # The field sits under the pointer: with focus-follows-mouse, a window
+            # beside the pointer loses the keyboard at the first mouse movement.
+            self.move(max(0, int(px) - 90), max(0, int(py) - 72))
 
         def on_submit(self, *args):
             raw = self.entry.get_text()
             _submitted(raw, 'input')
-            text = raw.strip()
+            text = raw if preserve_raw else raw.strip()
             _emit('submit', window='input', detail=f'{len(text)} chars')
             sys.stdout.write(text)
             sys.stdout.flush()
@@ -547,6 +850,7 @@ def show_objects_popup(items, px=None, py=None):
     class Popup(Gtk.Window):
         def __init__(self, items, px=None, py=None):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
+            self.set_wmclass("cognitive-popup", "cognitive-popup")
             self.items = items
             self.px = px
             self.py = py
@@ -619,8 +923,12 @@ def show_objects_popup(items, px=None, py=None):
             _emit('copy', window='objects', detail=f'{len(self.items)} objects')
             return True
 
-        def on_click(self, *args):
-            return self.close_and_quit(reason='click')
+        def on_click(self, widget=None, event=None, *args):
+            # One rule for every window: the left button never closes (the text can
+            # be selected and copied); Escape or the right button closes.
+            if event is not None and getattr(event, 'button', 3) == 3:
+                return self.close_and_quit(reason='right_click')
+            return False
 
         def on_key(self, widget, event):
             if event.keyval in (Gdk.KEY_Escape, Gdk.KEY_Return, Gdk.KEY_KP_Enter):
@@ -663,6 +971,7 @@ def show_keys_popup(rows, px=None, py=None, title='Keys'):
     class KeysPopup(Gtk.Window):
         def __init__(self, rows, px=None, py=None):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
+            self.set_wmclass("cognitive-popup", "cognitive-popup")
             self.rows = list(rows)
             self.px = px
             self.py = py
@@ -739,8 +1048,12 @@ def show_keys_popup(rows, px=None, py=None, title='Keys'):
             _emit('copy', window='keys', detail=f'{len(self.rows)} shortcuts')
             return True
 
-        def on_click(self, *args):
-            return self.close_and_quit(reason='click')
+        def on_click(self, widget=None, event=None, *args):
+            # One rule for every window: the left button never closes (the text can
+            # be selected and copied); Escape or the right button closes.
+            if event is not None and getattr(event, 'button', 3) == 3:
+                return self.close_and_quit(reason='right_click')
+            return False
 
         def on_key(self, widget, event):
             if event.keyval in (Gdk.KEY_Escape, Gdk.KEY_Return, Gdk.KEY_KP_Enter):
@@ -794,6 +1107,7 @@ def show_menu_popup(items, px=None, py=None, title='Menu', focusable=False):
     class MenuPopup(Gtk.Window):
         def __init__(self):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
+            self.set_wmclass("cognitive-popup", "cognitive-popup")
             self.set_decorated(False)
             self.set_resizable(False)
             self.set_skip_taskbar_hint(True)
@@ -912,6 +1226,677 @@ def show_menu_popup(items, px=None, py=None, title='Menu', focusable=False):
     return 0
 
 
+def _semantic_sound(role):
+    # A concurrent sound implementation may supply this API. Never fall back
+    # to a close sound for disclosure, and never make UI depend on playback.
+    play = getattr(sound, 'play', None)
+    if callable(play):
+        try:
+            play(role)
+        except Exception:
+            pass
+
+
+def orbital_rows(items):
+    rows = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        simple = str(item.get('simple') or '').strip()
+        if simple:
+            rows.append((simple, str(item.get('term') or simple).strip(),
+                         str(item.get('meaning') or '').strip()))
+    return rows
+
+
+def _orbital_focus_mode():
+    """Local field only: off/subtle (default)/normal/strong."""
+    return orbital.focus_level(os.environ.get('COGNITIVE_ORBITAL_FOCUS', 'subtle'))
+
+
+ORBITAL_CUE_PX = 18
+ORBITAL_BODY_PX = 15
+#: Floor for shrink-to-fit. Orbital slots are narrower than long Russian words;
+#: a word is never split, so the type gives way before the word does.
+ORBITAL_MIN_PX = 11
+
+
+def _orbital_fit_px(layout, width, px, Pango, floor=ORBITAL_MIN_PX):
+    """Largest size <= px at which no word of `layout` overflows `width`.
+
+    Expects WORD wrapping: an unbreakable word widens the layout past
+    `width` instead of being cut, which is what this measures.
+    """
+    font = (layout.get_font_description() or layout.get_context().get_font_description()).copy()
+    layout.set_wrap(Pango.WrapMode.WORD)
+    layout.set_width(max(1, width) * Pango.SCALE)
+    for size in range(px, floor - 1, -1):
+        font.set_absolute_size(size * Pango.SCALE)
+        layout.set_font_description(font)
+        if layout.get_pixel_size()[0] <= width:
+            return size
+    return floor
+
+
+def _place_orbital(window, bounds, native_move=True):
+    if native_move:
+        window.move(bounds.x, bounds.y)
+    # Native Wayland ignores Gtk.Window.move(); XWayland also needs the
+    # decoration overrides. On Hyprland, target only this invocation's mapped
+    # popup, preserving per-pixel alpha without installing repository rules.
+    if not os.environ.get('HYPRLAND_INSTANCE_SIGNATURE'):
+        return
+
+    try:
+        clients = json.loads(subprocess.check_output(
+            ['hyprctl', 'clients', '-j'], timeout=.5))
+        client = next((c for c in clients if c.get('pid') == os.getpid()
+                       and c.get('title') == window.get_title() and c.get('mapped')), None)
+        if client is not None:
+            address = json.dumps(f'address:{client["address"]}')
+            # The running Lua compositor uses dispatcher objects; legacy
+            # `hyprctl setprop` returns "unknown request" even with exit code 0.
+            commands = [
+                'hl.dispatch(hl.dsp.window.set_prop({window=' + address
+                + ',prop=' + json.dumps(prop) + ',value=' + json.dumps(value) + '}))'
+                for prop, value in (('border_size', '0'), ('no_blur', 'true'),
+                                    ('no_shadow', 'true'), ('opaque', 'false'))]
+            # HyprGlass draws a separate rectangular decoration even when
+            # native blur is disabled. This tag is inert without that plugin.
+            commands.insert(0, 'hl.dispatch(hl.dsp.window.tag({window=' + address
+                            + ',tag="+hyprglass_disabled"}))')
+            commands.append('hl.dispatch(hl.dsp.window.move({window=' + address
+                            + f',x={bounds.x},y={bounds.y},relative=false' + '}))')
+            subprocess.run(['hyprctl', 'eval', '(function() '
+                            + '; '.join(commands) + ' end)()'],
+                           timeout=.5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, ValueError, subprocess.SubprocessError, KeyError, TypeError):
+        # Other compositors still render the same bounded local geometry.
+        pass
+
+
+def _orbital_placement_snapshot(window):
+    """Read actual mapped coordinates and overrides, only before revealing."""
+    try:
+        clients = json.loads(subprocess.check_output(['hyprctl', 'clients', '-j'], timeout=.5))
+        client = next((c for c in clients if c.get('pid') == os.getpid()
+                       and c.get('title') == window.get_title() and c.get('mapped')), None)
+        if client is None:
+            return None
+        props = {prop: subprocess.check_output(
+            ['hyprctl', 'getprop', 'address:' + client['address'], prop],
+            timeout=.5, text=True).strip()
+            for prop in ('border_size', 'no_blur', 'no_shadow', 'opaque')}
+        return {'address': client['address'], 'at': client['at'], 'size': client['size'],
+                'xwayland': client.get('xwayland'), 'props': props}
+    except (OSError, ValueError, subprocess.SubprocessError, KeyError, TypeError):
+        return None
+
+
+def show_orbital_popup(items, px=None, py=None, title='', reduced_motion=None):
+    rows = orbital_rows(items)
+    if len(rows) != 4:
+        return show_dual_popup(items, px, py, title)
+    try:
+        import gi
+        gi.require_version('Gtk', '3.0')
+        gi.require_version('Gdk', '3.0')
+        from gi.repository import GLib
+        # Wayland app_id comes from prgname, not the X11-only set_wmclass().
+        GLib.set_prgname('cognitive-popup')
+        from gi.repository import Gtk, Gdk, GdkPixbuf, Pango
+        apply_popup_font(Gtk, Gdk)
+    except Exception:
+        return 1
+    anchor = get_mouse_position() if px is None or py is None else (px, py)
+    geometry = orbital.layout(_monitor_workarea(Gdk, *anchor), anchor)
+    bounds = geometry.footprint
+    state = orbital.Disclosure(rows)
+    focus = _orbital_focus_mode()
+    if reduced_motion is None:
+        reduced_motion = os.environ.get('COGNITIVE_REDUCED_MOTION', '').lower() in {
+            '1', 'true', 'yes', 'on'}
+    settings = Gtk.Settings.get_default()
+    reduced_motion = reduced_motion or (settings is not None and
+                                         not settings.get_property('gtk-enable-animations'))
+
+    from .orbital_motion import Tween, rect_values, visual_rect
+    from .orbital_assets import composite_pixbuf, input_runs, apply_input_regions
+
+    class OrbitalPopup(Gtk.Window):
+        def __init__(self):
+            super().__init__(type=Gtk.WindowType.TOPLEVEL)
+            self.set_wmclass('cognitive-popup', 'cognitive-popup')
+            self.set_title(title or 'Orbital disclosure')
+            self.set_decorated(False)
+            self.set_resizable(False)
+            self.set_keep_above(True)
+            self.set_skip_taskbar_hint(True)
+            self.set_skip_pager_hint(True)
+            self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
+            self.set_app_paintable(True)
+            visual = self.get_screen().get_rgba_visual()
+            if visual is not None:
+                self.set_visual(visual)
+            self.closed = False
+            self.set_opacity(0.)
+            self.place_source = None
+            self.open_source = None
+            self.motion_source = None
+            self.reveal_tween = None
+            self.rect_tween = None
+            self.dim_tween = None
+            self.text_tween = None
+            self.transition_id = 0
+            self.pending_first_visual = None
+            self.membrane = None
+            self.collapsing = None
+            self.dim = (1.,) * 4
+            self.placement_attempts = 0
+            self.stable_snapshot = None
+            self.stable_count = 0
+            self.revealed = False
+            self.started = time.monotonic()
+            self.debug_enabled = os.environ.get('COGNITIVE_DEBUG') == '1'
+            from .orbital_assets import RENDER_STATS
+            self.initial_svg_parses = RENDER_STATS['svg_parses']
+            self.motion_log = []
+            self.last_frame = None
+            self.perf = {'frames': 0, 'long_frames': 0, 'shape_rebuilds': 0,
+                         'svg_parses': 0, 'frame_cost_ms': [], 'frame_intervals_ms': []}
+            self.debug('constructor')
+            self.connect('map', lambda *_: self.debug('map', opacity=self.get_opacity()))
+            self.connect('destroy', self.cleanup)
+            self.connect('key-press-event', self.key)
+            self.connect('delete-event', lambda *a: self.dismiss('delete'))
+            self.connect('button-press-event', self.press)
+            overlay = Gtk.Overlay()
+            self.add(overlay)
+            canvas = Gtk.Image()
+            canvas.set_size_request(bounds.width, bounds.height)
+            overlay.add(canvas)
+            provider = Gtk.CssProvider()
+            provider.load_from_data(b'* { background-color: transparent; background-image: none; '
+                                                b'box-shadow: none; color: #eeeeee; }')
+            cue_provider = Gtk.CssProvider()
+            cue_provider.load_from_data(
+                ('label { font-size: %dpx; font-weight: 500; }' % ORBITAL_CUE_PX).encode())
+            body_provider = Gtk.CssProvider()
+            body_provider.load_from_data(
+                ('label { font-size: %dpx; }' % ORBITAL_BODY_PX).encode())
+            self.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+            fixed = Gtk.Fixed()
+            self.fixed = fixed
+            overlay.add_overlay(fixed)
+            self.visual_geometry = geometry
+            self.labels = []
+            for index, cue in enumerate(geometry.cues):
+                rect = orbital.safe_rect(cue, index, padding=2, cue=True)
+                holder = Gtk.EventBox()
+                holder.set_visible_window(False)
+                holder.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+                holder.connect('button-press-event', self.select, index)
+                # The cue remains a compact, stable target, not a detail panel.
+                scroll = Gtk.ScrolledWindow()
+                scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+                scroll.set_size_request(rect.width, rect.height)
+                scroll.set_min_content_width(rect.width)
+                scroll.set_max_content_width(rect.width)
+                scroll.set_min_content_height(rect.height)
+                scroll.set_max_content_height(rect.height)
+                label = Gtk.Label(label=rows[index][0])
+                label.set_line_wrap(True)
+                label.set_line_wrap_mode(Pango.WrapMode.WORD)
+                label.set_size_request(rect.width, -1)
+                label.set_max_width_chars(1)
+                label.get_style_context().add_provider(
+                    cue_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
+                size = _orbital_fit_px(label.create_pango_layout(rows[index][0]),
+                                       rect.width, ORBITAL_CUE_PX, Pango)
+                if size < ORBITAL_CUE_PX:
+                    fitted = Gtk.CssProvider()
+                    fitted.load_from_data(('label { font-size: %dpx; }' % size).encode())
+                    label.get_style_context().add_provider(
+                        fitted, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 2)
+                label.set_xalign(.5)
+                label.set_yalign(.5)
+                scroll.add(label)
+                for widget in (scroll, label, label.get_parent()):
+                    widget.get_style_context().add_provider(
+                        provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+                holder.add(scroll)
+                fixed.put(holder, rect.x, rect.y)
+                self.labels.append(label)
+            if STEP_LINE:
+                # The running step, one quiet line above the top cue, as in every
+                # other window; it never covers a cue.
+                step = Gtk.Label(xalign=.5)
+                step.set_markup('<span size="small" foreground="#8a8a8a"><span foreground="#e8c27a">●</span>'
+                                ' шаг · %s</span>' % _escape_markup(STEP_LINE))
+                step.set_ellipsize(Pango.EllipsizeMode.END)
+                step.set_size_request(bounds.width, -1)
+                step.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+                fixed.put(step, 0, max(0, min(cue.y for cue in geometry.cues) - 30))
+            # A single movable detail widget follows the selected cue outward.
+            # Hidden initially: the reservation is transparent, not four panels.
+            self.detail_holder = Gtk.EventBox()
+            self.detail_holder.set_visible_window(False)
+            self.detail_holder.connect('button-press-event', self.detail_press)
+            self.detail_scroll = Gtk.ScrolledWindow()
+            self.detail_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            self.detail_label = Gtk.Label(xalign=0, yalign=0)
+            self.detail_label.set_line_wrap(True)
+            self.detail_label.set_line_wrap_mode(Pango.WrapMode.WORD)
+            self.detail_fit = None
+            self.detail_scroll.add(self.detail_label)
+            for widget in (self.detail_label, self.detail_scroll, self.detail_label.get_parent()):
+                widget.get_style_context().add_provider(
+                    provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+            self.detail_label.get_style_context().add_provider(
+                body_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
+            self.detail_holder.add(self.detail_scroll)
+            fixed.put(self.detail_holder, 0, 0)
+            self.detail_holder.set_no_show_all(True)
+            # Providers on a style context do not cascade to child contexts.
+            # Cover every container (including GTK-created viewports), without
+            # changing the theme of other helper windows or the whole screen.
+            def transparent(widget):
+                widget.set_app_paintable(True)
+                widget.get_style_context().add_provider(
+                    provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+                if isinstance(widget, Gtk.Container):
+                    for child in widget.get_children():
+                        transparent(child)
+            transparent(self)
+            self.canvas = canvas
+            self.paint_background()
+            self.resize(bounds.width, bounds.height)
+            self.move(bounds.x, bounds.y)
+            self.show_all()
+            self.open_source = GLib.idle_add(self.opened)
+
+        def debug(self, event, **data):
+            if self.debug_enabled:
+                entry = dict(event=event, ms=round((time.monotonic()-self.started)*1000, 3), **data)
+                self.motion_log.append(entry)
+                print('orbital_motion ' + json.dumps(entry), file=sys.stderr)
+
+        def opened(self):
+            self.open_source = None
+            if self.closed:
+                return False
+            self.debug('opened', opacity=self.get_opacity())
+            self.present()
+            self.shape_input()
+            self.place_source = GLib.timeout_add(24, self.place)
+            return False
+
+        def place(self):
+            self.place_source = None
+            if self.closed:
+                return False
+            self.placement_attempts += 1
+            t = time.monotonic()
+            hyprland = bool(os.environ.get('HYPRLAND_INSTANCE_SIGNATURE'))
+            snapshot = _orbital_placement_snapshot(self) if hyprland else None
+            correct = (snapshot is not None and snapshot['at'] == [bounds.x, bounds.y]
+                       and snapshot['props'] == {'border_size': '0', 'no_blur': 'true',
+                                                'no_shadow': 'true', 'opaque': 'false'})
+            if self.placement_attempts == 1 or (hyprland and not correct):
+                # GTK XWayland move is in device pixels and can arrive after
+                # the compositor's logical-pixel move at fractional scale.
+                _place_orbital(self, bounds, native_move=not hyprland)
+                self.stable_count = 0
+                self.stable_snapshot = None
+            elif correct:
+                self.stable_count = self.stable_count + 1 if snapshot == self.stable_snapshot else 1
+                self.stable_snapshot = snapshot
+            self.debug('placement', attempt=self.placement_attempts, opacity=self.get_opacity(),
+                       snapshot=snapshot, stable=self.stable_count,
+                       cost_ms=round((time.monotonic()-t)*1000, 3))
+            if (not hyprland and self.placement_attempts >= 2) or self.stable_count >= 2:
+                self.reveal()
+            elif self.placement_attempts >= 10:
+                self.debug('placement_failed', snapshot=snapshot)
+                self.dismiss('placement_failed')
+            else:
+                self.place_source = GLib.timeout_add(24, self.place)
+            return False
+
+        def reveal(self):
+            if self.closed:
+                return
+            self.revealed = True
+            self.debug('reveal_start', opacity=self.get_opacity(), snapshot=self.stable_snapshot)
+            self.observe()
+            _emit('window_open', window='dual', layer=1, detail=title)
+            _emit('orbital_open', window='dual', layer=1, detail='four stable cues')
+            self.play('orbital_open')
+            if reduced_motion:
+                self.set_opacity(1.)
+                self.debug('reveal_end', reduced=True)
+            else:
+                self.reveal_tween = Tween((0.,), (1.,), time.monotonic(), .14)
+                self.ensure_tick()
+
+        def play(self, role, transition=None):
+            t = time.monotonic()
+            _semantic_sound(role)
+            returned = time.monotonic()
+            self.debug('sound', role=role, transition=transition,
+                       call_ms=round((t-self.started)*1000, 3),
+                       return_ms=round((returned-self.started)*1000, 3),
+                       cost_ms=round((returned-t)*1000, 3))
+            return t
+
+        def ensure_tick(self):
+            if self.motion_source is None and not self.closed:
+                self.last_frame = None
+                self.motion_source = self.add_tick_callback(self.tick)
+
+        def tick(self, _widget, _clock):
+            if self.closed:
+                self.motion_source = None
+                return False
+            now = time.monotonic()
+            if self.debug_enabled:
+                if self.last_frame is not None:
+                    interval = (now-self.last_frame)*1000
+                    self.perf['frame_intervals_ms'].append(round(interval, 3))
+                    self.perf['long_frames'] += interval > 30
+                self.perf['frames'] += 1
+            self.last_frame = now
+            if self.reveal_tween:
+                opacity = self.reveal_tween.value(now)[0]
+                if self.get_opacity() == 0.:
+                    self.debug('first_visible_tick', opacity=opacity)
+                self.set_opacity(opacity)
+                self.debug('reveal_tick', opacity=self.get_opacity())
+                if self.reveal_tween.done(now):
+                    self.reveal_tween = None
+                    self.set_opacity(1.)
+                    self.debug('reveal_end')
+            if self.dim_tween:
+                self.dim = self.dim_tween.value(now)
+                for i, label in enumerate(self.labels):
+                    label.set_opacity(1. - (1.-self.dim[i]) * (.55/.38))
+                if self.dim_tween.done(now):
+                    self.dim_tween = None
+            repaint = self.rect_tween is not None or self.dim_tween is not None
+            if self.rect_tween:
+                self.membrane = visual_rect(self.rect_tween.value(now))
+                if self.rect_tween.done(now) and self.collapsing is not None:
+                    self.debug('collapse_end', index=self.collapsing)
+                    self.collapsing = self.membrane = self.rect_tween = None
+                elif self.rect_tween.done(now):
+                    self.membrane = visual_rect(self.rect_tween.target)
+                    self.rect_tween = None
+                    self.shape_input(runs=self.target_mask)
+                    self.detail_holder.show()
+                    self.detail_holder.set_opacity(0.)
+                    self.text_tween = Tween((0.,), (1.,), now, .14)
+                    self.debug('disclosure_end', index=state.active,
+                               rect=rect_values(self.membrane))
+            if repaint:
+                self.paint_background()
+                self.first_disclosure_visual()
+            if self.text_tween:
+                self.detail_holder.set_opacity(self.text_tween.value(now)[0])
+                if self.text_tween.done(now):
+                    self.text_tween = None
+                    self.detail_holder.set_opacity(1.)
+            if self.debug_enabled:
+                self.perf['frame_cost_ms'].append(round((time.monotonic()-now)*1000, 3))
+            if any((self.reveal_tween, self.rect_tween, self.dim_tween, self.text_tween)):
+                # A newly shown, zero-alpha detail can otherwise leave native
+                # Wayland waiting for damage before its next frame callback.
+                self.queue_draw()
+                return True
+            self.motion_source = None
+            return False
+
+        def first_disclosure_visual(self):
+            if self.pending_first_visual is not None:
+                transition, accepted, played = self.pending_first_visual
+                self.pending_first_visual = None
+                now = time.monotonic()
+                self.debug('first_disclosure_frame', transition=transition,
+                           accepted_to_play_ms=round((played-accepted)*1000, 3),
+                           play_to_visual_ms=round((now-played)*1000, 3),
+                           rect=rect_values(self.membrane), reduced=bool(reduced_motion))
+
+        def paint_background(self):
+            t = time.monotonic()
+            # While folding back, the membrane still belongs to its cue.
+            active = state.active if state.active is not None else self.collapsing
+            self.canvas.set_from_pixbuf(composite_pixbuf(
+                geometry, focus, active, self.membrane, self.dim))
+            self.debug('raster', cost_ms=round((time.monotonic()-t)*1000, 3))
+
+        def shape_input(self, extra=(), runs=None):
+            t = time.monotonic()
+            if runs is None:
+                runs = input_runs(geometry, state.active, self.membrane)
+            apply_input_regions(self.get_window(), runs + extra, bounds.width, bounds.height)
+            if self.debug_enabled:
+                self.perf['shape_rebuilds'] += 1
+            self.debug('shape', cost_ms=round((time.monotonic()-t)*1000, 3))
+
+        def observe(self):
+            _rendered(title=title, layout='orbital', cues=state.visible(),
+                      active=state.active, layer=state.layer, focus=focus)
+
+        def select(self, _widget, event, index):
+            if event.button == 3:
+                return self.dismiss('right_click')
+            if event.button != 1:
+                return False
+            if not self.revealed:
+                return True
+            now = time.monotonic()
+            current = visual_rect(self.rect_tween.value(now)) if self.rect_tween else self.membrane
+            current_dim = self.dim_tween.value(now) if self.dim_tween else self.dim
+            previous_active = state.active
+            events = state.advance(index)
+            if not events:
+                return True
+            self.transition_id += 1
+            transition = self.transition_id
+            self.debug('click_accepted', transition=transition, index=index, layer=state.layer,
+                       accepted_ms=round((now-self.started)*1000, 3))
+            if events == ('cue_collapse',):
+                return self.collapse(index, transition, current, current_dim)
+            if self.collapsing is not None:
+                # A fold still in flight: the new cue opens from its own place.
+                self.collapsing = None
+                current = None
+            self.detail_holder.hide()
+            self.text_tween = None
+            from dataclasses import replace
+            _simple, term, meaning = state.visible()[index]
+            markup = '<span weight="600">' + _escape_markup(term) + '</span>'
+            if meaning:
+                markup += '\n' + _escape_markup(meaning)
+            measured = self.detail_label.create_pango_layout('')
+            measured.set_markup(markup, -1)
+            measured.set_wrap(Pango.WrapMode.WORD)
+            for fraction in (.72, .86, 1.):
+                membrane = orbital.disclosure_rect(geometry, index, fraction)
+                rect = orbital.safe_rect(membrane, index, padding=8)
+                width = max(1, rect.width - 14)
+                measured.set_width(width * Pango.SCALE)
+                fits_width, fits_height = (a <= b for a, b in zip(
+                    measured.get_pixel_size(), (width, rect.height)))
+                if fits_width and fits_height:
+                    break
+            # Leaves `measured` at the fitted size for the height request below.
+            self.fit_detail(_orbital_fit_px(measured, width, ORBITAL_BODY_PX, Pango))
+            regions = list(geometry.details)
+            regions[index] = membrane
+            self.visual_geometry = replace(geometry, details=tuple(regions))
+            self.fixed.move(self.detail_holder, rect.x, rect.y)
+            self.detail_scroll.set_size_request(rect.width, rect.height)
+            self.detail_scroll.set_min_content_width(-1)
+            self.detail_scroll.set_min_content_height(-1)
+            self.detail_scroll.set_max_content_width(rect.width)
+            self.detail_scroll.set_max_content_height(rect.height)
+            self.detail_scroll.set_min_content_width(rect.width)
+            self.detail_scroll.set_min_content_height(rect.height)
+            self.detail_label.set_max_width_chars(1)
+            self.detail_label.set_markup(markup)
+            self.detail_label.set_size_request(max(1, rect.width - 14), measured.get_pixel_size()[1])
+            self.detail_scroll.get_vadjustment().set_value(0)
+            self.detail_scroll.show_all()
+            target_dim = tuple(1. if i == index else .62 for i in range(4))
+            start_rect = current or geometry.cues[index]
+            self.target_mask = input_runs(geometry, index, membrane)
+            if reduced_motion:
+                self.shape_input(runs=self.target_mask)
+            else:
+                previous_mask = input_runs(geometry, previous_active, current)
+                self.shape_input(previous_mask + self.target_mask,
+                                 runs=input_runs(geometry, index, start_rect))
+            self.observe()
+            for event_name in events:
+                _emit(event_name, window='dual', layer=state.layer,
+                      item_index=index, item_label=rows[index][0])
+            self.debug('disclosure_start', transition=transition, index=index, layer=state.layer,
+                       start=rect_values(start_rect), target=rect_values(membrane))
+            # All potentially blocking preparation/bookkeeping precedes this
+            # boundary. No new visual or animation clock starts before play.
+            played = self.play(events[-1], transition=transition)
+            self.pending_first_visual = (transition, now, played)
+            if reduced_motion:
+                self.membrane = membrane
+                self.dim = target_dim
+                for i, label in enumerate(self.labels):
+                    label.set_opacity(1. if i == index else .45)
+                self.detail_holder.set_opacity(1.)
+                self.detail_holder.show()
+                self.paint_background()
+                self.first_disclosure_visual()
+                self.debug('disclosure_end', index=index, reduced=True, rect=rect_values(membrane))
+            else:
+                self.membrane = start_rect
+                self.dim = current_dim
+                started = time.monotonic()
+                self.rect_tween = Tween(rect_values(start_rect), rect_values(membrane), started, .22)
+                self.dim_tween = Tween(current_dim, target_dim, started, .14)
+                self.ensure_tick()
+            return True
+
+        def fit_detail(self, size):
+            context = self.detail_label.get_style_context()
+            if self.detail_fit is not None:
+                context.remove_provider(self.detail_fit)
+                self.detail_fit = None
+            if size < ORBITAL_BODY_PX:
+                self.detail_fit = Gtk.CssProvider()
+                self.detail_fit.load_from_data(('label { font-size: %dpx; }' % size).encode())
+                context.add_provider(self.detail_fit, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 2)
+
+        def collapse(self, index, transition, current, current_dim):
+            """Fold the open cue back into its place; the window stays."""
+            self.detail_holder.hide()
+            self.text_tween = None
+            self.visual_geometry = geometry
+            self.target_mask = input_runs(geometry)
+            self.shape_input(runs=self.target_mask)
+            self.observe()
+            _emit('cue_collapse', window='dual', layer=state.layer,
+                  item_index=index, item_label=rows[index][0])
+            self.debug('collapse_start', transition=transition, index=index,
+                       start=rect_values(current) if current else None)
+            self.play('orbital_collapse', transition=transition)
+            target_dim = (1.,) * 4
+            if reduced_motion or current is None:
+                self.rect_tween = self.dim_tween = None
+                self.collapsing = self.membrane = None
+                self.dim = target_dim
+                for label in self.labels:
+                    label.set_opacity(1.)
+                self.paint_background()
+                self.debug('collapse_end', index=index, reduced=bool(reduced_motion))
+                return True
+            self.collapsing = index
+            self.membrane = current
+            started = time.monotonic()
+            self.rect_tween = Tween(rect_values(current), rect_values(geometry.cues[index]),
+                                    started, .18)
+            self.dim_tween = Tween(current_dim, target_dim, started, .14)
+            self.ensure_tick()
+            return True
+
+        def detail_press(self, widget, event):
+            if state.active is None:
+                return False
+            return self.select(widget, event, state.active)
+
+        def press(self, _widget, event):
+            if event.button == 3:
+                return self.dismiss('right_click')
+            targets = list(enumerate(geometry.cues))
+            if state.active is not None:
+                targets.append((state.active, self.visual_geometry.details[state.active]))
+            for index, rect in targets:
+                if rect.x <= event.x < rect.x + rect.width and rect.y <= event.y < rect.y + rect.height:
+                    return self.select(None, event, index)
+            return False
+
+        def key(self, _widget, event):
+            if event.keyval == Gdk.KEY_Escape:
+                return self.dismiss('escape')
+            if Gdk.KEY_1 <= event.keyval <= Gdk.KEY_4:
+                class Click:
+                    button = 1
+                return self.select(None, Click(), event.keyval - Gdk.KEY_1)
+            return False
+
+        def dismiss(self, reason):
+            if self.closed:
+                return True
+            self.closed = True
+            self.cleanup()
+            from .orbital_assets import RENDER_STATS
+            self.perf['svg_parses'] = RENDER_STATS['svg_parses'] - self.initial_svg_parses
+            self.debug('dismiss', reason=reason, perf=self.perf)
+            self.play('orbital_close')
+            _emit('window_close', window='dual', detail=reason, silent=True)
+            self.destroy()
+            Gtk.main_quit()
+            return True
+
+        def cleanup(self, *_args):
+            self.closed = True
+            for name in ('open_source', 'place_source'):
+                source = getattr(self, name, None)
+                if source is not None:
+                    GLib.source_remove(source)
+                    setattr(self, name, None)
+            if self.motion_source is not None:
+                self.remove_tick_callback(self.motion_source)
+                self.motion_source = None
+            self.reveal_tween = self.rect_tween = self.dim_tween = self.text_tween = None
+            self.pending_first_visual = None
+
+    OrbitalPopup()
+    Gtk.main()
+    return 0
+
+
+def orbital_demo_payload():
+    return {'mode': 'dual', 'title': 'Orbital fixture', 'items': [
+        {'simple': 'change', 'term': 'automorphism',
+         'meaning': 'A change that preserves structure.'},
+        {'simple': 'rule', 'term': 'structure-preserving',
+         'meaning': 'The operation gives the same result before and after the map.'},
+        {'simple': 'step', 'term': 'compose',
+         'meaning': 'Apply one map, then another. Their composition is still a symmetry.'},
+        {'simple': 'error', 'term': 'not bijective',
+         'meaning': 'If two elements collapse into one, the transformation cannot be reversed.'},
+    ]}
+
+
 def show_dual_popup(items, px=None, py=None, title=''):
     try:
         import gi
@@ -939,6 +1924,7 @@ def show_dual_popup(items, px=None, py=None, title=''):
     class DualPopup(Gtk.Window):
         def __init__(self):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
+            self.set_wmclass("cognitive-popup", "cognitive-popup")
             self.active: set[int] = set()
             self.revealed: set[int] = set()
             self._opened = time.monotonic()
@@ -1111,7 +2097,8 @@ def show_dual_popup(items, px=None, py=None, title=''):
     return 0
 
 
-def show_text_popup(text, px=None, py=None, title='Result', expanded=False, note='', actions=None):
+def show_text_popup(text, px=None, py=None, title='Result', expanded=False, note='', actions=None,
+                    evidence='', semantic_role=None, more=''):
     try:
         import gi
         gi.require_version('Gtk', '3.0')
@@ -1141,6 +2128,7 @@ def show_text_popup(text, px=None, py=None, title='Result', expanded=False, note
     class TextPopup(Gtk.Window):
         def __init__(self, body, px=None, py=None):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
+            self.set_wmclass("cognitive-popup", "cognitive-popup")
             self.body = body
             self.px = px
             self.py = py
@@ -1155,11 +2143,17 @@ def show_text_popup(text, px=None, py=None, title='Result', expanded=False, note
             self.set_border_width(0)
             self.connect('focus-out-event', lambda *a: False)
             self.connect('key-press-event', self.on_key)
+            self._feedback_played = False
+            self.connect('map-event', self.on_map)
 
             outer = Gtk.EventBox()
             outer.set_visible_window(True)
             outer.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
-            outer.connect('button-press-event', lambda *a: self.close_and_quit(reason='click'))
+            # With hidden `more` (e.g. Alt+C's next-step question) the first click
+            # opens it and only the second one closes: nothing extra is in view
+            # unless the reader asks for it.
+            self.more_shown = not more
+            outer.connect('button-press-event', self.on_click)
             self.add(outer)
 
             box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -1169,6 +2163,9 @@ def show_text_popup(text, px=None, py=None, title='Result', expanded=False, note
             box.set_margin_end(10)
             outer.add(box)
 
+            line = step_line_label(Gtk)
+            if line is not None:
+                box.pack_start(line, False, False, 0)
             if note:
                 # Short provenance line, e.g. which intent was taken into
                 # account. Kept as a label so it is not copied with the answer.
@@ -1185,16 +2182,32 @@ def show_text_popup(text, px=None, py=None, title='Result', expanded=False, note
             scrolled.set_size_request(-1, min(height, height_cap))
             scrolled.add(view)
             box.pack_start(scrolled, True, True, 0)
+            self.scrolled = scrolled
+            self.view = view
+            self.evidence_shown = False
 
             button_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             copy_btn = Gtk.Button(label='Copy')
             copy_btn.connect('clicked', self.on_copy)
             button_row.pack_start(copy_btn, False, False, 0)
-            for action in actions or []:
-                if isinstance(action, dict) and action.get('action') == 'reframe':
-                    choice = Gtk.Button(label=str(action.get('label') or 'Другой ракурс') + ' (Ctrl+R)')
-                    choice.connect('clicked', self.on_action, 'reframe')
-                    button_row.pack_start(choice, False, False, 0)
+            if evidence:
+                evidence_btn = Gtk.Button(label='Evidence')
+                evidence_btn.connect('button-press-event', lambda *a: True)
+                evidence_btn.connect('clicked', self.reveal_evidence)
+                button_row.pack_start(evidence_btn, False, False, 0)
+            # Any listed action is a button; the first nine also answer to 1-9, so
+            # a choice like "Сделал шаг? Да / Частично / Нет" needs no mouse.
+            self.choices = [item for item in actions or []
+                            if isinstance(item, dict) and item.get('action') and item.get('label')]
+            for number, action in enumerate(self.choices, 1):
+                name = str(action['action'])
+                label = str(action['label'])
+                label += ' (Ctrl+R)' if name == 'reframe' else (f' ({number})' if number <= 9 else '')
+                choice = Gtk.Button(label=label)
+                # The window closes on a click anywhere; a button press must not.
+                choice.connect('button-press-event', lambda *a: True)
+                choice.connect('clicked', self.on_action, name)
+                button_row.pack_start(choice, False, False, 0)
             hint = Gtk.Label(label='Ctrl +/− — размер')
             hint.set_halign(Gtk.Align.END)
             button_row.pack_end(hint, False, False, 0)
@@ -1204,6 +2217,20 @@ def show_text_popup(text, px=None, py=None, title='Result', expanded=False, note
             self.show_all()
             GLib.idle_add(self.apply_geometry)
             GLib.idle_add(self.present)
+
+        def on_map(self, *_args):
+            GLib.idle_add(self.play_feedback)
+            return False
+
+        def play_feedback(self):
+            if (self._feedback_played or not self.get_mapped()
+                    or semantic_role not in ('correction', 'resolve', 'materialize')):
+                return False
+            self._feedback_played = True
+            if semantic_role == 'correction':
+                _emit('correction_shown', window='text', detail=title)
+            _semantic_sound(semantic_role)
+            return False
 
         def apply_geometry(self):
             self.resize(width, min(height, height_cap) + 34)
@@ -1240,6 +2267,38 @@ def show_text_popup(text, px=None, py=None, title='Result', expanded=False, note
             _emit('copy', window='text', detail=title)
             return True
 
+        def on_click(self, _widget=None, event=None, *_args):
+            if event is not None and getattr(event, 'button', 3) != 3:
+                return False          # the left button never closes a window
+            if getattr(self, 'choices', None):
+                # A window that asks for a choice closes only by a button or
+                # Escape: a stray click must not throw the answer away.
+                return True
+            if not self.more_shown:
+                self.more_shown = True
+                self.body = self.body + '\n\n' + more
+                fill_readable(self.view, self.body)
+                # Grow to the new text, so the opened line is in view, not below it.
+                grown_width, grown_height = estimate_text_size(self.body)
+                grown_height += 24  # the estimate runs a wrapped line short
+                self.scrolled.set_size_request(-1, min(grown_height, height_cap))
+                self.resize(max(width, grown_width), min(grown_height, height_cap) + 34)
+                _emit('layer_open', window='text', layer=2, detail='more')
+                return True
+            return self.close_and_quit(reason='click')
+
+        def reveal_evidence(self, *_args):
+            if self.evidence_shown:
+                return True
+            self.evidence_shown = True
+            self.body = text + '\n\n' + evidence
+            fill_readable(self.view, self.body)
+            _rendered(text=self.body, title=title, expanded=expanded, note=note,
+                      evidence_visible=True)
+            _emit('evidence_reveal', window='text', layer=2, detail=title)
+            _semantic_sound('evidence_reveal')
+            return True
+
         def on_action(self, _button, action):
             _emit('click', window='text', detail=action)
             sys.stdout.write(json.dumps({'action': action}, ensure_ascii=False))
@@ -1247,6 +2306,11 @@ def show_text_popup(text, px=None, py=None, title='Result', expanded=False, note
             return self.close_and_quit(reason=action)
 
         def on_key(self, widget, event):
+            plain = not (event.state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.MOD1_MASK))
+            if plain and Gdk.KEY_1 <= event.keyval <= Gdk.KEY_9:
+                index = event.keyval - Gdk.KEY_1
+                if index < len(getattr(self, 'choices', [])):
+                    return self.on_action(None, str(self.choices[index]['action']))
             if event.state & Gdk.ModifierType.CONTROL_MASK:
                 if event.keyval == Gdk.KEY_r and any(
                     isinstance(item, dict) and item.get('action') == 'reframe'
@@ -1296,6 +2360,7 @@ def show_note_popup(anchor='', px=None, py=None, *, title='Error note', prompt='
     class NotePopup(Gtk.Window):
         def __init__(self, anchor, px=None, py=None):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
+            self.set_wmclass("cognitive-popup", "cognitive-popup")
             self.anchor = anchor
             self.px = px
             self.py = py
@@ -1319,6 +2384,9 @@ def show_note_popup(anchor='', px=None, py=None, *, title='Error note', prompt='
             box.set_margin_start(10)
             box.set_margin_end(10)
             outer.add(box)
+            line = step_line_label(Gtk)
+            if line is not None:
+                box.pack_start(line, False, False, 0)
 
             if prompt:
                 # The condition is what the reader has to work from, so it gets
@@ -1426,6 +2494,7 @@ def show_intent_popup(intent=None, history=None, error='', px=None, py=None):
     class IntentPopup(Gtk.Window):
         def __init__(self):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
+            self.set_wmclass("cognitive-popup", "cognitive-popup")
             self.set_decorated(False)
             self.set_resizable(False)
             self.set_skip_taskbar_hint(True)
@@ -1688,6 +2757,7 @@ def show_goal_popup(material='', origin='', directions=None, notice='', error=''
     class GoalPopup(Gtk.Window):
         def __init__(self):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
+            self.set_wmclass("cognitive-popup", "cognitive-popup")
             self.set_decorated(False)
             self.set_resizable(False)
             self.set_skip_taskbar_hint(True)
@@ -1939,6 +3009,7 @@ def show_goal_result_popup(text='', direction='', notice='', error='', retryable
     class GoalResultPopup(Gtk.Window):
         def __init__(self):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
+            self.set_wmclass("cognitive-popup", "cognitive-popup")
             self.set_decorated(False)
             self.set_resizable(False)
             self.set_skip_taskbar_hint(True)
@@ -2097,6 +3168,7 @@ def show_example_popup(material='', query='', intent_text='', has_intent=False,
     class ExamplePopup(Gtk.Window):
         def __init__(self):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
+            self.set_wmclass("cognitive-popup", "cognitive-popup")
             self.set_decorated(False)
             self.set_resizable(False)
             self.set_skip_taskbar_hint(True)
@@ -2294,11 +3366,17 @@ def _dispatch(payload, mode):
             prompt=str(payload.get('prompt', 'Введите свою попытку:'))
         )
 
+    if mode == 'notice':
+        return show_notice_popup(str(payload.get('text', '')), payload.get('x'), payload.get('y'))
+
     if mode == 'input':
         prompt_text = str(payload.get('prompt', 'Введите непонятное ядро или слова:')).strip()
         return show_input_popup(
             prompt_text, payload.get('x'), payload.get('y'),
             str(payload.get('initial', '') or ''),
+            preserve_raw=payload.get('preserve_raw') is True,
+            quote=str(payload.get('quote', '') or ''),
+            quote_hint=str(payload.get('quote_hint', '') or ''),
         )
 
     if mode == 'menu':
@@ -2337,24 +3415,33 @@ def _dispatch(payload, mode):
     if mode == 'dual':
         items = payload.get('items', [])
         if isinstance(items, list):
-            return show_dual_popup(items, payload.get('x'), payload.get('y'), str(payload.get('title', '')))
+            return show_orbital_popup(items, payload.get('x'), payload.get('y'),
+                                                  str(payload.get('title', '')),
+                                                  reduced_motion=payload.get('reduced_motion'))
         return 0
 
     if mode == 'text':
-        text = str(payload.get('text', '')).strip()
+        text = str(payload.get('one_delta') or payload.get('text', '')).strip()
         if not text:
             return 0
         px = payload.get('x')
         py = payload.get('y')
         title = str(payload.get('title', 'Result'))
-        # Existing desktop daemons may predate the explicit flag. The title
-        # keeps prediction results expanded immediately without restarting the
-        # daemon and discarding its in-memory reading buffer.
-        expanded = bool(payload.get('expanded', False)) or title == 'Моя гипотеза'
+        # Older daemons sent a full result without one_delta; preserve their
+        # reading geometry, but keep modern single-delta results compact.
+        expanded = bool(payload.get('expanded', False)) or (
+            title == 'Моя гипотеза' and 'one_delta' not in payload
+        )
+        role = payload.get('semantic_role')
+        if role not in ('correction', 'resolve', 'materialize'):
+            role = None
         return show_text_popup(
             text, px, py, title=title, expanded=expanded,
             note=str(payload.get('note', '')),
             actions=payload.get('actions', []),
+            evidence=str(payload.get('evidence') or ''),
+            semantic_role=role,
+            more=str(payload.get('more') or ''),
         )
 
     objects = payload.get('objects', [])
@@ -2371,10 +3458,16 @@ def _dispatch(payload, mode):
 
 def main():
     global _PRESENTATION
-    payload = load_payload()
+    payload = orbital_demo_payload() if '--demo-orbital' in sys.argv[1:] else load_payload()
     _PRESENTATION = PopupObservation(_CHAIN, payload)
     mode = str(payload.get('mode', 'objects')).lower().strip()
+    global STEP_LINE
+    STEP_LINE = str(payload.get('step_line', '') or '')
+    # While this window lives, background model work stands aside (slack.py).
+    open_marker = slack.mark_popup_open()
     _emit('popup_start', window=mode)
+    halo = None if mode == 'notice' or (mode == 'dual' and len(orbital_rows(payload.get('items', []))) == 4) \
+        else _focus_halo(payload)
     try:
         return _dispatch(payload, mode)
     except Exception as exc:
@@ -2382,8 +3475,12 @@ def main():
         _emit('error', window=mode, detail=f'{type(exc).__name__}: {exc}')
         raise
     finally:
+        slack.mark_popup_closed(open_marker)
+        if halo is not None:
+            halo.destroy()
         if _PRESENTATION.opened and not _PRESENTATION.closed:
-            _emit('window_close', window=mode, detail='helper loop ended')
+            _emit('window_close', window=mode, detail='helper loop ended',
+                  silent=mode == 'dual' and len(orbital_rows(payload.get('items', []))) == 4)
 
 
 if __name__ == '__main__':

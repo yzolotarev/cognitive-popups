@@ -112,7 +112,7 @@ def test_prediction_repairs_a_paraphrased_evidence_quote():
     assert client.calls == 2
 
 
-def test_feynman_question_must_name_two_terms_from_one_fragment():
+def test_feynman_question_does_not_require_two_terms():
     client = ScriptedClient(
         '{"question":"Explain memory."}',
         '{"question":"How does the limit make chunking useful?"}',
@@ -125,8 +125,8 @@ def test_feynman_question_must_name_two_terms_from_one_fragment():
         {"simple": "заметка", "term": "note", "meaning": "опора"},
     ])
 
-    assert "chunking" in service.create_feynman_question()
-    assert client.calls == 2
+    assert service.create_feynman_question() == "Explain memory."
+    assert client.calls == 1
 
 
 class ScriptedClient:
@@ -156,6 +156,15 @@ def four_cues() -> str:
         + CUE.format(s="заметка", t="note", m="внешняя опора")
         + "]}"
     )
+
+
+def test_extract_cues_adds_batch_perspective_to_generation_prompt():
+    client = ScriptedClient(four_cues())
+    service = CognitiveService(client)
+
+    service.extract_cues("Source passage", perspective="causal mechanisms")
+
+    assert "causal mechanisms" in client.messages[0][0]["content"]
 
 
 def test_extract_cues_retries_malformed_json():

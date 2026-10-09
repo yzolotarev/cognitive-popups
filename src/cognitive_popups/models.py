@@ -113,6 +113,32 @@ class PredictionCheck:
     prompt_hash: str = ""
     model: str = ""
 
+    # Appended to preserve positional construction and loading older sessions.
+    one_delta: str = ""
+    #: The answer as shown (2026-10-07 contract: what holds, where the thought
+    #: came from, where to look); `ask` waits behind a click. Not persisted:
+    #: the raw model answer stays in the observation log.
+    display: str = ""
+    ask: str = ""
+    #: The four nodes shown instead of an explanation (2026-10-07 nodes mode),
+    #: and the mark shown with them ("ok" / "partly" / "wrong" or "" when withheld).
+    nodes: list = field(default_factory=list)
+    mark: str = ""
+
+    @property
+    def text(self) -> str:
+        """Primary reading text; verdict and evidence remain secondary metadata."""
+        return self.display or self.one_delta or self.mismatch or {
+            "confirmed": "По тексту поправка не нужна.",
+            "not_supported": "В тексте нет опоры для этой гипотезы.",
+            "unclear": "По тексту пока нельзя установить эту связь.",
+        }.get(self.status, "По тексту нужна поправка; конкретное расхождение не указано.")
+
+    @property
+    def secondary_metadata(self) -> dict[str, str]:
+        return {"status": self.status, "evidence": self.evidence,
+                "mismatch": self.mismatch, "subject_note": self.subject_note}
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 

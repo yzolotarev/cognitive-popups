@@ -1,5 +1,7 @@
 # cognitive-popups
 
+![cognitive-popups](assets/cover.jpg)
+
 A small Linux desktop assistant for turning selected text into compact cognitive
 prompts. It runs as a Hyprland-friendly GTK utility layer and keeps the current
 reading buffer separate from the GUI.

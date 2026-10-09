@@ -1,0 +1,14 @@
+[Unit]
+Description=Cognitive Popups: grow the reader's universe (verbatim thoughts, concept graph)
+After=gemini-web2api.service
+Wants=gemini-web2api.service
+
+[Service]
+Type=oneshot
+# Rendered by scripts/install-user.sh; rerun it after moving the checkout.
+WorkingDirectory=@COGNITIVE_PROJECT@
+Environment="PYTHONPATH=@COGNITIVE_PROJECT@/src"
+Environment="COGNITIVE_STATE_DIR=@COGNITIVE_PROJECT@/var"
+# Background priority: a person waiting on a hotkey always reaches the model first.
+ExecStart=/usr/bin/python3 -m cognitive_popups.universe sync --limit 80 --slack
+Nice=10

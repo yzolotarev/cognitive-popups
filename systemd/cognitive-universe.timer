@@ -1,0 +1,10 @@
+[Unit]
+Description=Cognitive Popups: grow the reader's universe every 5 minutes, only in free attention
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -11,6 +11,7 @@ REQUEST=""
 
 case "$ACTION" in
   seed)    SIGNAL=USR1 ;;
+  seed-batch) SIGNAL=WINCH; REQUEST=seed-batch ;;
   menu)    SIGNAL=WINCH ;;
   feynman)   SIGNAL=USR2 ;;
   prediction) SIGNAL=HUP ;;
@@ -23,6 +24,7 @@ case "$ACTION" in
   reframe) SIGNAL=WINCH; REQUEST=reframe ;;
   # Прямой вызов сразу генерирует; отдельная команда даёт свой вопрос к ракурсу.
   reframe-ask) SIGNAL=WINCH; REQUEST=reframe-ask ;;
+  focus)   SIGNAL=WINCH; REQUEST=focus ;;
   keys)    SIGNAL=WINCH; REQUEST=keys ;;
   intent)  SIGNAL=WINCH; REQUEST=intent ;;
   example) SIGNAL=WINCH; REQUEST=example ;;
@@ -31,7 +33,7 @@ case "$ACTION" in
   example-ask) SIGNAL=WINCH; REQUEST=example-ask ;;
 
   stop)    SIGNAL=TERM ;;
-  *) echo "usage: $0 {seed|menu|feynman|prediction|note|clarify|summary|reframe|reframe-ask|keys|intent|example|example-ask|stop}" >&2; exit 2 ;;
+  *) echo "usage: $0 {seed|seed-batch|menu|feynman|prediction|note|clarify|summary|reframe|reframe-ask|keys|intent|example|example-ask|focus|stop}" >&2; exit 2 ;;
 esac
 
 if [[ ! -r "$PID_FILE" ]]; then

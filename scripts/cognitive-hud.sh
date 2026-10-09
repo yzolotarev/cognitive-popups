@@ -24,7 +24,13 @@ running() {
 }
 
 case "$COMMAND" in
-  toggle|--toggle|start|--start|show|hide) ;;
+  toggle|--toggle|start|--start|show|hide)
+    # Frozen panel (see FROZEN_FLAG in hud.py): the hotkey opens nothing.
+    if [[ -e "$STATE_DIR/hud.frozen" ]]; then
+      echo "cognitive-hud is frozen: remove $STATE_DIR/hud.frozen to bring it back" >&2
+      exit 0
+    fi
+    ;;
   stop|--stop|quit|--quit) ;;
   *) echo "usage: $0 [toggle|--stop]" >&2; exit 2 ;;
 esac

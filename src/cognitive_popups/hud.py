@@ -546,6 +546,16 @@ def _another_panel_runs() -> bool:
     return True
 
 
+#: Present in the state directory = the side panel is frozen (2026-10-07): it
+#: stays a hotkey catalogue until the redesign, so it does not start at all.
+FROZEN_FLAG = "hud.frozen"
+
+
+def panel_frozen() -> bool:
+    root = os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-popups"
+    return (Path(root).expanduser() / FROZEN_FLAG).exists()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Cognitive Popups side panel")
     parser.add_argument("--socket", default=None, help="daemon socket path (default: the state directory)")
@@ -555,6 +565,10 @@ def main(argv: list[str] | None = None) -> int:
     # The panel is placed by its own geometry, which Wayland does not allow; the
     # popups and the daemon already run on XWayland for the same reason.
     os.environ.setdefault("GDK_BACKEND", "x11")
+
+    if panel_frozen():
+        print("cognitive-hud is frozen (hud.frozen in the state directory)", file=sys.stderr)
+        return 0
 
     if _another_panel_runs():
         print("cognitive-hud is already running", file=sys.stderr)

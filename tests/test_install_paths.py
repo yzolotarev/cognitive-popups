@@ -13,6 +13,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 UNITS = ("cognitive-popups.service", "cognitive-hud.service")
+#: The universe runs on a timer: the timer is enabled, its oneshot service is
+#: rendered next to it and started only by the timer.
+UNIVERSE_UNITS = ("cognitive-universe.timer", "cognitive-universe.service")
 
 
 @pytest.fixture
@@ -46,7 +49,7 @@ def checkout(base, name):
     for name in ("install-user.sh", "uninstall-user.sh", "cognitive-hud.sh",
                  "cognitive-tasks.sh"):
         shutil.copy2(ROOT / "scripts" / name, project / "scripts" / name)
-    for name in UNITS:
+    for name in UNITS + UNIVERSE_UNITS:
         shutil.copy2(ROOT / "systemd" / name, project / "systemd" / name)
     return project
 
@@ -91,16 +94,22 @@ def test_install_and_uninstall(sandbox, name, xdg):
         module = "cognitive_popups.hud" if unit == "cognitive-hud.service" else "cognitive_popups"
         assert f"ExecStart=/usr/bin/python3 -m {module}\n" in rendered
         assert (project / "systemd" / unit).read_text() == templates[unit]
+    universe = (unit_dir / "cognitive-universe.service").read_text()
+    assert f"WorkingDirectory={project}\n" in universe
+    assert f'Environment="COGNITIVE_STATE_DIR={project}/var"' in universe
+    assert "ExecStart=/usr/bin/python3 -m cognitive_popups.universe sync" in universe
+    assert (unit_dir / "cognitive-universe.timer").exists()
     assert [call["argv"][1:] for call in calls(env)] == [
-        ["--user", "daemon-reload"], ["--user", "enable", "--now", *UNITS],
+        ["--user", "daemon-reload"],
+        ["--user", "enable", "--now", *UNITS, "cognitive-universe.timer"],
     ]
     result = run_script(project, "uninstall-user.sh", env)
     assert result.returncode == 0, result.stderr
-    assert all(not (unit_dir / unit).exists() for unit in UNITS)
+    assert all(not (unit_dir / unit).exists() for unit in UNITS + UNIVERSE_UNITS)
     assert unrelated.read_text() == "keep me"
     assert [call["argv"][1:] for call in calls(env)][2:] == [
-        ["--user", "disable", "--now", UNITS[0]],
-        ["--user", "disable", "--now", UNITS[1]], ["--user", "daemon-reload"],
+        *(["--user", "disable", "--now", unit] for unit in UNITS + UNIVERSE_UNITS),
+        ["--user", "daemon-reload"],
     ]
 
 
@@ -159,7 +168,7 @@ def test_rendered_units_pass_systemd_parser(sandbox):
     # Satisfy the dependency locally; verify does not start any unit.
     (unit_dir / "gemini-web2api.service").write_text("[Service]\nExecStart=/usr/bin/true\n")
     result = subprocess.run(
-        [analyzer, "--user", "verify", *(str(unit_dir / unit) for unit in UNITS)],
+        [analyzer, "--user", "verify", *(str(unit_dir / unit) for unit in UNITS + UNIVERSE_UNITS)],
         env=env, capture_output=True, text=True, timeout=15,
     )
     assert result.returncode == 0, result.stdout + result.stderr
@@ -215,12 +224,12 @@ def test_hyprland_checkout_selection_and_quoting(sandbox, mode):
                             env=env, capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
     bindings = dict(line.split("\t", 1) for line in result.stdout.splitlines())
-    assert len(bindings) == 15
+    # Ctrl+Alt+G, Alt+R and Alt+Shift+R were retired or frozen on 2026-10-07.
+    assert len(bindings) == 14
     for key, script, arguments in (
         ("ALT + W", "cognitive-popups-signal.sh", ["seed"]),
+        ("CTRL + ALT + W", "cognitive-popups-signal.sh", ["seed-batch"]),
         ("ALT + F", "cognitive-popups-signal.sh", ["feynman"]),
-        ("ALT + R", "cognitive-popups-signal.sh", ["reframe"]),
-        ("ALT + SHIFT + R", "cognitive-popups-signal.sh", ["reframe-ask"]),
         ("ALT + E", "cognitive-popups-signal.sh", ["note"]),
         ("ALT + C", "cognitive-popups-signal.sh", ["clarify"]),
         ("CTRL + Q", "cognitive-popups-signal.sh", ["summary"]),

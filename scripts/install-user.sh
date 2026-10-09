@@ -8,10 +8,12 @@ if [[ "$ROOT" == *[!a-zA-Z0-9_./\ -]* || "$ROOT" == *" " ]]; then
   echo "Unsupported checkout path: use ASCII letters, digits, spaces, _, ., / or -; no trailing space." >&2
   exit 1
 fi
-UNITS=("cognitive-popups.service" "cognitive-hud.service")
+UNITS=("cognitive-popups.service" "cognitive-hud.service" "cognitive-universe.timer")
+# Rendered but not enabled on its own: the timer starts it.
+HELPERS=("cognitive-universe.service")
 
 mkdir -p "$UNIT_DIR"
-for unit in "${UNITS[@]}"; do
+for unit in "${UNITS[@]}" "${HELPERS[@]}"; do
   sed "s|@COGNITIVE_PROJECT@|$ROOT|g" "$ROOT/systemd/$unit" > "$UNIT_DIR/$unit"
 done
 systemctl --user daemon-reload

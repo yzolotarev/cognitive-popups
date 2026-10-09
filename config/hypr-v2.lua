@@ -22,12 +22,34 @@ local hud = shell_quote(project .. "/scripts/cognitive-hud.sh")
 
 -- Основное действие: четыре слова из выделенного текста.
 hl.bind("ALT + W", hl.dsp.exec_cmd(signal .. " seed"))
+-- Три ракурса 4 слов с паузой на mindmap между окнами и итоговым тезисом.
+hl.bind("CTRL + ALT + W", hl.dsp.exec_cmd(signal .. " seed-batch"))
 -- Проверка понимания методом Фейнмана.
 hl.bind("ALT + F", hl.dsp.exec_cmd(signal .. " feynman"))
+-- Explicit 15-minute block; Ctrl+Alt+G was checked against live/config bindings.
+-- Ctrl+Alt+G retired 2026-10-07: the 15-minute step now lives on Alt+I.
+-- Input windows keep the keyboard until closed: with follow_mouse a mouse twitch
+-- past the edge sent typed letters to the app underneath (2026-10-07).
+hl.window_rule({
+    name = "cognitive-input-keeps-focus",
+    match = { class = "^cognitive-input$" },
+    float = true,
+    pin = true,
+    stay_focused = true,
+})
+hl.window_rule({
+    name = "cognitive-focus-timer",
+    match = { class = "cognitive-focus-timer" },
+    float = true,
+    -- GTK already refuses keyboard focus; no_focus in Hyprland would also block
+    -- the hover that opens the whole step text.
+    no_focus = false,
+    no_anim = true,
+})
 -- Добровольно посмотреть на ту же связь под другим углом: сразу ответ.
-hl.bind("ALT + R", hl.dsp.exec_cmd(signal .. " reframe"))
+-- Alt+R frozen 2026-10-07 ("другой ракурс"); the daemon ignores the request.
 -- То же, но со своим вопросом к ракурсу.
-hl.bind("ALT + SHIFT + R", hl.dsp.exec_cmd(signal .. " reframe-ask"))
+-- Alt+Shift+R frozen 2026-10-07 together with Alt+R.
 -- Заметка о своей ошибке в чтении; якорь — текущее выделение.
 hl.bind("ALT + E", hl.dsp.exec_cmd(signal .. " note"))
 -- Спросить или объяснить: слова из буфера, которые не понял, — вручную; вопрос —
@@ -51,8 +73,25 @@ hl.bind("ALT + Y", hl.dsp.exec_cmd(tasks .. " --practice"))
 hl.bind("ALT + K", hl.dsp.exec_cmd(signal .. " keys"))
 -- Боковая панель: те же действия мышью и тихая подсветка готовой задачи.
 -- Первое нажатие запускает панель, следующие показывают и скрывают её.
+-- Alt+H frozen 2026-10-07: the panel does not start while var/hud.frozen exists.
 hl.bind("ALT + H", hl.dsp.exec_cmd(hud))
 
+
+-- Custom shadow is rendered by the popup helper, never by a global setting.
+-- All helper windows explicitly use cognitive-popup; the unmanaged companion
+-- uses cognitive-shadow (also exclude decorations if it is ever managed).
+hl.window_rule({
+    name = "cognitive-popup-shadow",
+    match = { class = "^(cognitive-popup|cognitive-shadow)$" },
+    float = true,
+    no_anim = true,
+    no_shadow = true,
+    -- HyprGlass replaces native blur with its own rectangular decoration.
+    tag = "+hyprglass_disabled",
+    no_blur = true,
+    opaque = false,
+    border_size = 0,
+})
 
 hl.window_rule({
     name = "cognitive-ask",

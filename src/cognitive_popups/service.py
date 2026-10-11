@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 import time
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from contextvars import ContextVar
 from functools import wraps
 from inspect import signature
@@ -187,6 +187,26 @@ class UniverseAnswer:
     gap: str = ""
     nudge: str = ""
     used: str = ""
+    prompt_hash: str = ""
+    model: str = ""
+
+
+#: How many of the reader's own guesses and thoughts a ladder rung may lean on.
+LADDER_KNOWN = 8
+
+
+@dataclass
+class LadderStep:
+    """One rung toward a far place (Alt+L): from what holds, one concept on.
+
+    An experiment (HYPOTHESES.md item 7), not a verdict about the reader. `known`
+    is what was sent as their map, kept so the rung can be judged against it.
+    """
+
+    text: str
+    start: str = ""
+    step: str = ""
+    known: list = field(default_factory=list)
     prompt_hash: str = ""
     model: str = ""
 
@@ -593,8 +613,12 @@ class CognitiveService:
         return material
 
     def check_prediction_nodes(self, hypothesis: str, material, *, history: dict | None = None,
-                               mine: list[str] | None = None) -> PredictionCheck:
-        """Mark the reader's guess and give four nodes (nodes.py); nothing is explained."""
+                               mine: list[str] | None = None, insist: bool = False) -> PredictionCheck:
+        """Mark the reader's guess and give four nodes (nodes.py); nothing is explained.
+
+        A guess nothing could refute gets "bolder" instead of a mark, once: with
+        `insist` (the reader resent after "bolder") it is marked as it is.
+        """
         statement = hypothesis.strip()
         if not statement:
             raise ValueError("hypothesis must not be empty")
@@ -614,18 +638,21 @@ class CognitiveService:
             [{"role": "system", "content": system_prompt}, {"role": "user", "content": "\n\n".join(blocks)}],
             max_tokens=400))
         shown = nodes.assemble(data, statement, ground, history)
+        bolder = shown["vague"] and not insist
+        if bolder:
+            shown = dict(shown, mark="", words=[])
         sources = [_normalise_grounding(text) for text in material.passages()] or [_normalise_grounding(ground)]
         quote = str(data.get("gap_quote") or "").strip()
         check = PredictionCheck(
             buffer_fragment_ids=[f.id for f in self.session.fragments
                                  if any(_normalise_grounding(f.source_text) in s for s in sources)],
             hypothesis=statement,
-            status=nodes.STATUS_OF_MARK.get(shown["raw_mark"], "unclear"),
+            status=nodes.VAGUE_STATUS if bolder else nodes.STATUS_OF_MARK.get(shown["raw_mark"], "unclear"),
             evidence=quote if quote and any(_normalise_grounding(quote) in s for s in sources) else "",
             one_delta=" · ".join(shown["words"]),
             prompt_hash=prompt_hash(system_prompt),
             model=self._model_name(),
-            display=nodes.describe(shown["mark"], shown["words"]),
+            display=nodes.BOLDER if bolder else nodes.describe(shown["mark"], shown["words"]),
             nodes=shown["words"],
             mark=shown["mark"],
         )
@@ -826,6 +853,34 @@ class CognitiveService:
             prompt_hash=prompt_hash(system_prompt),
             model=self._model_name(),
         )
+
+    @observed_operation("ladder")
+    def ladder_step(self, target: str, around: str = "", known: list[str] | None = None) -> LadderStep:
+        """One rung toward a far place (Alt+L, experiment 2026-10-09, HYPOTHESES.md item 7).
+
+        Only on request. The rung starts from what the reader's own guesses show
+        holds and moves one concept toward the target, along the text.
+        """
+        goal = target.strip()
+        if not goal:
+            raise ValueError("target must not be empty")
+        system_prompt = self._prompt("ladder")
+        if known and any(line.startswith(("[читал]", "[знаю]")) for line in known):
+            system_prompt += "\nПометка [читал] не означает знание: не опирайся на неё как на освоенное. [знаю] это явная отметка читателя, а не вердикт модели."
+        blocks = [f"<TARGET>\n{goal[:UNIVERSE_PASSAGE_CHARS]}\n</TARGET>"]
+        if around.strip():
+            blocks.append(f"<AROUND>\n{around.strip()[:UNIVERSE_PASSAGE_CHARS]}\n</AROUND>")
+        if known:
+            blocks.append("<KNOWN>\n" + "\n".join(f"- {line[:240]}" for line in known[:LADDER_KNOWN]) + "\n</KNOWN>")
+        data = parse_json_object(self.client.complete(
+            [{"role": "system", "content": system_prompt}, {"role": "user", "content": "\n\n".join(blocks)}],
+            max_tokens=500))
+        text = str(data.get("text") or "").strip()
+        if not text:
+            raise Web2APIError("empty ladder step")
+        return LadderStep(text=text, start=str(data.get("from") or "").strip(),
+                          step=str(data.get("to") or "").strip(), known=list(known or []),
+                          prompt_hash=prompt_hash(system_prompt), model=self._model_name())
 
     @observed_operation("reframe")
     def reframe(self, material: str, focus: str = "", current_frame: str = "") -> Reframe:

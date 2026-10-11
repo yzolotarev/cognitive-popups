@@ -61,3 +61,25 @@ def test_the_switch_is_a_file_and_history_is_kept(tmp_path):
     nodes.remember(tmp_path, ["a", "b", "c"])
     nodes.remember(tmp_path, ["d", "e", "f"])
     assert nodes.recent_words(nodes.load_history(tmp_path), 1) == ["d", "e", "f"]
+
+
+def test_a_vague_guess_stands_only_when_nothing_was_refuted():
+    assert nodes.assemble(answer(vague=True, mark="ok"), HYPOTHESIS, SOURCE, {})["vague"]
+    refuted = nodes.assemble(answer(vague=True, mark="wrong"), HYPOTHESIS, SOURCE, {})
+    assert not refuted["vague"] and refuted["mark"] == "wrong"     # the error is worth more than "bolder"
+    question = nodes.assemble(answer(mark="none"), HYPOTHESIS, SOURCE, {})
+    assert question["mark"] == "" and question["raw_mark"] == "none"   # a question is not marked wrong
+
+
+def test_vague_guess_gets_bolder_once_and_is_marked_on_insist(tmp_path):
+    class Client:
+        def complete(self, messages, **kwargs):
+            return json.dumps(answer(vague=True, mark="ok"), ensure_ascii=False)
+    service = CognitiveService(Client())
+    pack = context.pack(SOURCE, root=tmp_path, now=1)
+    first = service.check_prediction_nodes("функция имеет определённые параметры", pack)
+    assert first.status == nodes.VAGUE_STATUS and first.display == nodes.BOLDER
+    assert first.mark == "" and first.nodes == []
+    second = service.check_prediction_nodes("функция имеет определённые параметры", pack, insist=True)
+    assert second.status == "confirmed" and second.mark == "ok"
+    assert [c.status for c in service.session.prediction_checks] == [nodes.VAGUE_STATUS, "confirmed"]  # both kept

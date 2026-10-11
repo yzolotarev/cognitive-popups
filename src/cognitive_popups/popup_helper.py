@@ -130,6 +130,7 @@ _PRESENTATION = None
 def _emit(event, **fields):
     if _PRESENTATION is not None:
         return _PRESENTATION.emit(event, **fields)
+    fields.pop('silent', None)  # presentation-only option, not an EventLog column
     return _CHAIN.emit(event, **fields)
 
 
@@ -627,6 +628,8 @@ def show_notice_popup(text, px=None, py=None, hold_ms=1200, fade_ms=300):
         return 1
     window = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
     window.set_wmclass('cognitive-flash', 'cognitive-flash')
+    from cognitive_popups.sand_surface import configure as configure_sand_surface
+    configure_sand_surface(window, Gtk, Gdk, card=True)
     window.set_title('notice')
     window.set_decorated(False)
     window.set_resizable(False)
@@ -678,16 +681,20 @@ def take_keyboard_focus():
     try:
         clients = json.loads(subprocess.run(['hyprctl', 'clients', '-j'], capture_output=True,
                                             text=True, timeout=1).stdout or '[]')
-        mine = [c for c in clients if c.get('pid') == os.getpid()]
+        mine = [c for c in clients if c.get('pid') == os.getpid() and c.get('mapped', True)
+                and c.get('class') not in ('cognitive-focus-halo', 'cognitive-shadow')]
         if mine:
-            subprocess.run(['hyprctl', 'dispatch', 'focuswindow', 'address:' + mine[0]['address']],
-                           capture_output=True, timeout=1)
+            address = 'address:' + mine[-1]['address']
+            modern = subprocess.run(['hyprctl', 'dispatch', 'hl.dsp.focus({ window = ' + json.dumps(address) + ' })'],
+                                    capture_output=True, timeout=1)
+            if modern.returncode:
+                subprocess.run(['hyprctl', 'dispatch', 'focuswindow', address], capture_output=True, timeout=1)
     except (OSError, subprocess.SubprocessError, ValueError):
         pass
 
 
 def show_input_popup(prompt_text, px=None, py=None, initial='', preserve_raw=False,
-                     quote='', quote_hint=''):
+                     quote='', quote_hint='', pin_text='', step_draft=''):
     try:
         import gi
         gi.require_version('Gtk', '3.0')
@@ -701,6 +708,8 @@ def show_input_popup(prompt_text, px=None, py=None, initial='', preserve_raw=Fal
         def __init__(self, prompt, px=None, py=None):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
             self.set_wmclass("cognitive-input", "cognitive-input")
+            from cognitive_popups.sand_surface import configure as configure_sand_surface
+            configure_sand_surface(self, Gtk, Gdk, card=True)
             self.px = px
             self.py = py
             self.set_decorated(False)
@@ -763,6 +772,16 @@ def show_input_popup(prompt_text, px=None, py=None, initial='', preserve_raw=Fal
                 self.entry.set_text(initial)
             box.pack_start(self.entry, False, False, 0)
 
+            self.pin = None
+            if pin_text:
+                self.pin = Gtk.ToggleButton(label='Закрепить выделение как далёкое ребро')
+                self.pin.set_tooltip_text(pin_text)
+                box.pack_start(self.pin, False, False, 0)
+            if step_draft:
+                draft = Gtk.Button(label='Взять последнюю ступеньку')
+                draft.connect('clicked', lambda *_: self.entry.set_text(step_draft))
+                box.pack_start(draft, False, False, 0)
+
             self.set_size_request(480, -1)
             self.show_all()
             GLib.idle_add(self._finalize_open)
@@ -810,7 +829,8 @@ def show_input_popup(prompt_text, px=None, py=None, initial='', preserve_raw=Fal
             _submitted(raw, 'input')
             text = raw if preserve_raw else raw.strip()
             _emit('submit', window='input', detail=f'{len(text)} chars')
-            sys.stdout.write(text)
+            sys.stdout.write(json.dumps({'text': text, 'pin_edge': bool(self.pin and self.pin.get_active())}, ensure_ascii=False)
+                             if pin_text or step_draft else text)
             sys.stdout.flush()
             Gtk.main_quit()
             return True
@@ -851,6 +871,8 @@ def show_objects_popup(items, px=None, py=None):
         def __init__(self, items, px=None, py=None):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
             self.set_wmclass("cognitive-popup", "cognitive-popup")
+            from cognitive_popups.sand_surface import configure as configure_sand_surface
+            configure_sand_surface(self, Gtk, Gdk, card=True)
             self.items = items
             self.px = px
             self.py = py
@@ -972,6 +994,8 @@ def show_keys_popup(rows, px=None, py=None, title='Keys'):
         def __init__(self, rows, px=None, py=None):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
             self.set_wmclass("cognitive-popup", "cognitive-popup")
+            from cognitive_popups.sand_surface import configure as configure_sand_surface
+            configure_sand_surface(self, Gtk, Gdk, card=True)
             self.rows = list(rows)
             self.px = px
             self.py = py
@@ -1108,6 +1132,8 @@ def show_menu_popup(items, px=None, py=None, title='Menu', focusable=False):
         def __init__(self):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
             self.set_wmclass("cognitive-popup", "cognitive-popup")
+            from cognitive_popups.sand_surface import configure as configure_sand_surface
+            configure_sand_surface(self, Gtk, Gdk, card=True)
             self.set_decorated(False)
             self.set_resizable(False)
             self.set_skip_taskbar_hint(True)
@@ -1333,7 +1359,11 @@ def _orbital_placement_snapshot(window):
         return None
 
 
-def show_orbital_popup(items, px=None, py=None, title='', reduced_motion=None):
+def show_orbital_popup(items, px=None, py=None, title='', reduced_motion=None, actions=None, origin=''):
+    from cognitive_popups.sand_surface import enabled
+    if enabled():
+        from cognitive_popups.sand_cues import show
+        return show(items, px, py, title, reduced_motion, actions, origin)
     rows = orbital_rows(items)
     if len(rows) != 4:
         return show_dual_popup(items, px, py, title)
@@ -1367,6 +1397,8 @@ def show_orbital_popup(items, px=None, py=None, title='', reduced_motion=None):
         def __init__(self):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
             self.set_wmclass('cognitive-popup', 'cognitive-popup')
+            from cognitive_popups.sand_surface import configure as configure_sand_surface
+            configure_sand_surface(self, Gtk, Gdk, card=True)
             self.set_title(title or 'Orbital disclosure')
             self.set_decorated(False)
             self.set_resizable(False)
@@ -1428,6 +1460,24 @@ def show_orbital_popup(items, px=None, py=None, title='', reduced_motion=None):
             fixed = Gtk.Fixed()
             self.fixed = fixed
             overlay.add_overlay(fixed)
+            self.action_runs = ()
+            if actions:
+                action = actions[0]
+                button = Gtk.Button(label=str(action.get('label') or 'Ступенька отсюда'))
+                button.set_size_request(220, 32)
+                bx, by = max(0, bounds.width // 2 - 110), max(0, bounds.height - 36)
+                fixed.put(button, bx, by)
+                def choose(*_):
+                    _emit('click', window='dual', item_label=str(action.get('action', '')))
+                    sys.stdout.write(json.dumps({'action': action.get('action', '')}))
+                    sys.stdout.flush()
+                    self.dismiss('action')
+                button.connect('clicked', choose)
+                self.action_runs = ((bx, by, 220, 32),)
+            elif origin:
+                source = Gtk.Label(label=origin, xalign=.5)
+                source.set_size_request(bounds.width, 24)
+                fixed.put(source, 0, max(0, bounds.height - 28))
             self.visual_geometry = geometry
             self.labels = []
             for index, cue in enumerate(geometry.cues):
@@ -1677,7 +1727,7 @@ def show_orbital_popup(items, px=None, py=None, title='', reduced_motion=None):
             t = time.monotonic()
             if runs is None:
                 runs = input_runs(geometry, state.active, self.membrane)
-            apply_input_regions(self.get_window(), runs + extra, bounds.width, bounds.height)
+            apply_input_regions(self.get_window(), runs + extra + self.action_runs, bounds.width, bounds.height)
             if self.debug_enabled:
                 self.perf['shape_rebuilds'] += 1
             self.debug('shape', cost_ms=round((time.monotonic()-t)*1000, 3))
@@ -1898,6 +1948,10 @@ def orbital_demo_payload():
 
 
 def show_dual_popup(items, px=None, py=None, title=''):
+    from cognitive_popups.sand_surface import enabled
+    if enabled():
+        from cognitive_popups.sand_cues import show
+        return show(items, px, py, title)
     try:
         import gi
         gi.require_version('Gtk', '3.0')
@@ -1925,6 +1979,8 @@ def show_dual_popup(items, px=None, py=None, title=''):
         def __init__(self):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
             self.set_wmclass("cognitive-popup", "cognitive-popup")
+            from cognitive_popups.sand_surface import configure as configure_sand_surface
+            configure_sand_surface(self, Gtk, Gdk, card=True)
             self.active: set[int] = set()
             self.revealed: set[int] = set()
             self._opened = time.monotonic()
@@ -2129,6 +2185,8 @@ def show_text_popup(text, px=None, py=None, title='Result', expanded=False, note
         def __init__(self, body, px=None, py=None):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
             self.set_wmclass("cognitive-popup", "cognitive-popup")
+            from cognitive_popups.sand_surface import configure as configure_sand_surface
+            configure_sand_surface(self, Gtk, Gdk, card=True)
             self.body = body
             self.px = px
             self.py = py
@@ -2361,6 +2419,8 @@ def show_note_popup(anchor='', px=None, py=None, *, title='Error note', prompt='
         def __init__(self, anchor, px=None, py=None):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
             self.set_wmclass("cognitive-popup", "cognitive-popup")
+            from cognitive_popups.sand_surface import configure as configure_sand_surface
+            configure_sand_surface(self, Gtk, Gdk, card=True)
             self.anchor = anchor
             self.px = px
             self.py = py
@@ -2495,6 +2555,8 @@ def show_intent_popup(intent=None, history=None, error='', px=None, py=None):
         def __init__(self):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
             self.set_wmclass("cognitive-popup", "cognitive-popup")
+            from cognitive_popups.sand_surface import configure as configure_sand_surface
+            configure_sand_surface(self, Gtk, Gdk, card=True)
             self.set_decorated(False)
             self.set_resizable(False)
             self.set_skip_taskbar_hint(True)
@@ -2758,6 +2820,8 @@ def show_goal_popup(material='', origin='', directions=None, notice='', error=''
         def __init__(self):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
             self.set_wmclass("cognitive-popup", "cognitive-popup")
+            from cognitive_popups.sand_surface import configure as configure_sand_surface
+            configure_sand_surface(self, Gtk, Gdk, card=True)
             self.set_decorated(False)
             self.set_resizable(False)
             self.set_skip_taskbar_hint(True)
@@ -3010,6 +3074,8 @@ def show_goal_result_popup(text='', direction='', notice='', error='', retryable
         def __init__(self):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
             self.set_wmclass("cognitive-popup", "cognitive-popup")
+            from cognitive_popups.sand_surface import configure as configure_sand_surface
+            configure_sand_surface(self, Gtk, Gdk, card=True)
             self.set_decorated(False)
             self.set_resizable(False)
             self.set_skip_taskbar_hint(True)
@@ -3169,6 +3235,8 @@ def show_example_popup(material='', query='', intent_text='', has_intent=False,
         def __init__(self):
             super().__init__(type=Gtk.WindowType.TOPLEVEL)
             self.set_wmclass("cognitive-popup", "cognitive-popup")
+            from cognitive_popups.sand_surface import configure as configure_sand_surface
+            configure_sand_surface(self, Gtk, Gdk, card=True)
             self.set_decorated(False)
             self.set_resizable(False)
             self.set_skip_taskbar_hint(True)
@@ -3307,6 +3375,13 @@ def show_example_popup(material='', query='', intent_text='', has_intent=False,
 
 
 def _dispatch(payload, mode):
+    if mode == 'sand' and payload.get('verb') != 'settle':
+        # Alt+W waiting: the same window later becomes the four words.
+        from .sand_cues import show_wait
+        return show_wait(payload)
+    if mode in ('sand', 'cutscene'):
+        from .sand_fx import show_effect, show_scene
+        return show_effect(payload) if mode == 'sand' else show_scene(payload)
     if mode == 'intent':
         intent = payload.get('intent')
         history = payload.get('history', [])
@@ -3377,6 +3452,8 @@ def _dispatch(payload, mode):
             preserve_raw=payload.get('preserve_raw') is True,
             quote=str(payload.get('quote', '') or ''),
             quote_hint=str(payload.get('quote_hint', '') or ''),
+            pin_text=str(payload.get('pin_text', '') or ''),
+            step_draft=str(payload.get('step_draft', '') or ''),
         )
 
     if mode == 'menu':
@@ -3417,7 +3494,9 @@ def _dispatch(payload, mode):
         if isinstance(items, list):
             return show_orbital_popup(items, payload.get('x'), payload.get('y'),
                                                   str(payload.get('title', '')),
-                                                  reduced_motion=payload.get('reduced_motion'))
+                                                  reduced_motion=payload.get('reduced_motion'),
+                                                  **({'actions': payload.get('actions'), 'origin': payload.get('origin', '')}
+                                                     if payload.get('actions') or payload.get('origin') else {}))
         return 0
 
     if mode == 'text':
@@ -3466,7 +3545,8 @@ def main():
     # While this window lives, background model work stands aside (slack.py).
     open_marker = slack.mark_popup_open()
     _emit('popup_start', window=mode)
-    halo = None if mode == 'notice' or (mode == 'dual' and len(orbital_rows(payload.get('items', []))) == 4) \
+    from cognitive_popups.sand_surface import enabled as sand_enabled
+    halo = None if sand_enabled() or mode == 'notice' or (mode == 'dual' and len(orbital_rows(payload.get('items', []))) == 4) \
         else _focus_halo(payload)
     try:
         return _dispatch(payload, mode)

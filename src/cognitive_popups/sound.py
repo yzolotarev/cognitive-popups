@@ -49,9 +49,39 @@ EVENT_ROLES = {
     # study session closed. Never a model verdict, never an ordinary close.
     "step_done": RESOLVE,
     "session_close": RESOLVE,
-    # A saved note answers with a quiet click, not with cheers (owner, 07.10).
-    "note_saved": REVEAL,
 }
+
+SAND_EVENTS = {"orbital_open": "land", "note_saved": "settle"}
+SAND_SOUNDS_ENABLED = False  # v2: separate owner decision is required.
+
+
+def _play_sand_asset(stem):
+    if not SAND_SOUNDS_ENABLED:
+        return None
+    if not (_state_root() / "sand.enabled").exists() or os.environ.get("COGNITIVE_SOUND", "").lower() in DISABLED:
+        return
+    root = Path(os.environ.get("COGNITIVE_SAND_SOUND_DIR") or str(_state_root() / "sounds-sand"))
+    path = root / (stem + ".wav")
+    if not path.is_file():
+        return
+    command = _player_command(path)
+    if command:
+        return subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def play_sand_note(midi, soft=False):
+    try:
+        return _play_sand_asset(f"pluck_{'soft_' if soft else ''}{int(midi)}")
+    except (OSError, ValueError, TypeError):
+        pass
+
+
+def play_sand_asset(stem):
+    try:
+        return _play_sand_asset(stem)
+    except (OSError, ValueError):
+        return None
 
 
 def sound_path(role: str | None = None) -> Path | None:

@@ -17,8 +17,19 @@ local function shell_quote(value)
     return "'" .. value:gsub("'", "'\\''") .. "'"
 end
 local signal = shell_quote(project .. "/scripts/cognitive-popups-signal.sh")
+local capture_file = io.open(project .. "/config/sand-capture.lua", "r")
+if capture_file then
+    capture_file:close()
+    dofile(project .. "/config/sand-capture.lua")
+end
 local tasks = shell_quote(project .. "/scripts/cognitive-tasks.sh")
 local hud = shell_quote(project .. "/scripts/cognitive-hud.sh")
+local sand_rules = project .. "/config/sand-windows.lua"
+local sand_file = io.open(sand_rules, "r")
+if sand_file then
+    sand_file:close()
+    dofile(sand_rules)
+end
 
 -- Основное действие: четыре слова из выделенного текста.
 hl.bind("ALT + W", hl.dsp.exec_cmd(signal .. " seed"))
@@ -63,6 +74,8 @@ hl.bind("ALT + I", hl.dsp.exec_cmd(signal .. " intent"))
 hl.bind("ALT + G", hl.dsp.exec_cmd(signal .. " example"))
 -- То же, но со своим запросом или с вставкой материала, если выделения нет.
 hl.bind("ALT + SHIFT + G", hl.dsp.exec_cmd(signal .. " example-ask"))
+-- Experiment 2026-10-09 (HYPOTHESES.md item 7): one rung toward the highlighted far place.
+hl.bind("ALT + L", hl.dsp.exec_cmd(signal .. " ladder"))
 -- Сгенерировать тренировочную задачу по тому, что читаешь: меню типов.
 hl.bind("ALT + T", hl.dsp.exec_cmd(tasks))
 -- По своему решению выбрать старый фрагмент и получить новую задачу на применение.

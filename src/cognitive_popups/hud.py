@@ -254,6 +254,16 @@ class HudPanel:
         # deprecated for the multi-backend era, but it is still the only way to
         # name the X11 class, and this window is deliberately an X11 one.
         window.set_wmclass("cognitive-hud", "cognitive-hud")
+        from .sand_surface import configure, enabled
+        configure(window, Gtk, Gdk)
+        if enabled():
+            # Transparent plate, but preserve the factual passive status marks.
+            provider = Gtk.CssProvider()
+            provider.load_from_data(b'.hud-segment { border-bottom: 2px solid rgba(218,189,140,.15); } '
+                b'.hud-seg-on { border-bottom-color: #d6ad79; } '
+                b'.hud-seg-working { border-bottom-color: rgba(218,189,140,.5); } '
+                b'button.hud-ready, button.hud-on { border: 1px solid #d6ad79; }')
+            Gtk.StyleContext.add_provider_for_screen(window.get_screen(),provider,Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION+110)
         window.set_decorated(False)
         window.set_resizable(False)
         window.set_skip_taskbar_hint(True)

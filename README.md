@@ -21,6 +21,9 @@ directory can be called anything; rerun the installer if you move it later.
 - extracts four concise cues from the primary selection and shows them as an
   orbital cluster that the reader unfolds one word at a time, so they drill into a
   term instead of being handed all four at once;
+- optionally shows the same cues in one "sand" window instead (off by default):
+  grains lift off the selection and settle into the four words at its corners, in
+  a colour opposite to the page, and each word unfolds its explanation outward;
 - runs a series of three views on the same passage, with a pause for the reader's
   own mind map between them and one closing thesis at the end;
 - runs an explicit 15-minute reading step that the reader starts themselves: one
@@ -151,6 +154,16 @@ Environment variables can override the defaults:
 - `COGNITIVE_EVENT_DB` — where the interaction log is written;
 - `COGNITIVE_NOTES_DB` — where error notes are written;
 - `COGNITIVE_EVENT_DISABLE=1` — turn the interaction log off.
+
+The sand window has its own switches:
+
+```bash
+./scripts/cognitive-sand.sh on       # use the sand window for four cues
+./scripts/cognitive-sand.sh off      # back to the orbital cluster
+./scripts/cognitive-sand.sh grains   # words made of sand only (trial mode)
+./scripts/cognitive-sand.sh text     # sand settles into real text
+./scripts/cognitive-sand.sh mute     # silence the word window
+```
 
 Prompt overrides are stored at
 `~/.config/cognitive-popups/prompts.json`. The helper script can list, edit, or

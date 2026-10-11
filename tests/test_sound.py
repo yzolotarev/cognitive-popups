@@ -40,6 +40,17 @@ def test_sound_absent_is_none(monkeypatch, tmp_path):
     assert sound.sound_path() is None
 
 
+def test_v2_freeze_all_new_sounds_even_when_sand_is_enabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("COGNITIVE_STATE_DIR", str(tmp_path))
+    (tmp_path / "sand.enabled").touch()
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: pytest.fail("frozen sound"))
+    monkeypatch.setattr(sound, "sound_path", lambda *a: pytest.fail("frozen event"))
+    for event in ("note_saved", "orbital_open"):
+        sound.play(event)
+    assert sound.play_sand_note(60) is None
+    assert sound.play_sand_asset("wind") is None
+
+
 def test_lossless_sound_prefers_native_player(monkeypatch):
     monkeypatch.setattr(sound.shutil, "which", lambda name: f"/usr/bin/{name}")
 

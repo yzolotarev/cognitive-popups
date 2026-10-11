@@ -20,9 +20,15 @@ class FocusTimer:
         self.goal_height = 24
         self.state, self.on_expire, self.on_cancel = state, on_expire, on_cancel
         self.goal = state.get("goal", "")
+        self.far_edge = state.get("far_edge", "")
         self.expired, self.closed, self.source = False, False, None
         self.expiration_source = None
         self.window = Gtk.Window(title="15 → 1")
+        from .sand_surface import configure, enabled
+        self.sand_mode = enabled()
+        configure(self.window, Gtk, Gdk)
+        if self.far_edge:
+            self.window.set_tooltip_text("Далёкое ребро: " + self.far_edge)
         self.window.set_wmclass("cognitive-focus-timer", "cognitive-focus-timer")
         self.window.set_accept_focus(False)
         self.window.set_focus_on_map(False)
@@ -52,6 +58,10 @@ class FocusTimer:
         self.goal_label = self._label(Gtk, Pango, self.goal, 10, "#b8b8b8")
         self.labels.put(self.countdown, 10, 37)
         self.labels.put(self.goal_label, 10, 102)
+        if self.far_edge:
+            self.edge_label = self._label(Gtk, Pango, "☆", 11, "#d6ad79")
+            self.edge_label.set_tooltip_text(self.far_edge)
+            self.labels.put(self.edge_label, self.WIDTH - 26, 8)
         self.window.add(self.area)
         self.window.connect("delete-event", self._cancel)
         self.window.connect("map", self._mapped)
@@ -229,10 +239,29 @@ class FocusTimer:
             f'<circle cx="{cx}" cy="{cy}" r="{radius}" fill="none" '
             f'stroke="#3b3b3b" stroke-width="{stroke}"/>{ring}</svg>')
 
+    @staticmethod
+    def _sand_svg(width, height, remaining, duration, expired=False):
+        """A static granular hourglass, refreshed once per second, no opaque plate."""
+        progress = min(1, max(0, remaining / max(1,duration)))
+        cx, cy = min(width-20,30), min(51,height/2)
+        parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">']
+        parts.append(f'<path d="M{cx-12} {cy-22} L{cx+12} {cy-22} L{cx} {cy} L{cx+12} {cy+22} L{cx-12} {cy+22} L{cx} {cy} Z" fill="none" stroke="#d6ad79" opacity=".5"/>')
+        for i in range(100):
+            upper = i < round(progress*100)
+            n = i if upper else i-round(progress*100)
+            layer = n//10
+            x = cx + ((n%10)-4.5)*2*(1-layer/12)
+            y = cy-19+layer*1.6 if upper else cy+19-layer*1.6
+            parts.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r=".65" fill="#d6ad79" data-chamber="{"upper" if upper else "lower"}"/>')
+        if not expired and progress>0:
+            parts.append(f'<circle cx="{cx}" cy="{cy+4}" r=".7" fill="#eee1c7"/>')
+        return ''.join(parts)+'</svg>'
+
     def _refresh(self):
         remaining = max(0, math.ceil(self.state["deadline"] - self.clock()))
         duration = self.state["deadline"] - self.state.get("started_at", self.state["deadline"] - 900)
-        svg = self._background_svg(self.width, self.height, remaining, duration, self.expired)
+        renderer = self._sand_svg if getattr(self,"sand_mode",False) else self._background_svg
+        svg = renderer(self.width, self.height, remaining, duration, self.expired)
         # Use the same system SVG loader as the orbital popup; no Python Cairo.
         loader = self.GdkPixbuf.PixbufLoader.new_with_type("svg")
         loader.write(self.GLib.Bytes.new(svg.encode("utf-8")).get_data())

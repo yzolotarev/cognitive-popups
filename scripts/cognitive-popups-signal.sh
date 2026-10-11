@@ -31,9 +31,11 @@ case "$ACTION" in
   # Прямой вызов остаётся прямым; отдельная команда открывает окно для
   # своего запроса или для вставки материала, когда выделения нет.
   example-ask) SIGNAL=WINCH; REQUEST=example-ask ;;
+  # Эксперимент 2026-10-09: одна ступенька к выделенному трудному месту.
+  ladder)  SIGNAL=WINCH; REQUEST=ladder ;;
 
   stop)    SIGNAL=TERM ;;
-  *) echo "usage: $0 {seed|seed-batch|menu|feynman|prediction|note|clarify|summary|reframe|reframe-ask|keys|intent|example|example-ask|focus|stop}" >&2; exit 2 ;;
+  *) echo "usage: $0 {seed|seed-batch|menu|feynman|prediction|note|clarify|summary|reframe|reframe-ask|keys|intent|example|example-ask|ladder|focus|stop}" >&2; exit 2 ;;
 esac
 
 if [[ ! -r "$PID_FILE" ]]; then

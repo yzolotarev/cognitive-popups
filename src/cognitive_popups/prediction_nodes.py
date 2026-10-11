@@ -22,7 +22,12 @@ from pathlib import Path
 OFF_FILE = "prediction-nodes.off"
 HISTORY_FILE = "nodes-history.json"
 MARK_SYMBOL = {"ok": "✓", "partly": "≈", "wrong": "✗"}
-STATUS_OF_MARK = {"ok": "confirmed", "partly": "partially_confirmed", "wrong": "contradicted", "broken": "unclear"}
+STATUS_OF_MARK = {"ok": "confirmed", "partly": "partially_confirmed", "wrong": "contradicted", "broken": "unclear",
+                  "none": "unclear"}
+#: A guess nothing in the text could refute is not marked (2026-10-09): the window
+#: asks for a bolder one once, then marks whatever comes. The guess itself is kept.
+VAGUE_STATUS = "vague"
+BOLDER = "Смелее: что именно? Скажи то, в чём можно ошибиться."
 TEMPLATE_AFTER = 3          # a stem issued this many times already is generic
 SHOWN_NODES = 4          # the window holds exactly four
 CANDIDATES = 6
@@ -80,7 +85,9 @@ def _gap_stems(gap: str, source: str) -> set[str]:
 
 def assemble(answer: dict, hypothesis: str, source: str, history: dict) -> dict:
     """Checked nodes and mark; `dropped` says what the script removed and why."""
-    mark = answer.get("mark") if answer.get("mark") in {"ok", "partly", "wrong", "broken"} else "wrong"
+    mark = answer.get("mark") if answer.get("mark") in {"ok", "partly", "wrong", "broken", "none"} else "wrong"
+    # A refuted guess had something to refute: the error is worth more than "bolder".
+    vague = bool(answer.get("vague")) and mark in {"ok", "partly"}
     words = [w.strip() for w in (answer.get("words") or []) if isinstance(w, str) and w.strip()] \
         if answer.get("specific") else []
     freq = Counter(_stem(w) for group in (history.get("issued") or []) for w in group)
@@ -97,8 +104,8 @@ def assemble(answer: dict, hypothesis: str, source: str, history: dict) -> dict:
             dropped[word] = "шаблон: уже много раз выдавалось"
         else:
             kept.append(word)
-    shown_mark = "" if mark == "broken" or (mark == "partly" and not answer.get("sure")) else mark
-    return {"mark": shown_mark, "raw_mark": mark,
+    shown_mark = "" if mark in {"broken", "none"} or (mark == "partly" and not answer.get("sure")) else mark
+    return {"mark": shown_mark, "raw_mark": mark, "vague": vague,
             "words": kept[:SHOWN_NODES] if len(kept) >= SHOWN_NODES else [],
             "dropped": dropped}
 

@@ -224,8 +224,8 @@ def test_hyprland_checkout_selection_and_quoting(sandbox, mode):
                             env=env, capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
     bindings = dict(line.split("\t", 1) for line in result.stdout.splitlines())
-    # Ctrl+Alt+G, Alt+R and Alt+Shift+R were retired or frozen on 2026-10-07.
-    assert len(bindings) == 14
+    # Ctrl+Alt+G, Alt+R and Alt+Shift+R were retired or frozen on 2026-10-07; Alt+L added 2026-10-09.
+    assert len(bindings) == 15
     for key, script, arguments in (
         ("ALT + W", "cognitive-popups-signal.sh", ["seed"]),
         ("CTRL + ALT + W", "cognitive-popups-signal.sh", ["seed-batch"]),

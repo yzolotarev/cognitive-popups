@@ -220,7 +220,7 @@ def copy_changed(stamp_before, stamp_after, text_before, text_after, sentinel=Fa
 def _try_primary(last_capture_time):
     age = primary_age_seconds()
     fresh_limit = None if last_capture_time is None else max(0.0, time.time() - last_capture_time)
-    if age is None or (fresh_limit is not None and age >= fresh_limit):
+    if age is None or age < 0 or (fresh_limit is not None and age >= fresh_limit):
         return ""
     code, out = _run(["wl-paste", "--primary", "--no-newline"])
     if code != 0:
@@ -261,8 +261,18 @@ def _capture_selection(timeout_ms, use_sentinel, last_capture_time):
     if not address or not address.startswith("0x") or any(c not in "0123456789abcdefABCDEF" for c in address[2:]):
         return res
     for way in plan_for(res.window_class):
+        # A primary selection can belong to a different browser tab/window.
+        # Copy targets the captured address and establishes freshness; an old
+        # primary is not a fallback when the active document copied nothing.
+        if way == "primary" and res.window_class.lower() not in TERMINAL_CLASSES:
+            res.notes.append("primary owner unverified; ignored")
+            continue
         text = _try_primary(last_capture_time) if way == "primary" else _try_copy(res, address, timeout_ms, use_sentinel)
         if text:
+            current = active_window()
+            if current.get("address") != address or current.get("title", "") != win.get("title", ""):
+                res.notes.append("source changed during capture; ignored")
+                break
             res.text, res.origin = text, way
             break
     res.elapsed_ms = (time.monotonic() - t_start) * 1000

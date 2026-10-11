@@ -63,6 +63,10 @@ def test_prediction_roundtrip(tmp_path):
         evidence="verbatim evidence",
         subject_note="outside the material",
         one_delta="  Поправка: предел относится к чанкам, не словам.\nСохрани пробелы.  ",
+        display="  Показанный ответ\nбез потерь.  ",
+        ask="Куда смотреть дальше?",
+        nodes=["связь", "архив", "процесс", "доступ"],
+        mark="partly",
     )
     session.add_prediction_check(check)
     store.save_prediction(session, check)
@@ -75,6 +79,10 @@ def test_prediction_roundtrip(tmp_path):
     assert loaded[0].mismatch == check.mismatch
     assert loaded[0].evidence == check.evidence
     assert loaded[0].subject_note == check.subject_note
+    assert loaded[0].display == check.display
+    assert loaded[0].ask == check.ask
+    assert loaded[0].nodes == check.nodes
+    assert loaded[0].mark == check.mark
     with sqlite3.connect(store.path) as conn:
         assert conn.execute("SELECT one_delta FROM predictions").fetchone()[0] == check.one_delta
         assert conn.execute("PRAGMA user_version").fetchone()[0] == records.SCHEMA_VERSION

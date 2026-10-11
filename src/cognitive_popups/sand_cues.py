@@ -118,13 +118,15 @@ def plan(workarea, anchor, count=4, actions=0, selection=None) -> Plan:
             words.append((min(max(x, lo), hi), y, COL_W))
             sides.append(side)
     centre = (x0 + x1) / 2
-    xs = [x for x, _, _ in words]
-    wx0 = max(ax, min([x0, centre - DETAIL_W / 2] + [x - COL_W / 2 for x in xs]) - 8)
-    wx1 = min(ax + aw, max([x1, centre + DETAIL_W / 2] + [x + COL_W / 2 for x in xs]) + 8)
-    below = max(DETAIL_MAX + 14, 30 + 36 * actions)
-    wy0 = max(ay, top_y - half - DETAIL_MAX - 14)
-    wy1 = min(ay + ah, bottom_y + half + below)
     core = (x1 + 46, (y0 + y1) / 2) if x1 + 90 < ax + aw else (x0 - 46, (y0 + y1) / 2)
+    core = (clamp(core[0], ax + 64, ax + aw - 64),
+            clamp(core[1], ay + 34, ay + ah - 60))
+    xs = [x for x, _, _ in words]
+    wx0 = max(ax, min([x0, core[0] - 64, centre - DETAIL_W / 2] + [x - COL_W / 2 for x in xs]) - 8)
+    wx1 = min(ax + aw, max([x1, core[0] + 64, centre + DETAIL_W / 2] + [x + COL_W / 2 for x in xs]) + 8)
+    below = max(DETAIL_MAX + 14, 30 + 36 * actions)
+    wy0 = max(ay, min(top_y - half - DETAIL_MAX - 14, core[1] - 34))
+    wy1 = min(ay + ah, max(bottom_y + half + below, core[1] + 60))
     local = [(x - wx0, y - wy0, w) for x, y, w in words]
     return Plan(round(wx1 - wx0), round(wy1 - wy0), (round(wx0), round(wy0)),
                 Box(x0 - wx0, y0 - wy0, x1 - x0, y1 - y0), tuple(local), tuple(sides),
@@ -570,6 +572,7 @@ class SandWords:
         self.fixed = Gtk.Fixed()
         window.add(self.fixed)
         self.area = Gtk.DrawingArea()
+        self.area.set_tooltip_text("+ — раскрыть следующий слой; − — свернуть. Esc — закрыть это окно.")
         self.area.set_size_request(self.plan.width, self.plan.height)
         self.fixed.put(self.area, 0, 0)
         self._draw_handle = connect_draw(self.area, self.paint)
@@ -579,7 +582,7 @@ class SandWords:
         self.area.connect("leave-notify-event", self.on_leave)
         self.area.connect("button-press-event", self.on_button)
         self.area.connect("scroll-event", self.on_scroll)
-        window.connect("key-press-event", self.on_key)
+        helper.connect_popup_keys(window, Gdk, self.on_key)
         window.connect("delete-event", lambda *_: self.dismiss())
         window.move(*self.plan.position)
         window.resize(self.plan.width, self.plan.height)
@@ -636,6 +639,10 @@ class SandWords:
         from . import sound
         sound.play("orbital_open")
         self.opened = True
+        self.shape()
+        self.ready_at = time.monotonic()
+        self.ready_painted = False
+        self.words_painted = False
         self.wake()
         return False
 
@@ -722,7 +729,7 @@ class SandWords:
             self.sand.ef = 9.0
 
     def build_actions(self):
-        for button in self.buttons:
+        for button, _ in self.buttons:
             button.destroy()
         self.buttons = []
         for i, action in enumerate(self.actions):
@@ -736,20 +743,21 @@ class SandWords:
             self.buttons.append((button, (bx, by, 220, 32)))
 
     def shape(self):
-        """Input only where there is something: the selection, the words, the open text, buttons.
-
-        The selection is included so the pointer resting on it keeps the
-        keyboard here (focus follows the mouse on Hyprland).
-        """
+        """Only controls receive input; the underlying selection stays scrollable."""
         from .input_shapes import apply
-        src = self.plan.source
-        runs = [(src.x, src.y, src.width, src.height)]
-        runs += [(cx - width / 2, cy - WORD_H / 2 - 6, width, WORD_H + 12) for cx, cy, width in self.plan.words]
+        runs = []
+        if self.opened:
+            for (_, cy, _), (_, _, ix, iw, h), magnet in zip(self.plan.words, self.extents, self.sand.magnets):
+                runs.append((ix + magnet.x - 14, cy + magnet.y - h / 2 - 8, iw + 28, h + 16))
         if self.detail_box is not None:
             d = self.detail_box
             runs.append((d.x, d.y, d.width, d.height))
         runs += [rect for _, rect in self.buttons]
-        apply(self.window.get_window(), runs)
+        signature = tuple((math.floor(x), math.floor(y), math.ceil(x+w)-math.floor(x),
+                           math.ceil(y+h)-math.floor(y)) for x, y, w, h in runs)
+        if signature != getattr(self, '_input_runs', None):
+            self._input_runs = signature
+            apply(self.window.get_window(), signature)
 
     def word_at(self, x, y):
         if not self.opened or self.sand.mode != "form":
@@ -858,6 +866,7 @@ class SandWords:
             self.sound_frame(dt)
         self.mvx *= .85 ** dt
         self.mvy *= .85 ** dt
+        self.shape()
         self.area.queue_draw()
         if sand.done:
             self.tick_id = None
@@ -907,6 +916,18 @@ class SandWords:
         began = time.perf_counter()
         self.draw(painter)
         self.stats["paint_s"] += time.perf_counter() - began
+        if self.opened and not self.ready_painted:
+            self.ready_painted = True
+            self.helper.observation.record_annotation("sand_render_timing", {
+                "helper_startup_ms": dict(self.startup),
+                "ready_to_draw_ms": round((time.monotonic() - self.ready_at) * 1000, 1),
+                "mode": self.sand.mode,
+            })
+        if self.opened and not self.words_painted and self.sand.mode == "form" and self.sand.ef >= .1:
+            self.words_painted = True
+            self.helper.observation.record_annotation("sand_words_timing", {
+                "ready_to_words_draw_ms": round((time.monotonic() - self.ready_at) * 1000, 1),
+            })
 
     def ink_at(self, x, y):
         """Ink opposite to the page at a window point (one ink when the page is unknown)."""
@@ -1007,7 +1028,8 @@ class SandWords:
             ink = self.looks[g][0]
             if not self.grains_only:
                 painter.text(layout, x, y, ink, shown, **transform)
-            mark = "−" if active == g else "+"
+            collapses = active == g and (self.state.layer >= 3 or not self.rows[g][2])
+            mark = "−" if collapses else "+"
             if mark not in self.marks:
                 self.marks[mark] = self.make_layout(mark, "Sans SemiBold 11", 20)
             painter.text(self.marks[mark], mx, my, ink, (.45 + (.45 if self.hover == g else 0)) * shown)
@@ -1083,7 +1105,7 @@ class SandWords:
         return False
 
     def on_scroll(self, _widget, event):
-        if self.detail_layout is None:
+        if self.detail_layout is None or not self.detail_box.contains(event.x, event.y):
             return False
         delta = {self.Gdk.ScrollDirection.UP: -1, self.Gdk.ScrollDirection.DOWN: 1}.get(event.direction)
         if delta is None:

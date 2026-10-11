@@ -116,8 +116,8 @@ class PredictionCheck:
     # Appended to preserve positional construction and loading older sessions.
     one_delta: str = ""
     #: The answer as shown (2026-10-07 contract: what holds, where the thought
-    #: came from, where to look); `ask` waits behind a click. Not persisted:
-    #: the raw model answer stays in the observation log.
+    #: came from, where to look); `ask` waits behind a click. Persisted together
+    #: with the nodes and mark so the result can be reopened without a model call.
     display: str = ""
     ask: str = ""
     #: The four nodes shown instead of an explanation (2026-10-07 nodes mode),

@@ -30,6 +30,7 @@ from . import hud_state
 from . import practice
 from . import context, focus, slack, sound, steps
 from . import prediction_nodes as nodes
+from . import recycling
 from .manual_queue import queued_action
 from . import capture
 from .sand_store import SandStore
@@ -101,6 +102,7 @@ MODE_MENU = [
     {"label": "4 слова", "action": "four_words"},
     {"label": "Фейнман", "action": "feynman"},
     {"label": "Моя гипотеза", "action": "prediction"},
+    {"label": "Сохранённые ответы на гипотезы", "action": "prediction_history"},
     {"label": "Спросить / объяснить", "action": "clarify"},
     {"label": "Клавиши", "action": "keys"},
 ]
@@ -513,6 +515,12 @@ def selected_text_source(primary_only: bool = False) -> tuple[str, str]:
         last_capture = getattr(selection, "last_capture_time", None)
         pressed_at = time.time()
         result = capture.capture_selection(last_capture_time=last_capture)
+        observe_artifact("capture_result", {
+            "window_class": result.window_class, "window_title": result.window_title,
+            "origin": result.origin, "context": result.context,
+            "elapsed_ms": result.elapsed_ms, "notes": result.notes,
+            "source_hash": text_hash(result.text) if result.text else None,
+        })
         selection.last_capture_time = pressed_at
         selection.context = result.context
         if "secret clipboard" in result.notes:
@@ -676,7 +684,7 @@ class FlashWindow:
             return
 
     def show_text(self, text: str, title: str = "Result", *, expanded: bool = False, note: str = "",
-                  semantic_role: str | None = None, more: str = "") -> None:
+                  semantic_role: str | None = None, more: str = "", cues=None, evidence: str = "") -> None:
         command = popup_helper_command()
         if not text or command is None:
             return
@@ -691,8 +699,12 @@ class FlashWindow:
             # ordinary result stays exactly what it was before.
             if note:
                 payload["note"] = note
+            if evidence:
+                payload["evidence"] = evidence
             if more:
                 payload["more"] = more
+            if cues:
+                payload["cues"] = cues
             if semantic_role:
                 payload["semantic_role"] = semantic_role
             position = cursor_position()
@@ -782,6 +794,12 @@ class PanelWindow(Gtk.Window):
         cues_scroll.add(self.cues_list)
         self.stack.add_titled(cues_scroll, "cues", "Cue history")
 
+        self.answers_list = Gtk.ListBox()
+        self.answers_list.set_selection_mode(Gtk.SelectionMode.NONE)
+        answers_scroll = Gtk.ScrolledWindow()
+        answers_scroll.add(self.answers_list)
+        self.stack.add_titled(answers_scroll, "answers", "Ответы на гипотезы")
+
     def _observe_panel(self, event):
         if self._render_artifact is not None:
             with operation_scope(self._render_chain.context):
@@ -800,10 +818,13 @@ class PanelWindow(Gtk.Window):
         box.set_margin_end(8)
         heading = Gtk.Label(label=title)
         heading.set_xalign(0)
+        heading.set_line_wrap(True)
+        heading.set_max_width_chars(48)
         heading.get_style_context().add_class("row-title")
         text = Gtk.Label(label=body)
         text.set_xalign(0)
         text.set_line_wrap(True)
+        text.set_max_width_chars(48)
         text.set_selectable(True)
         box.pack_start(heading, False, False, 0)
         box.pack_start(text, False, False, 0)
@@ -854,6 +875,17 @@ class PanelWindow(Gtk.Window):
             ))
         if not archived_sessions:
             self.history_list.add(self._row("No archived buffers", "Clear the current buffer to archive it here."))
+        self._render_section = "answers"
+        self._clear(self.answers_list)
+        saved = self.app.saved_predictions()
+        for check in saved:
+            row = self._row(check.hypothesis, check.created_at)
+            button = Gtk.Button(label="Открыть сохранённый ответ")
+            button.connect("clicked", lambda _, check=check: self.app.reopen_prediction(check))
+            row.get_child().pack_start(button, False, False, 0)
+            self.answers_list.add(row)
+        if not saved:
+            self.answers_list.add(self._row("Пока нет ответов", ""))
         self._render_artifact = observe_artifact("rendered_payload", {
             "mode": "panel", "summary": self.summary.get_text(), "rows": self._render_rows,
             "buffer_session_id": session.id,
@@ -867,6 +899,43 @@ class DesktopApp:
     # v2 defaults, pending separate decisions from the owner.
     SAND_LADDER_BRIDGE = False
     SAND_KNOWN_MARKS = False
+
+    def reopen_prediction(self, check):
+        """Replay a saved result only; never grade it or ask for another claim."""
+        body = check.display or (nodes.describe(check.mark, check.nodes)
+                                 if check.mark or check.nodes else check.text)
+        self.flash.show_text(body, "Моя гипотеза — сохранённый ответ",
+                             expanded=True, note=check.hypothesis, evidence=check.evidence,
+                             more=("→ " + check.ask) if check.ask else "")
+        emit("action", window="prediction_result", detail=f"reopened {check.id}")
+
+    def saved_predictions(self):
+        saved = {}
+        for meta in RECORDS.sessions():
+            for check in RECORDS.load_predictions(meta["id"]):
+                saved[check.id] = check
+        for buffer in [*self.history.load(), self.service.session]:
+            for check in buffer.prediction_checks:
+                saved[check.id] = check
+        return sorted(saved.values(), key=lambda c: c.created_at, reverse=True)
+
+    def show_prediction_history(self):
+        """Explicit reopening survives a closed window and a daemon restart."""
+        try:
+            panel = getattr(self, "_answer_panel", None)
+            if panel is None:
+                panel = self._answer_panel = PanelWindow(self)
+            else:
+                panel.refresh()
+            panel.stack.set_visible_child_name("answers")
+            panel.present()
+        except Exception as exc:
+            self.flash.show_text(str(exc), "Ответы: ошибка открытия")
+
+    def _finish_clarify_wait(self, error=None):
+        handle = self.__dict__.pop("_clarify_wait", None)
+        if handle:
+            handle.finish(status="error" if error else "done")
     def _sand(self):
         return SandStore(RECORDS.path)
 
@@ -1346,6 +1415,8 @@ class DesktopApp:
             self.start_feynman()
         elif mode == "prediction":
             self.start_prediction()
+        elif mode == "prediction_history":
+            self.show_prediction_history()
         elif mode == "reframe":
             self.start_reframe()
         elif mode == "clarify":
@@ -1595,7 +1666,13 @@ class DesktopApp:
             self.flash.show_notice("нет текста: выдели абзац")
             return
         self._prediction_pack = context.pack(point, root=STATE_DIR)
-        context.remember(selection, "prediction", root=STATE_DIR)
+        original = recycling.RecyclingStore(RECORDS.path).original_material(point, self.service.session.id)
+        if original:
+            # The user's returned draft is material to develop, not evidence.
+            self._prediction_pack.selection = original["selection"]
+            self._prediction_pack.recent = original["recent"]
+        else:
+            context.remember(selection, "prediction", root=STATE_DIR)
         emit("action", window="prediction",
              detail=f"context: selection={len(point)} chars, recent={len(self._prediction_pack.recent)}")
         hypothesis = popup_input(
@@ -1617,6 +1694,8 @@ class DesktopApp:
         self._log_prompt("prediction", "prediction")
 
         material = getattr(self, "_prediction_pack", None)
+        session_id = self.service.session.id
+        wait = self._begin_sand_wait()
 
         nodes_mode = nodes.enabled(STATE_DIR)
 
@@ -1637,12 +1716,46 @@ class DesktopApp:
                         nodes.remember(STATE_DIR, check.nodes)
                 else:
                     check = self.service.check_prediction(hypothesis, material)
-                self._commit_prediction(check)
+                if self._commit_prediction(check) is False:
+                    raise RecordError("Гипотеза не записана в журнал")
+                recycled = None
+                recycle_error = ""
+                try:
+                    store = recycling.RecyclingStore(RECORDS.path)
+                    batch = store.pending(session_id, self.service.session.prediction_checks)
+                    if batch and material is not None:
+                        recycled = self.service.recycle_hypotheses([c.hypothesis for c in batch])
+                        store.save(session_id, batch, recycled, material)
+                except Exception as exc:  # the hypothesis has already been saved
+                    recycled = None
+                    recycle_error = str(exc)
+                    emit("error", window="recycling", detail=recycle_error)
+                if wait and not wait.finish():
+                    idle_add(setattr, self, "_busy", False)
+                    return
+                if recycled or recycle_error:
+                    idle_add(self._recycling_done, check, recycled, recycle_error, hypothesis)
+                    return
                 idle_add(self._prediction_done, check, None, hypothesis)
             except Exception as exc:  # noqa: BLE001
+                if wait:
+                    wait.finish(status="error")
                 idle_add(self._prediction_done, None, str(exc), hypothesis)
 
         threading.Thread(target=bind_chain(worker), daemon=True).start()
+
+    def _recycling_done(self, check, result, error, hypothesis):
+        if not result:
+            self._prediction_done(check, None, hypothesis)
+            self.flash.show_text(
+                "Гипотеза сохранена. Абзац из твоих мыслей пока не собрался.\n\n" + error,
+                "Из твоих гипотез")
+            return False
+        self._busy = False
+        emit("result", window="recycling", detail="four hypotheses returned as a paragraph")
+        self.flash.show_text(result["text"], "Из твоих гипотез", expanded=True,
+                             note=recycling.PROVENANCE, cues=result["cues"])
+        return False
 
     def _prediction_done(self, check, error: str | None, hypothesis: str = ""):
         self._busy = False
@@ -2114,6 +2227,7 @@ class DesktopApp:
                     f"buffer={len(self.service.session.fragments)} fragments")
         self._busy = True
         self._log_prompt("clarify", "clarify")
+        self._clarify_wait = self._begin_sand_wait()
 
         def worker():
             try:
@@ -2169,6 +2283,7 @@ class DesktopApp:
                     f"recent={len(surroundings.recent)}")
         self._busy = True
         self._log_prompt("clarify", "clarify_universe")
+        self._clarify_wait = self._begin_sand_wait()
         hook_id = hook.thought_id if hook else ""
         hook_text = hook.text if hook else ""
 
@@ -2185,6 +2300,7 @@ class DesktopApp:
         threading.Thread(target=bind_chain(worker), daemon=True).start()
 
     def _universe_done(self, answer, error: str | None, hook_id: str = "", hook_text: str = ""):
+        self._finish_clarify_wait(error)
         self._busy = False
         if error:
             emit("error", window="clarify", detail=str(error))
@@ -2217,6 +2333,7 @@ class DesktopApp:
                     f"buffer={len(self.service.session.fragments)} fragments")
         self._busy = True
         self._log_prompt("clarify", "clarify_question")
+        self._clarify_wait = self._begin_sand_wait()
 
         def worker():
             try:
@@ -2229,6 +2346,7 @@ class DesktopApp:
         threading.Thread(target=bind_chain(worker), daemon=True).start()
 
     def _answer_done(self, answer, error: str | None):
+        self._finish_clarify_wait(error)
         self._busy = False
         if error:
             emit("error", window="clarify", detail=str(error))
@@ -2250,6 +2368,7 @@ class DesktopApp:
         return False
 
     def _clarify_done(self, result, error: str | None):
+        self._finish_clarify_wait(error)
         self._busy = False
         if error:
             emit("error", window="clarify", detail=str(error))
@@ -2719,7 +2838,7 @@ class DesktopApp:
             return False
         if len(self._example_cache) >= 32:
             self._example_cache.clear()
-        self._example_cache[key] = result
+        self._example_cache[getattr(result, "cache_key", None) or key] = result
         return self._show_example_text(result)
 
     def _show_example_text(self, result):
@@ -2757,6 +2876,8 @@ class DesktopApp:
         except RecordError as exc:
             debug(f"record prediction failed: {exc}")
             emit("error", window="prediction", detail=f"ledger: {exc}")
+            return False
+        return True
 
     def _commit_feynman(self, check) -> None:
         try:
@@ -3075,6 +3196,10 @@ class DesktopApp:
 
     def _signal_menu(self):
         request = take_request()
+        if request == "prediction-history":
+            begin_interaction("hotkey", window="prediction_history", detail="сохранённые ответы")
+            self.show_prediction_history()
+            return True
         if request == "focus":
             # Ctrl+Alt+G is retired; an old binding still lands on the step.
             begin_interaction("hotkey", window="step", detail="шаг (старая клавиша)")

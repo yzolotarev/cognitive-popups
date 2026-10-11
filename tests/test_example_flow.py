@@ -165,16 +165,16 @@ def test_mode_menu_routes_every_action(desktop):
     app = desktop.DesktopApp.__new__(desktop.DesktopApp)
     seen = []
     for name in ("seed", "start_feynman", "start_prediction", "start_reframe",
-                 "explain_terms", "show_example", "start_step", "show_keys"):
+                 "explain_terms", "show_example", "start_step", "show_keys", "show_prediction_history"):
         setattr(app, name, (lambda label: lambda *a, **k: seen.append(label))(name))
 
     actions = [item["action"] for item in desktop.MODE_MENU]
     assert set(actions) == {"example", "intent", "four_words", "feynman",
-                            "prediction", "clarify", "keys"}
+                            "prediction", "prediction_history", "clarify", "keys"}
     for action in actions:
         app.run_mode(action)
 
     assert seen == [
         "show_example", "start_step", "seed", "start_feynman",
-        "start_prediction", "explain_terms", "show_keys",
+        "start_prediction", "show_prediction_history", "explain_terms", "show_keys",
     ]

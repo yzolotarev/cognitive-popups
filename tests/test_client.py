@@ -208,6 +208,22 @@ def test_monotonic_duration_ignores_wall_clock_jump():
     assert row["finished_epoch"] < row["started_epoch"]
 
 
+def test_queue_and_network_times_are_recorded_separately(monkeypatch):
+    from types import SimpleNamespace
+    ticks = iter([100., 103., 110.])
+    monkeypatch.setattr(client_module, 'time', SimpleNamespace(monotonic=lambda: next(ticks)))
+    api = GeminiWeb2API()
+    with patch.object(client_module.request, 'urlopen', return_value=Response(
+            {'choices': [{'message': {'content': 'ok'}}]})):
+        api.complete([])
+    assert api.last_metrics['queue_ms'] == 3000
+    assert api.last_metrics['network_ms'] == 7000
+    with api.observation_store.connect() as conn:
+        row = conn.execute("SELECT payload_json FROM obs_annotations WHERE kind='request_timing'").fetchone()
+    import json
+    assert json.loads(row[0])['request_id'] == api.last_metrics['request_id']
+
+
 def test_an_unescaped_backslash_in_quoted_material_is_repaired():
     # A synthetic label contains an invalid JSON escape that must stay literal.
     raw = r'{"condition":"Метка детали: q\, z*"}'

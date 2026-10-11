@@ -14,6 +14,7 @@ from .models import CognitiveSession, FeynmanCheck, PredictionCheck, now_iso
 from .notes import normalise_anchor
 from . import observation
 from .operation_context import OperationContext, current_operation, operation_scope
+from .language import LanguageAdapter, LanguageContext
 
 
 # Captured along with the originating UI callback, never shared across workers.
@@ -269,6 +270,7 @@ class Example:
     query: str = ""
     prompt_hash: str = ""
     model: str = ""
+    cache_key: tuple | None = None
 
 
 @dataclass
@@ -373,10 +375,12 @@ class CognitiveService:
         client: GeminiWeb2API,
         session: CognitiveSession | None = None,
         prompt_settings: PromptSettings | None = None,
+        language_adapter: LanguageAdapter | None = None,
     ):
         self.client = client
         self.session = session or CognitiveSession()
         self.prompt_settings = prompt_settings or PromptSettings()
+        self.language_adapter = language_adapter or LanguageAdapter()
         self._last_activity: float | None = None
         self._last_activity_utc: str | None = None
 
@@ -410,15 +414,28 @@ class CognitiveService:
         self.prompt_settings.reload()
         return self.prompt_settings.get(key)
 
-    def cue_cache_key(self, source_text: str) -> tuple[str, str, str, str]:
-        return (source_text, prompt_hash(self._prompt("four_words")),
+    def _language_prompt(self, key: str, material: str, request: str = "") -> tuple[str, LanguageContext]:
+        context = self.language_adapter.context(material, request, purpose=key)
+        return context.system(self._prompt(key), cues=key == "four_words"), context
+
+    def _cue_cache_key(self, source_text: str, system: str, context: LanguageContext) -> tuple[str, str, str, str]:
+        return (source_text, prompt_hash(system + context.payload),
                 self._model_name(), str(getattr(self.client, "url", "")))
+
+    def cue_cache_key(self, source_text: str) -> tuple[str, str, str, str]:
+        system, context = self._language_prompt("four_words", source_text.strip())
+        return self._cue_cache_key(source_text, system, context)
 
     def example_cache_key(self, material: str, query: str = "", intent: str = "") -> tuple:
         """Everything that changes the answer, so a cached one can never reappear
         under a new context: material, request, explicitly passed intent, model,
         bridge and prompt version."""
-        return (material, query, intent, prompt_hash(self._prompt("example")),
+        system, context = self._language_prompt("example", material.strip(), query)
+        return self._example_cache_key(material, query, intent, system, context)
+
+    def _example_cache_key(self, material: str, query: str, intent: str,
+                           system: str, context: LanguageContext) -> tuple:
+        return (material, query, intent, prompt_hash(system + context.payload),
                 self._model_name(), str(getattr(self.client, "url", "")))
 
     @observed_operation("cues")
@@ -426,11 +443,11 @@ class CognitiveService:
         text = source_text.strip()
         if not text:
             raise ValueError("source text must not be empty")
-        system_prompt = self._prompt("four_words")
+        system_prompt, language = self._language_prompt("four_words", text)
         if perspective:
             system_prompt += "\\n\\nРАКУРС ЭТОГО ПРОХОДА: " + perspective + ". Выбери четыре опоры именно с этого ракурса, не повторяя набор предыдущего прохода, если текст позволяет."
         model = self._model_name()
-        cache_key = (source_text, prompt_hash(system_prompt), model, str(getattr(self.client, "url", "")))
+        cache_key = self._cue_cache_key(source_text, system_prompt, language)
         problems: list[str] = []
         for attempt in range(2):
             extra = ""
@@ -444,7 +461,7 @@ class CognitiveService:
             # Transport failures (timeout, bridge unreachable) propagate as-is:
             # retrying them here would only double the time the reader waits.
             raw = self.client.complete(
-                seed_prompt(text, system_prompt + extra),
+                language.messages(seed_prompt(text, system_prompt + extra)),
                 max_tokens=500,
             )
             try:
@@ -612,6 +629,18 @@ class CognitiveService:
             raise ValueError("the common buffer is empty")
         return material
 
+    @observed_operation("recycling")
+    def recycle_hypotheses(self, hypotheses: list[str]) -> dict:
+        from . import recycling
+        import json
+        if len(hypotheses) != recycling.BATCH_SIZE or not all(text.strip() for text in hypotheses):
+            raise ValueError("Нужны четыре гипотезы")
+        data = parse_json_object(self.client.complete([
+            {"role": "system", "content": recycling.SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps({"hypotheses": hypotheses}, ensure_ascii=False)},
+        ], max_tokens=1000))
+        return recycling.parse_result(data)
+
     def check_prediction_nodes(self, hypothesis: str, material, *, history: dict | None = None,
                                mine: list[str] | None = None, insist: bool = False) -> PredictionCheck:
         """Mark the reader's guess and give four nodes (nodes.py); nothing is explained.
@@ -678,10 +707,10 @@ class CognitiveService:
             ground = self.session.fragments[-1].source_text.strip()
         if not ground:
             raise ValueError("the common buffer is empty")
-        system_prompt = self._prompt("clarify_universe")
+        system_prompt, language = self._language_prompt("clarify_universe", ground[:UNIVERSE_PASSAGE_CHARS], asked)
         data = parse_json_object(self.client.complete(
-            clarify_universe_prompt(ground[:UNIVERSE_PASSAGE_CHARS], asked, mine or [], system_prompt,
-                                    recent=recent, step=step),
+            language.messages(clarify_universe_prompt(ground[:UNIVERSE_PASSAGE_CHARS], asked, mine or [], system_prompt,
+                                    recent=recent, step=step)),
             max_tokens=600,
         ))
 
@@ -728,12 +757,13 @@ class CognitiveService:
         # The reader's own spelling is what the window shows back, so a term is
         # displayed the way it was asked for, not the way the model echoed it.
         by_key = {normalise_anchor(term): term for term in window}
+        system_prompt, language = self._language_prompt("clarify", material, ", ".join(window))
         data = parse_json_object(self.client.complete(
-            clarify_prompt(
+            language.messages(clarify_prompt(
                 material,
                 window,
-                self._prompt("clarify"),
-            ),
+                system_prompt,
+            )),
             max_tokens=400,
         ))
         raw_lines = data.get("lines")
@@ -779,9 +809,9 @@ class CognitiveService:
         asked = " ".join(question.split()).strip()
         if not asked:
             raise ValueError("question must not be empty")
-        system_prompt = self._prompt("clarify_question")
+        system_prompt, language = self._language_prompt("clarify_question", material, asked)
         data = parse_json_object(self.client.complete(
-            clarify_question_prompt(material, asked, system_prompt),
+            language.messages(clarify_question_prompt(material, asked, system_prompt)),
             max_tokens=600,
         ))
         text = " ".join(str(data.get("answer", "")).split()).strip()
@@ -816,8 +846,9 @@ class CognitiveService:
         text = source_text.strip()
         if not text:
             raise ValueError("source text must not be empty")
+        system_prompt, language = self._language_prompt("summary", text)
         raw = self.client.complete(
-            summary_prompt(text, self._prompt("summary")),
+            language.messages(summary_prompt(text, system_prompt)),
             max_tokens=700,
         )
         result = raw.strip()
@@ -838,9 +869,9 @@ class CognitiveService:
         text = material.strip()
         if not text:
             raise ValueError("material must not be empty")
-        system_prompt = self._prompt("example")
+        system_prompt, language = self._language_prompt("example", text, query)
         raw = self.client.complete(
-            example_prompt(text, query, intent, system_prompt),
+            language.messages(example_prompt(text, query, intent, system_prompt)),
             max_tokens=800,
         )
         result = raw.strip()
@@ -852,6 +883,7 @@ class CognitiveService:
             query=query.strip(),
             prompt_hash=prompt_hash(system_prompt),
             model=self._model_name(),
+            cache_key=self._example_cache_key(material, query, intent, system_prompt, language),
         )
 
     @observed_operation("ladder")
@@ -864,7 +896,7 @@ class CognitiveService:
         goal = target.strip()
         if not goal:
             raise ValueError("target must not be empty")
-        system_prompt = self._prompt("ladder")
+        system_prompt, language = self._language_prompt("ladder", goal[:UNIVERSE_PASSAGE_CHARS] + "\n" + around[:UNIVERSE_PASSAGE_CHARS])
         if known and any(line.startswith(("[читал]", "[знаю]")) for line in known):
             system_prompt += "\nПометка [читал] не означает знание: не опирайся на неё как на освоенное. [знаю] это явная отметка читателя, а не вердикт модели."
         blocks = [f"<TARGET>\n{goal[:UNIVERSE_PASSAGE_CHARS]}\n</TARGET>"]
@@ -873,7 +905,7 @@ class CognitiveService:
         if known:
             blocks.append("<KNOWN>\n" + "\n".join(f"- {line[:240]}" for line in known[:LADDER_KNOWN]) + "\n</KNOWN>")
         data = parse_json_object(self.client.complete(
-            [{"role": "system", "content": system_prompt}, {"role": "user", "content": "\n\n".join(blocks)}],
+            language.messages([{"role": "system", "content": system_prompt}, {"role": "user", "content": "\n\n".join(blocks)}]),
             max_tokens=500))
         text = str(data.get("text") or "").strip()
         if not text:
@@ -898,9 +930,9 @@ class CognitiveService:
         chosen_focus = focus.strip()
         if not source:
             raise ValueError("material must not be empty")
-        system_prompt = self._prompt("reframe")
+        system_prompt, language = self._language_prompt("reframe", source, chosen_focus)
         data = parse_json_object(self.client.complete(
-            reframe_prompt(source, chosen_focus, current_frame.strip(), system_prompt),
+            language.messages(reframe_prompt(source, chosen_focus, current_frame.strip(), system_prompt)),
             max_tokens=400,
         ))
         basis = data.get("basis")

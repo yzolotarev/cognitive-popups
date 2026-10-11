@@ -81,6 +81,8 @@ class GeminiWeb2API:
         failure = None
         timeout_reason = (f"client gave up after timeout={self.timeout:.0f}s; "
                           "the bridge may still be waiting for the upstream model")
+        queued_at = time.monotonic()
+        network_at = network_end = None
         try:
             req = request.Request(self.url, data=payload,
                 headers={"Content-Type": "application/json", "X-Request-ID": request_id}, method="POST")
@@ -92,9 +94,13 @@ class GeminiWeb2API:
                     if priority == PRIORITY_BACKGROUND else request_gate.manual_request())
             try:
                 with gate:
-                    with request.urlopen(req, timeout=self.timeout) as response:
-                        http_status = getattr(response, "status", None)
-                        raw = response.read()
+                    network_at = time.monotonic()
+                    try:
+                        with request.urlopen(req, timeout=self.timeout) as response:
+                            http_status = getattr(response, "status", None)
+                            raw = response.read()
+                    finally:
+                        network_end = time.monotonic()
             except error.HTTPError as exc:
                 status = "bridge_error"
                 http_status = exc.code
@@ -142,7 +148,10 @@ class GeminiWeb2API:
                                  error=failure, http_status=http_status, finished=finished)
             self.last_metrics = {"request_id": request_id, "operation_id": context.operation_id,
                 "status": status, "latency_ms": int((finished[2] - started[2]) * 1000),
+                "queue_ms": round(((network_at or time.monotonic()) - queued_at) * 1000, 1),
+                "network_ms": round((network_end - network_at) * 1000, 1) if network_end is not None else None,
                 "observation_failures": failure_counts()}
+            store.record_annotation("request_timing", self.last_metrics)
 
 
 #: Every escape the JSON format itself defines. A backslash followed by anything

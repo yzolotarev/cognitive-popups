@@ -15,6 +15,7 @@ case "$ACTION" in
   menu)    SIGNAL=WINCH ;;
   feynman)   SIGNAL=USR2 ;;
   prediction) SIGNAL=HUP ;;
+  prediction-history) SIGNAL=WINCH; REQUEST=prediction-history ;;
   # GLib accepts only six signals and the four above already claim the useful
   # ones, so `note`, `clarify` and `summary` queue their action and wake the
   # daemon with SIGWINCH.
@@ -35,7 +36,7 @@ case "$ACTION" in
   ladder)  SIGNAL=WINCH; REQUEST=ladder ;;
 
   stop)    SIGNAL=TERM ;;
-  *) echo "usage: $0 {seed|seed-batch|menu|feynman|prediction|note|clarify|summary|reframe|reframe-ask|keys|intent|example|example-ask|ladder|focus|stop}" >&2; exit 2 ;;
+  *) echo "usage: $0 {seed|seed-batch|menu|feynman|prediction|prediction-history|note|clarify|summary|reframe|reframe-ask|keys|intent|example|example-ask|ladder|focus|stop}" >&2; exit 2 ;;
 esac
 
 if [[ ! -r "$PID_FILE" ]]; then

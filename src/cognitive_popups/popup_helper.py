@@ -693,6 +693,30 @@ def take_keyboard_focus():
         pass
 
 
+def connect_popup_keys(window, Gdk, handler):
+    """Keep Escape repeats in the target until release, then close just it."""
+    armed = False
+
+    def press(widget, event):
+        nonlocal armed
+        if event.keyval == Gdk.KEY_Escape:
+            armed = True
+            return True
+        return handler(widget, event)
+
+    def release(widget, event):
+        nonlocal armed
+        if event.keyval != Gdk.KEY_Escape:
+            return False
+        if armed:
+            armed = False
+            return handler(widget, event)
+        return True
+
+    window.connect('key-press-event', press)
+    window.connect('key-release-event', release)
+
+
 def show_input_popup(prompt_text, px=None, py=None, initial='', preserve_raw=False,
                      quote='', quote_hint='', pin_text='', step_draft=''):
     try:
@@ -720,7 +744,7 @@ def show_input_popup(prompt_text, px=None, py=None, initial='', preserve_raw=Fal
             self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
             self.set_title('Enter nucleus')
             self.set_border_width(0)
-            self.connect('key-press-event', self.on_key)
+            connect_popup_keys(self, Gdk, self.on_key)
 
             outer = Gtk.EventBox()
             outer.set_visible_window(True)
@@ -766,6 +790,10 @@ def show_input_popup(prompt_text, px=None, py=None, initial='', preserve_raw=Fal
             box.pack_start(label, False, False, 0)
 
             self.entry = Gtk.Entry()
+            # Long takeaways scroll inside the field instead of widening the
+            # popup until its submit area is off screen.
+            self.entry.set_width_chars(32)
+            self.entry.set_max_width_chars(48)
             self.entry.set_activates_default(True)
             self.entry.connect('activate', self.on_submit)
             if initial:
@@ -784,6 +812,7 @@ def show_input_popup(prompt_text, px=None, py=None, initial='', preserve_raw=Fal
 
             self.set_size_request(480, -1)
             self.show_all()
+            self.connect('size-allocate', lambda *_: self.move_to(self.px, self.py))
             GLib.idle_add(self._finalize_open)
 
         @staticmethod
@@ -822,7 +851,10 @@ def show_input_popup(prompt_text, px=None, py=None, initial='', preserve_raw=Fal
                 px, py = get_mouse_position()
             # The field sits under the pointer: with focus-follows-mouse, a window
             # beside the pointer loses the keyboard at the first mouse movement.
-            self.move(max(0, int(px) - 90), max(0, int(py) - 72))
+            ax, ay, aw, ah = _monitor_workarea(Gdk, px, py)
+            width, height = self.get_size()
+            self.move(min(max(ax, int(px) - 90), ax + max(0, aw - width)),
+                      min(max(ay, int(py) - 72), ay + max(0, ah - height)))
 
         def on_submit(self, *args):
             raw = self.entry.get_text()
@@ -886,7 +918,7 @@ def show_objects_popup(items, px=None, py=None):
             self.set_border_width(0)
             self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
             self.connect('button-press-event', self.on_click)
-            self.connect('key-press-event', self.on_key)
+            connect_popup_keys(self, Gdk, self.on_key)
             self.connect('focus-out-event', lambda *a: False)
 
             outer = Gtk.EventBox()
@@ -1008,7 +1040,7 @@ def show_keys_popup(rows, px=None, py=None, title='Keys'):
             self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
             self.set_title(title)
             self.set_border_width(0)
-            self.connect('key-press-event', self.on_key)
+            connect_popup_keys(self, Gdk, self.on_key)
             self.connect('focus-out-event', lambda *a: False)
 
             outer = Gtk.EventBox()
@@ -1148,7 +1180,7 @@ def show_menu_popup(items, px=None, py=None, title='Menu', focusable=False):
                 self.set_can_focus(True)
                 self.sink = None
             self.set_title(title)
-            self.connect('key-press-event', self.on_key)
+            connect_popup_keys(self, Gdk, self.on_key)
             # Closing on focus-out suits a click-driven menu: the reader is about to
             # dismiss it anyway. On the keyboard-driven one it is a defect — the menu
             # vanishes the instant focus moves anywhere else, which reads as nothing
@@ -1439,7 +1471,7 @@ def show_orbital_popup(items, px=None, py=None, title='', reduced_motion=None, a
             self.debug('constructor')
             self.connect('map', lambda *_: self.debug('map', opacity=self.get_opacity()))
             self.connect('destroy', self.cleanup)
-            self.connect('key-press-event', self.key)
+            connect_popup_keys(self, Gdk, self.key)
             self.connect('delete-event', lambda *a: self.dismiss('delete'))
             self.connect('button-press-event', self.press)
             overlay = Gtk.Overlay()
@@ -1990,7 +2022,7 @@ def show_dual_popup(items, px=None, py=None, title=''):
             self.set_skip_pager_hint(True)
             self.set_keep_above(True)
             self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
-            self.connect('key-press-event', self.on_key)
+            connect_popup_keys(self, Gdk, self.on_key)
             self.outer = Gtk.EventBox()
             self.outer.set_visible_window(True)
             self.add(self.outer)
@@ -2154,7 +2186,7 @@ def show_dual_popup(items, px=None, py=None, title=''):
 
 
 def show_text_popup(text, px=None, py=None, title='Result', expanded=False, note='', actions=None,
-                    evidence='', semantic_role=None, more=''):
+                    evidence='', semantic_role=None, more='', cues=None):
     try:
         import gi
         gi.require_version('Gtk', '3.0')
@@ -2180,6 +2212,7 @@ def show_text_popup(text, px=None, py=None, title='Result', expanded=False, note
         min(EXPANDED_TEXT_HEIGHT, max(194, area_height - 48)) - 34
         if expanded else MAX_TEXT_HEIGHT
     )
+    cue_row_height = 34 if cues else 0
 
     class TextPopup(Gtk.Window):
         def __init__(self, body, px=None, py=None):
@@ -2200,7 +2233,7 @@ def show_text_popup(text, px=None, py=None, title='Result', expanded=False, note
             self.set_title(title)
             self.set_border_width(0)
             self.connect('focus-out-event', lambda *a: False)
-            self.connect('key-press-event', self.on_key)
+            connect_popup_keys(self, Gdk, self.on_key)
             self._feedback_played = False
             self.connect('map-event', self.on_map)
 
@@ -2232,17 +2265,32 @@ def show_text_popup(text, px=None, py=None, title='Result', expanded=False, note
                 note_label.set_max_width_chars(64)
                 box.pack_start(note_label, False, False, 0)
 
+            cue_buttons = []
+            if cues:
+                cue_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+                for cue in cues:
+                    button = Gtk.Button(label=cue['simple'])
+                    button.set_hexpand(True)
+                    button.connect('button-press-event', lambda *a: True)
+                    button.connect('clicked', self.on_cue, cue)
+                    cue_row.pack_start(button, True, True, 0)
+                    cue_buttons.append(button)
+                box.pack_start(cue_row, False, False, 0)
+
             view = readable_view(Gtk)
             fill_readable(view, body)
             scrolled = Gtk.ScrolledWindow()
             scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
             scrolled.set_shadow_type(Gtk.ShadowType.IN)
-            scrolled.set_size_request(-1, min(height, height_cap))
+            scrolled.set_size_request(-1, min(height, height_cap - cue_row_height))
             scrolled.add(view)
             box.pack_start(scrolled, True, True, 0)
             self.scrolled = scrolled
             self.view = view
             self.evidence_shown = False
+
+            self.cue_buttons = cue_buttons
+            self.cue_detail = None
 
             button_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             copy_btn = Gtk.Button(label='Copy')
@@ -2271,7 +2319,7 @@ def show_text_popup(text, px=None, py=None, title='Result', expanded=False, note
             button_row.pack_end(hint, False, False, 0)
             box.pack_start(button_row, False, False, 0)
 
-            self.set_size_request(width, min(height, height_cap) + 34)
+            self.set_size_request(width, min(height + cue_row_height, height_cap) + 34)
             self.show_all()
             GLib.idle_add(self.apply_geometry)
             GLib.idle_add(self.present)
@@ -2291,7 +2339,7 @@ def show_text_popup(text, px=None, py=None, title='Result', expanded=False, note
             return False
 
         def apply_geometry(self):
-            self.resize(width, min(height, height_cap) + 34)
+            self.resize(width, min(height + cue_row_height, height_cap) + 34)
             self.move_to(self.px, self.py)
             return False
 
@@ -2302,8 +2350,24 @@ def show_text_popup(text, px=None, py=None, title='Result', expanded=False, note
             y = int(py) + 12
             if expanded:
                 x = min(max(area_x, x), area_x + area_width - width)
-                y = min(max(area_y, y), area_y + area_height - min(height, height_cap) - 34)
+                y = min(max(area_y, y), area_y + area_height - min(height, height_cap - cue_row_height) - 34 - cue_row_height)
             self.move(x, y)
+
+        def on_cue(self, _button, cue):
+            if self.cue_detail == cue['simple']:
+                self.cue_detail = None
+                shown = text
+                event = 'cue_collapse'
+            else:
+                self.cue_detail = cue['simple']
+                shown = cue['term'] + ' — ' + cue['meaning']
+                event = 'meaning_reveal'
+            self.body = shown
+            fill_readable(self.view, shown)
+            _rendered(text=shown, title=title, expanded=expanded, note=note, cues=cues)
+            _emit(event, window='text', item_label=cue['simple'], detail=title)
+            self.scrolled.get_vadjustment().set_value(0)
+            return True
 
         def zoom(self, delta):
             """Make the text bigger or smaller, and give it the room to match.
@@ -2314,9 +2378,10 @@ def show_text_popup(text, px=None, py=None, title='Result', expanded=False, note
             """
             self._scale = max(0.85, min(2.0, round(self._scale + delta, 2)))
             apply_zoom(Gtk, Gdk, self._scale)
-            room = max(120, (area_height if expanded else 900) - 90)
-            body_height = int(min(height * self._scale, height_cap * self._scale, room))
-            self.resize(int(width * self._scale), body_height + 34)
+            room = max(120, (area_height if expanded else 900) - 90 - cue_row_height)
+            body_height = int(min(height * self._scale,
+                                  (height_cap - cue_row_height) * self._scale, room))
+            self.resize(int(width * self._scale), body_height + 34 + cue_row_height)
             _emit('layer_open', window='text', detail=f'zoom {self._scale:.2f}')
             return True
 
@@ -2339,8 +2404,8 @@ def show_text_popup(text, px=None, py=None, title='Result', expanded=False, note
                 # Grow to the new text, so the opened line is in view, not below it.
                 grown_width, grown_height = estimate_text_size(self.body)
                 grown_height += 24  # the estimate runs a wrapped line short
-                self.scrolled.set_size_request(-1, min(grown_height, height_cap))
-                self.resize(max(width, grown_width), min(grown_height, height_cap) + 34)
+                self.scrolled.set_size_request(-1, min(grown_height, height_cap - cue_row_height))
+                self.resize(max(width, grown_width), min(grown_height, height_cap - cue_row_height) + 34 + cue_row_height)
                 _emit('layer_open', window='text', layer=2, detail='more')
                 return True
             return self.close_and_quit(reason='click')
@@ -2392,7 +2457,7 @@ def show_text_popup(text, px=None, py=None, title='Result', expanded=False, note
             return True
 
     TextPopup(text, px, py)
-    _rendered(text=text, title=title, expanded=expanded, note=note)
+    _rendered(text=text, title=title, expanded=expanded, note=note, **({'cues': cues} if cues else {}))
     _emit('window_open', window='text', detail=title)
     Gtk.main()
     return 0
@@ -2433,7 +2498,7 @@ def show_note_popup(anchor='', px=None, py=None, *, title='Error note', prompt='
             self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
             self.set_title(title)
             self.set_border_width(0)
-            self.connect('key-press-event', self.on_key)
+            connect_popup_keys(self, Gdk, self.on_key)
 
             outer = Gtk.EventBox()
             outer.set_visible_window(True)
@@ -2565,7 +2630,7 @@ def show_intent_popup(intent=None, history=None, error='', px=None, py=None):
             self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
             self.set_title('Сейчас хочу')
             self.set_border_width(0)
-            self.connect('key-press-event', self.on_key)
+            connect_popup_keys(self, Gdk, self.on_key)
 
             self._history_open = False
             self.outer = Gtk.EventBox()
@@ -2830,7 +2895,7 @@ def show_goal_popup(material='', origin='', directions=None, notice='', error=''
             self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
             self.set_title('Подобрать цель')
             self.set_border_width(0)
-            self.connect('key-press-event', self.on_key)
+            connect_popup_keys(self, Gdk, self.on_key)
             self.editing = False
 
             self.outer = Gtk.EventBox()
@@ -3084,7 +3149,7 @@ def show_goal_result_popup(text='', direction='', notice='', error='', retryable
             self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
             self.set_title('Цель чтения')
             self.set_border_width(0)
-            self.connect('key-press-event', self.on_key)
+            connect_popup_keys(self, Gdk, self.on_key)
 
             self.outer = Gtk.EventBox()
             self.outer.set_visible_window(True)
@@ -3245,7 +3310,7 @@ def show_example_popup(material='', query='', intent_text='', has_intent=False,
             self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
             self.set_title('Покажи на примере')
             self.set_border_width(0)
-            self.connect('key-press-event', self.on_key)
+            connect_popup_keys(self, Gdk, self.on_key)
 
             self.outer = Gtk.EventBox()
             self.outer.set_visible_window(True)
@@ -3521,6 +3586,7 @@ def _dispatch(payload, mode):
             evidence=str(payload.get('evidence') or ''),
             semantic_role=role,
             more=str(payload.get('more') or ''),
+            cues=payload.get('cues'),
         )
 
     objects = payload.get('objects', [])

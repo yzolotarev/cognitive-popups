@@ -438,25 +438,29 @@ def test_sand_words_regroup_for_other_word_counts():
 
 
 def test_waiting_sand_hands_the_words_to_the_same_window(tmp_path, monkeypatch):
+    from threading import Event
     from cognitive_popups import sand_runtime
+    release = Event()
     class Proc:
         stdin = SimpleNamespace(write=lambda *_: None, close=lambda: None)
         def poll(self): return None
         def wait(self, timeout=None):
             waits.append(timeout)
+            assert release.wait(2)
     waits = []
     monkeypatch.setattr(sand_runtime.subprocess,"Popen",lambda *a,**k: Proc())
     handle = sand_runtime.SandHandle(["x"],{},tmp_path)
     assert handle.alive()
     path = handle.path
     assert handle.finish(["a"],"done",{"mode":"dual","items":[{"simple":"a"}]})
-    message = json.loads(path.read_text()) if path.exists() else None
+    message = json.loads(path.read_text())
+    release.set()
     import time
     deadline = time.monotonic() + 2
     while not waits and time.monotonic() < deadline:
         time.sleep(.01)
     assert waits == [None]
-    assert message is None or message["payload"]["items"][0]["simple"] == "a"
+    assert message["payload"]["items"][0]["simple"] == "a"
 
 
 def test_cancelled_wait_never_adopts_words(tmp_path, monkeypatch):

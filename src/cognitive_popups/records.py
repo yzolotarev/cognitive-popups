@@ -37,7 +37,7 @@ STATE_ROOT = os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-
 DEFAULT_DB = os.path.join(STATE_ROOT, "records.sqlite3")
 ENV_DB = "COGNITIVE_RECORD_DB"
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -238,6 +238,10 @@ _ADDED_COLUMNS = (
     ("predictions", "model", "TEXT"),
     ("predictions", "subject_note", "TEXT"),
     ("predictions", "one_delta", "TEXT NOT NULL DEFAULT ''"),
+    ("predictions", "display", "TEXT NOT NULL DEFAULT ''"),
+    ("predictions", "ask", "TEXT NOT NULL DEFAULT ''"),
+    ("predictions", "nodes_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ("predictions", "mark", "TEXT NOT NULL DEFAULT ''"),
     ("feynman_checks", "question_prompt_hash", "TEXT"),
     ("feynman_checks", "check_prompt_hash", "TEXT"),
     ("feynman_checks", "model", "TEXT"),
@@ -733,8 +737,9 @@ class RecordStore:
             conn.execute("DELETE FROM predictions WHERE id = ?", (check.id,))
             conn.execute(
                 "INSERT INTO predictions (id, session_id, hypothesis, status, mismatch,"
-                " evidence, subject_note, one_delta, created_utc, created_epoch, prompt_hash, model)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " evidence, subject_note, one_delta, created_utc, created_epoch, prompt_hash, model,"
+                " display, ask, nodes_json, mark)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     check.id,
                     session.id,
@@ -748,6 +753,10 @@ class RecordStore:
                     _epoch(check.created_at),
                     check.prompt_hash or None,
                     check.model or None,
+                    check.display,
+                    check.ask,
+                    json.dumps(check.nodes, ensure_ascii=False),
+                    check.mark,
                 ),
             )
             for fragment_id in check.buffer_fragment_ids:
@@ -1154,6 +1163,10 @@ class RecordStore:
                     evidence=row["evidence"] or "",
                     subject_note=row["subject_note"] or "",
                     one_delta=row["one_delta"] or "",
+                    display=row["display"] or "",
+                    ask=row["ask"] or "",
+                    nodes=json.loads(row["nodes_json"] or "[]"),
+                    mark=row["mark"] or "",
                     created_at=row["created_utc"],
                     id=row["id"],
                     prompt_hash=row["prompt_hash"] or "",

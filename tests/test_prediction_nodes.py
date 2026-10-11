@@ -35,7 +35,7 @@ def test_unspecific_set_is_silence_and_a_doubtful_partly_is_withheld():
     assert shown["words"] == [] and shown["mark"] == "" and shown["raw_mark"] == "partly"
     assert nodes.describe(shown["mark"], shown["words"]) == "нечего добавить"
     sure = nodes.assemble(answer(mark="wrong"), HYPOTHESIS, SOURCE, {})
-    assert sure["mark"] == "wrong" and nodes.describe("wrong", ["a", "b", "c"]) == "✗\na · b · c"
+    assert sure["mark"] == "wrong" and nodes.describe("wrong", ["a", "b", "c"]) == "?\na · b · c"
 
 
 def test_check_prediction_nodes_returns_marked_nodes_and_never_an_explanation(tmp_path):

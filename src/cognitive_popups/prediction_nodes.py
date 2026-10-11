@@ -2,7 +2,7 @@
 
 The reader's guess, marked, and four nodes to think from (2026-10-07).
 
-    prediction -> ✓ / ≈ / ✗ -> four nodes -> the reader draws the edges, asks
+    prediction -> ✓ / ≈ / ? -> four nodes -> the reader draws the edges, asks
     their own next question and makes a new prediction.
 
 The model gives nodes, never links or an answer. What it writes is checked here
@@ -21,7 +21,9 @@ from pathlib import Path
 
 OFF_FILE = "prediction-nodes.off"
 HISTORY_FILE = "nodes-history.json"
-MARK_SYMBOL = {"ok": "✓", "partly": "≈", "wrong": "✗"}
+# A possible mismatch invites another thought; it is not a prohibition or a
+# reliable verdict on the reader. Keep the model's raw mark in the ledger.
+MARK_SYMBOL = {"ok": "✓", "partly": "≈", "wrong": "?"}
 STATUS_OF_MARK = {"ok": "confirmed", "partly": "partially_confirmed", "wrong": "contradicted", "broken": "unclear",
                   "none": "unclear"}
 #: A guess nothing in the text could refute is not marked (2026-10-09): the window

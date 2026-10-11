@@ -134,8 +134,8 @@ def test_terminal_uses_primary_before_copy_and_still_reports_dev(monkeypatch):
 
 
 @pytest.mark.parametrize("before,after,old,new,expected", [
-    (10,11,"same","same",True), (10,10,"old","new",False),
-    (10,None,"old","new",False), (None,11,"same","same",True),
+    (10,11,"same","same",True), (10,10,"old","new",True),
+    (10,None,"old","new",True), (None,11,"same","same",True),
     (None,None,"same","same",False), (None,None,"old","new",True),
 ])
 def test_copy_freshness_uses_watcher_even_when_text_is_identical(before,after,old,new,expected):

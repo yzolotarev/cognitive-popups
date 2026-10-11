@@ -7,7 +7,7 @@ Okular и почти любом приложении, без расширени�
 Только стандартная библиотека Python. Внешние команды уже есть в проекте:
 hyprctl, wl-copy, wl-paste.
 
-Проверено в собственном GTK-окне на Hyprland 0.56.2 с русской раскладкой.
+Проверено в собственном GTK-окне и Firefox на Hyprland 0.56.2.
 
 Встраивание: сделать первой пробой в `desktop.selected_text_source`,
 существующие пробы primary/clipboard оставить запасными.
@@ -65,10 +65,11 @@ class CaptureResult:
 
 # --- Внешние команды -----------------------------------------------------
 
-def _run(cmd: list[str], data: bytes | None = None, timeout: float = 1.0) -> tuple[int | None, bytes]:
+def _run(cmd: list[str], data: bytes | None = None, timeout: float = 1.0,
+         error_output: bool = False) -> tuple[int | None, bytes]:
     try:
         r = subprocess.run(cmd, input=data, capture_output=True, timeout=timeout, check=False)
-        return r.returncode, r.stdout or b""
+        return r.returncode, (r.stderr if error_output and r.returncode else r.stdout) or b""
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None, b""
 
@@ -145,13 +146,17 @@ class SavedClipboard:
     mime: str | None = None
     data: bytes = b""
     secret: bool = False
+    empty: bool = False
 
 
 def save_clipboard() -> SavedClipboard:
-    code, out = _run(["wl-paste", "--list-types"])
+    code, out = _run(["wl-paste", "--list-types"], error_output=True)
     if code != 0:
-        return SavedClipboard()
+        # A connection/permission failure is not evidence of an empty buffer.
+        return SavedClipboard(empty=code == 1 and out.strip() == b"Nothing is copied")
     types = [t.strip() for t in out.decode("utf-8", "replace").splitlines() if t.strip()]
+    if not types:
+        return SavedClipboard(empty=True)
     if SECRET_HINT in types:
         return SavedClipboard(secret=True)
     for mime in RESTORABLE_TYPES:
@@ -212,9 +217,21 @@ def plan_for(window_class: str) -> list[str]:
 
 
 def copy_changed(stamp_before, stamp_after, text_before, text_after, sentinel=False):
-    if stamp_before is not None or stamp_after is not None:
-        return stamp_after is not None and (stamp_before is None or stamp_after > stamp_before)
-    return bool(text_after) and text_after != text_before
+    changed_text = bool(text_after) and text_after != text_before
+    changed_owner = stamp_after is not None and (stamp_before is None or stamp_after > stamp_before)
+    return bool(text_after) and (changed_text or changed_owner)
+
+
+def failure_message(notes):
+    if 'secret clipboard' in notes:
+        return 'Захват пропущен: защищённый буфер обмена'
+    if 'clipboard not restorable' in notes:
+        return 'Не удалось сохранить прежний формат буфера обмена'
+    if 'source changed during capture; ignored' in notes:
+        return 'Источник изменился при захвате — повтори выделение'
+    if any(note.startswith('sendshortcut failed:') for note in notes):
+        return 'Не удалось отправить команду копирования'
+    return 'Копирование не передало выделенный текст'
 
 
 def _try_primary(last_capture_time):
@@ -281,9 +298,9 @@ def _capture_selection(timeout_ms, use_sentinel, last_capture_time):
 
 def _try_copy(res, address, timeout_ms, use_sentinel):
     saved = save_clipboard()
-    # Unknown formats cannot be restored losslessly; keep the existing primary
-    # probes as the fallback rather than clearing rich data or a password hint.
-    if saved.mime is None or saved.secret:
+    # Empty is a valid snapshot. Unsupported content and password hints must
+    # remain intact; they are different failures from an absent selection.
+    if (saved.mime is None and not saved.empty) or saved.secret:
         res.notes.append("secret clipboard" if saved.secret else "clipboard not restorable")
         return ""
     sentinel = SENTINEL_PREFIX + uuid.uuid4().hex[:8]
@@ -316,6 +333,8 @@ def _try_copy(res, address, timeout_ms, use_sentinel):
                     text = cur
                     break
                 time.sleep(0.015)
+            if not text:
+                res.notes.append("copy produced no fresh text")
     finally:
         # Don't overwrite a later copy made by the reader while we waited.
         if read_clipboard_text() == (text or before):

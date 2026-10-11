@@ -66,6 +66,44 @@ def test_primary_from_another_document_is_not_a_copy_fallback(monkeypatch):
     assert 'primary owner unverified; ignored' in result.notes
 
 
+def test_empty_clipboard_is_a_valid_snapshot(monkeypatch):
+    monkeypatch.setattr(capture, '_run', lambda *a, **kw: (1, b'Nothing is copied\n'))
+    assert capture.save_clipboard().empty
+    monkeypatch.setattr(capture, '_run', lambda *a, **kw: (1, b'Failed to connect to a Wayland server'))
+    assert not capture.save_clipboard().empty
+    monkeypatch.setattr(capture, '_run', lambda *a, **kw: (0, b'application/x-unknown\n'))
+    assert not capture.save_clipboard().empty
+
+
+def test_autocopy_runs_with_empty_clipboard_and_restores_it(monkeypatch):
+    empty = capture.SavedClipboard(empty=True)
+    monkeypatch.setattr(capture, 'save_clipboard', lambda: empty)
+    values = iter(['', 'выделенный текст', 'выделенный текст'])
+    monkeypatch.setattr(capture, 'read_clipboard_text', lambda: next(values))
+    monkeypatch.setattr(capture, 'stamp_mtime', lambda p: 123)
+    sent, restored = [], []
+    monkeypatch.setattr(capture, '_run', lambda cmd, **kw: (sent.append(cmd) or 0, b''))
+    monkeypatch.setattr(capture, 'restore_clipboard', restored.append)
+    assert capture._try_copy(capture.CaptureResult(window_class='firefox'), '0xabc', 300, False) == 'выделенный текст'
+    assert sent and restored == [empty]
+
+
+def test_stale_watcher_cannot_hide_a_changed_text_or_accept_unchanged_text():
+    assert capture.copy_changed(10, 10, 'старое', 'новое')
+    assert not capture.copy_changed(10, 10, 'старое', 'старое')
+    assert not capture.copy_changed(10, 11, 'старое', '')
+
+
+@pytest.mark.parametrize('notes,message', [
+    (['secret clipboard'], 'Захват пропущен: защищённый буфер обмена'),
+    (['clipboard not restorable'], 'Не удалось сохранить прежний формат буфера обмена'),
+    (['sendshortcut failed: refused'], 'Не удалось отправить команду копирования'),
+    (['copy produced no fresh text'], 'Копирование не передало выделенный текст'),
+])
+def test_capture_failure_names_the_actual_operation(notes, message):
+    assert capture.failure_message(notes) == message
+
+
 def test_context_switch_during_copy_cannot_attach_text_to_old_title(monkeypatch):
     windows = iter([{'class': 'browser', 'address': '0xabc', 'title': 'HR'},
                     {'class': 'browser', 'address': '0xabc', 'title': 'posture'}])

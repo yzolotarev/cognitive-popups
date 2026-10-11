@@ -507,6 +507,7 @@ def selected_text_source(primary_only: bool = False) -> tuple[str, str]:
     if hasattr(selection, "snapshot"):
         return selection.snapshot
     selection.context = "unknown"
+    selection.capture_notes = []
     if primary_only and (STATE_DIR / "sand.enabled").exists():
         win = capture.active_window()
         if capture.classify_context(win.get("class", ""), win.get("title", "")) == "dev":
@@ -515,6 +516,7 @@ def selected_text_source(primary_only: bool = False) -> tuple[str, str]:
         last_capture = getattr(selection, "last_capture_time", None)
         pressed_at = time.time()
         result = capture.capture_selection(last_capture_time=last_capture)
+        selection.capture_notes = result.notes
         observe_artifact("capture_result", {
             "window_class": result.window_class, "window_title": result.window_title,
             "origin": result.origin, "context": result.context,
@@ -1467,7 +1469,9 @@ class DesktopApp:
         if not text:
             debug("seed: no selection from any source")
             emit("action", window="seed", detail="no selection")
-            self.flash.show_notice("нет выделения")
+            message = (capture.failure_message(getattr(selection, 'capture_notes', []))
+                       if (STATE_DIR / 'sand.enabled').exists() else 'нет выделения')
+            self.flash.show_notice(message)
             return
         # Owner, 10.10.2026: Alt+W gives four words everywhere. Text from a
         # terminal or an AI chat still never enters the study buffer.

@@ -79,7 +79,7 @@ RECORDS = RecordStore(os.environ.get("COGNITIVE_RECORD_DB") or STATE_DIR / "reco
 #: of inventing a combination, so nothing here promises a key that does not work.
 KEYS_REFERENCE = (
     ("Alt+W", "четыре слова из выделенного текста"),
-    ("Ctrl+Alt+W", "4-words-batch: три ракурса, mindmap, итоговый тезис"),
+    ("Ctrl+Alt+W", "4-words-batch: три ракурса, своя карта и её разбор, итоговый тезис"),
     ("Alt+F", "проверка понимания по Фейнману"),
     ("Alt+E", "заметка к выделенному месту"),
     ("Alt+C", "объяснить слово или задать вопрос"),
@@ -367,7 +367,7 @@ def run_popup(payload: dict[str, object], *, window: str, detail: str = "") -> s
             env=popup_env(),
             timeout=3600,
         )
-        if payload.get("mode") in {"input", "note"}:
+        if payload.get("mode") in {"input", "note", "map"}:
             if result.stdout:
                 observe_artifact("submitted_input", {"text": result.stdout,
                     "mode": payload.get("mode"), "prompt": payload.get("prompt"),
@@ -384,6 +384,10 @@ def run_popup(payload: dict[str, object], *, window: str, detail: str = "") -> s
 
 
 UNIVERSE_PROMPT = "Твой вопрос или мысль:"
+MAP_PROMPT = ("Перепиши свою карту текстом, как она есть:\n"
+              "одна мысль — одна строка, отступ — подчинение,\n"
+              "«A -> B: почему» — связь между ветками.\n"
+              "Ctrl+Enter — разобрать, Esc — без разбора.")
 STEP_PROMPT = ("Какой шаг сделаешь за эти минуты? Можно просто Enter: «читаю».\n"
                "Например: «объясню, чем X отличается от Y». Не 15 минут, а 25: «25 разберу ...».")
 STEP_GOAL_PROMPT = "Ради чего это было? Одной строкой. Можно пропустить: Enter."
@@ -1595,6 +1599,7 @@ class DesktopApp:
                          "title": f"4 слова — ракурс {index}/3"},
                         window="dual", detail=f"4-words-batch {index}/3",
                     )
+                self._critique_batch_map(source, all_cues)
                 thesis_prompt = [
                     {"role": "system", "content": (
                         "Сформулируй по исходному тексту и трём наборам опор ровно один "
@@ -1624,6 +1629,27 @@ class DesktopApp:
                 idle_add(self._batch_done)
 
         threading.Thread(target=bind_chain(worker), daemon=True).start()
+
+    def _critique_batch_map(self, source: str, cues: list[dict[str, str]]) -> None:
+        """The pause for the reader's own map, now with the map itself captured.
+
+        Skipping is free: Esc or an empty window goes straight on to the thesis.
+        A failed critique is shown and the series continues, because the map is
+        already written down (observation keeps the outline) and the thesis
+        does not depend on it.
+        """
+        outline = run_popup({"mode": "map", "title": "Моя карта", "prompt": MAP_PROMPT},
+                            window="map", detail="4-words-batch map")
+        if not outline:
+            return
+        try:
+            critique = self.service.critique_map(source, outline, cues)
+            text = critique.text
+        except Exception as exc:  # noqa: BLE001
+            debug(f"map critique failed: {exc}\n{traceback.format_exc()}")
+            text = f"Карта записана, разобрать не удалось:\n\n{exc}"
+        run_popup({"mode": "text", "title": "Карта — где структура слабее", "text": text},
+                  window="text", detail="4-words-batch map critique")
 
     def _batch_done(self):
         self._busy = False

@@ -2463,7 +2463,7 @@ def show_text_popup(text, px=None, py=None, title='Result', expanded=False, note
     return 0
 
 
-def show_note_popup(anchor='', px=None, py=None, *, title='Error note', prompt=''):
+def show_note_popup(anchor='', px=None, py=None, *, title='Error note', prompt='', window_name=''):
     """Multi-line capture for an error note; prints the comment on stdout.
 
     Only the input field is shown. The anchor is still captured and stored, but
@@ -2479,6 +2479,7 @@ def show_note_popup(anchor='', px=None, py=None, *, title='Error note', prompt='
         apply_popup_font(Gtk, Gdk)
     except Exception:
         return 1
+    window_name = window_name or ('note' if not prompt else 'task_attempt')
 
     class NotePopup(Gtk.Window):
         def __init__(self, anchor, px=None, py=None):
@@ -2554,7 +2555,7 @@ def show_note_popup(anchor='', px=None, py=None, *, title='Error note', prompt='
             self.present()
             self.view.grab_focus()
             _rendered(buttons=['Записать', 'Отмена'], prompt=prompt)
-            _emit('window_open', window='note' if not prompt else 'task_attempt', detail=self.anchor or 'no selection')
+            _emit('window_open', window=window_name, detail=self.anchor or 'no selection')
             return False
 
         def text(self):
@@ -2566,8 +2567,8 @@ def show_note_popup(anchor='', px=None, py=None, *, title='Error note', prompt='
             if not text:
                 return True
             buffer = self.view.get_buffer()
-            _submitted(buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True), 'note' if not prompt else 'task_attempt')
-            _emit('submit', window='note' if not prompt else 'task_attempt', detail=f'{len(text)} chars')
+            _submitted(buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True), window_name)
+            _emit('submit', window=window_name, detail=f'{len(text)} chars')
             sys.stdout.write(text)
             sys.stdout.flush()
             self.destroy()
@@ -2575,7 +2576,7 @@ def show_note_popup(anchor='', px=None, py=None, *, title='Error note', prompt='
             return True
 
         def on_cancel(self, *_args):
-            _emit('window_close', window='note' if not prompt else 'task_attempt', detail='cancel')
+            _emit('window_close', window=window_name, detail='cancel')
             self.destroy()
             Gtk.main_quit()
             return True
@@ -3498,6 +3499,12 @@ def _dispatch(payload, mode):
     if mode == 'note':
         return show_note_popup(
             str(payload.get('anchor', '')), payload.get('x'), payload.get('y')
+        )
+
+    if mode == 'map':
+        return show_note_popup(
+            '', payload.get('x'), payload.get('y'), title=str(payload.get('title', 'Моя карта')),
+            prompt=str(payload.get('prompt', '')), window_name='map',
         )
 
     if mode == 'task_attempt':

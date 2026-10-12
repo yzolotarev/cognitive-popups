@@ -24,8 +24,9 @@ directory can be called anything; rerun the installer if you move it later.
 - optionally shows the same cues in one "sand" window instead (off by default):
   grains lift off the selection and settle into the four words at its corners, in
   a colour opposite to the page, and each word unfolds its explanation outward;
-- runs a series of three views on the same passage, with a pause for the reader's
-  own mind map between them and one closing thesis at the end;
+- runs a series of three views on the same passage, then asks for the reader's
+  own mind map as a text outline and names where its grouping, hierarchy and
+  links are weakest (skippable, never a grade), and ends with one thesis;
 - runs an explicit 15-minute reading step that the reader starts themselves: one
   goal per session (skippable), a passive countdown ring, and at the end a single
   "did you make the step?" window with one line for what was taken away;
@@ -116,7 +117,7 @@ bindings are:
 | Key | Action |
 |---|---|
 | `Alt+W` | four cues from the primary selection |
-| `Ctrl+Alt+W` | three views in a row with a mind-map pause, then one thesis |
+| `Ctrl+Alt+W` | three views in a row, your mind map and its critique, then one thesis |
 | `Alt+F` | Feynman check for the current buffer |
 | `Alt+E` | note about a misreading, anchored to the selection |
 | `Alt+C` | explain terms, or ask a free-form question |

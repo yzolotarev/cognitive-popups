@@ -36,6 +36,7 @@ PROMPT_ATTRS: Mapping[str, str] = {
     "example": "EXAMPLE_SYSTEM",
     "reframe": "REFRAME_SYSTEM",
     "goal": "GOAL_SYSTEM",
+    "map_critique": "MAP_CRITIQUE_SYSTEM",
     # Background preparation of one practice task (see practice.py). Editable the
     # same way as the rest, so the analysis rules can be tuned without a release.
     "practice_analysis": "PRACTICE_ANALYSIS_SYSTEM",

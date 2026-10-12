@@ -100,6 +100,7 @@ from .prompts import (
     feynman_check_prompt,
     feynman_question_prompt,
     goal_prompt,
+    map_critique_prompt,
     prediction_check_prompt,
     reframe_prompt,
     seed_prompt,
@@ -254,6 +255,26 @@ class Reframe:
     current_frame: str = ""
     prompt_hash: str = ""
     model: str = ""
+
+
+@dataclass
+class MapCritique:
+    """Where the reader's own map is structurally weakest; never a grade.
+
+    One finding per dimension (grouping, hierarchy, relationships), each with
+    the node it is about when the model named one that is really on the map.
+    """
+
+    text: str
+    outline: str
+    findings: dict[str, dict[str, str]] = field(default_factory=dict)
+    question: str = ""
+    prompt_hash: str = ""
+    model: str = ""
+
+
+#: The three things a map critique looks at, in the order the window shows them.
+MAP_DIMENSIONS = (("grouping", "Группировка"), ("hierarchy", "Иерархия"), ("relationships", "Связи"))
 
 
 @dataclass
@@ -957,6 +978,49 @@ class CognitiveService:
             current_frame=current_frame.strip(),
             prompt_hash=prompt_hash(system_prompt),
             model=self._model_name(),
+        )
+
+    @observed_operation("map_critique")
+    def critique_map(self, material: str, outline: str,
+                     cues: list[dict[str, str]] | None = None) -> MapCritique:
+        """Read the reader's map against its passage: grouping, hierarchy, links.
+
+        The map is the reader's work and the critique is a model proposal; the
+        outline is kept word for word next to it. An anchor the model invented
+        (not a node on the map) is dropped rather than shown as the reader's.
+        """
+        source = material.strip()
+        drawn = outline.strip()
+        if not source:
+            raise ValueError("material must not be empty")
+        if not drawn:
+            raise ValueError("map must not be empty")
+        system_prompt, language = self._language_prompt("map_critique", source, drawn)
+        data = parse_json_object(self.client.complete(
+            language.messages(map_critique_prompt(source, drawn, cues, system_prompt)),
+            max_tokens=600,
+        ))
+        findings: dict[str, dict[str, str]] = {}
+        lines: list[str] = []
+        for key, label in MAP_DIMENSIONS:
+            raw = data.get(key)
+            note = str(raw.get("note") or "").strip() if isinstance(raw, dict) else ""
+            if not note:
+                continue
+            anchor = str(raw.get("anchor") or "").strip()
+            if anchor and anchor not in drawn:
+                anchor = ""
+            findings[key] = {"anchor": anchor, "note": note}
+            lines.append(f"{label}: " + (f"«{anchor}» — {note}" if anchor else note))
+        question = data.get("question")
+        question = question.strip() if isinstance(question, str) else ""
+        if question:
+            lines.append(f"Вопрос к карте: {question}")
+        if not findings:
+            raise Web2APIError("empty map critique")
+        return MapCritique(
+            text="\n\n".join(lines), outline=drawn, findings=findings, question=question,
+            prompt_hash=prompt_hash(system_prompt), model=self._model_name(),
         )
 
     @observed_operation("goal")

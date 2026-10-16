@@ -33,6 +33,7 @@ from . import context, focus, slack, sound, steps
 from . import prediction_nodes as nodes
 from . import recycling
 from . import instant_cues
+from . import returns
 from .errors import human_error
 from .manual_queue import queued_action
 from . import capture
@@ -390,6 +391,16 @@ def focus_pid(pid: int) -> None:
                        capture_output=True, timeout=1)
     except (OSError, subprocess.SubprocessError):
         pass
+
+
+def return_prompt(item: dict) -> str:
+    """The return window: the reader's own guess and where it split, never the source."""
+    made = datetime.fromtimestamp(float(item.get("created_epoch") or 0)).strftime("%d.%m")
+    lines = [f"Возврат к гипотезе от {made} (без текста).", "", f"Ты писал: {item.get('hypothesis') or ''}"]
+    if item.get("mismatch"):
+        lines += ["", f"Расходилось: {item['mismatch']}"]
+    lines += ["", "Как это устроено на самом деле? Своими словами. Можно закрыть."]
+    return "\n".join(lines)
 
 
 SEED_REPEAT_S = 120.0
@@ -1246,6 +1257,7 @@ class DesktopApp:
             return
 
         def worker():
+            self._offer_return()
             try:
                 selected, selected_origin = selected_text_source() if (STATE_DIR / "sand.enabled").exists() else ("", "")
                 from .manual_queue import selection
@@ -1983,6 +1995,7 @@ class DesktopApp:
             emit("action", window="prediction", detail="buffer is empty")
             self.flash.show_notice("нет текста: выдели абзац")
             return
+        self._offer_return()
         self._prediction_pack = context.pack(point, root=STATE_DIR)
         original = recycling.RecyclingStore(RECORDS.path).original_material(point, self.service.session.id)
         if original:
@@ -3212,7 +3225,38 @@ class DesktopApp:
             debug(f"record prediction failed: {exc}")
             emit("error", window="prediction", detail=f"ledger: {exc}")
             return False
+        if check.status in returns.MISSED_STATUSES:
+            try:
+                returns.ReturnStore(RECORDS).schedule(check.id, time.time())
+            except RecordError as exc:
+                debug(f"schedule return failed: {exc}")
         return True
+
+    def _offer_return(self) -> None:
+        """Once a day, before a guess or a step: one missed guess, rebuilt without the text.
+
+        Blocking; call it off the main loop. Closing the window counts as "not now".
+        """
+        try:
+            store = returns.ReturnStore(RECORDS)
+            item = store.due(time.time())
+        except Exception as exc:  # noqa: BLE001 - a return never blocks the action it precedes
+            debug(f"return lookup failed: {exc}")
+            return
+        if not item:
+            return
+        answer = popup_input(return_prompt(item), "Возврат", structured=True)
+        outcome = "skip"
+        if answer:
+            outcome = self._choose(
+                f"Ты написал: {answer}\n\nТеперь держится?", "Возврат",
+                [("Держится", "better"), ("Ещё шатко", "same")], window="return") or "same"
+        try:
+            store.record_answer(item["prediction_id"], answer or "", outcome, time.time())
+        except (RecordError, ValueError) as exc:
+            debug(f"return answer failed: {exc}")
+            return
+        emit("result", window="return", detail=outcome)
 
     def _commit_feynman(self, check) -> None:
         try:

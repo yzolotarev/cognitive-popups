@@ -32,6 +32,8 @@ from . import practice
 from . import context, focus, slack, sound, steps
 from . import prediction_nodes as nodes
 from . import recycling
+from . import instant_cues
+from .errors import human_error
 from .manual_queue import queued_action
 from . import capture
 from .sand_store import SandStore
@@ -390,6 +392,25 @@ def focus_pid(pid: int) -> None:
         pass
 
 
+SEED_REPEAT_S = 120.0
+
+
+def repeat_seed(last: tuple[str, float] | None, key: str, now: float) -> bool:
+    """True when Alt+W saw this same text a moment ago (no new fragment)."""
+    return bool(last) and last[0] == key and 0 <= now - last[1] < SEED_REPEAT_S
+
+
+def offline_cues(text: str) -> str:
+    """Up to four words picked from the text itself, for when the model fails."""
+    if not text.strip():
+        return ""
+    try:
+        draft = instant_cues.draft_cues(text)
+    except Exception:  # noqa: BLE001 - a fallback must never raise
+        return ""
+    return " · ".join(c["term"] for c in draft.get("cues", []) if c.get("term"))
+
+
 def repeat_press(mapped: bool | None, raised_at: float | None, now: float) -> str:
     """What a repeated hotkey does to its own still-open window.
 
@@ -703,6 +724,10 @@ class FlashWindow:
             if position:
                 payload["x"], payload["y"] = position
             payload = prepare_popup(payload, "dual")
+            previous = self.__dict__.get("_cue_proc")
+            if previous is not None and previous.poll() is None:
+                # One four-words window at a time: the new one replaces it.
+                previous.terminate()
             proc = subprocess.Popen(
                 command,
                 stdin=subprocess.PIPE,
@@ -712,6 +737,7 @@ class FlashWindow:
                 start_new_session=True,
                 env=popup_env(),
             )
+            self._cue_proc = proc
             if proc.stdin is not None:
                 proc.stdin.write(json.dumps(payload, ensure_ascii=False))
                 proc.stdin.close()
@@ -1755,6 +1781,18 @@ class DesktopApp:
             context.remember(text, "seed", root=STATE_DIR)
         cache_key = self.service.cue_cache_key(text)
         cues = self._cue_cache.get(cache_key)
+        self._seed_text = text
+        now = time.monotonic()
+        last = self.__dict__.get("_last_seed")
+        if cues and repeat_seed(last, cache_key, now):
+            # Same text again within a couple of minutes: show the words,
+            # don't count a second fragment.
+            debug("seed: repeat, reshowing")
+            emit("action", window="seed", detail="repeat, reshown")
+            self.flash.show_cues(cues)
+            self._seed_request_running = False
+            return
+        self._last_seed = (cache_key, now)
         if cues:
             debug("seed: cache hit")
             fragment = bind_chain(self.service.add_fragment_with_cues)(text, cues)
@@ -1797,7 +1835,7 @@ class DesktopApp:
                 idle_add(self._seed_done, fragment.cue_details, None, fragment.id, fragment.source_hash, handle, token, origin)
             except Exception as exc:  # noqa: BLE001
                 debug(f"seed failed: {exc}\n{traceback.format_exc()}")
-                idle_add(self._seed_done, [], str(exc), None, None, handle, token, origin)
+                idle_add(self._seed_done, [], exc, None, None, handle, token, origin)
 
         threading.Thread(target=bind_chain(worker), daemon=True).start()
 
@@ -1821,7 +1859,13 @@ class DesktopApp:
             return False
         if error:
             emit("error", window="seed", detail=str(error))
-            self.flash.show_text(f"Ошибка четырёх слов:\n\n{error}", "4 слова")
+            self._last_seed = None
+            draft = offline_cues(self.__dict__.get("_seed_text", ""))
+            line = human_error(error)
+            if draft:
+                self.flash.show_text(f"{line}\n\nЧерновик без ИИ, только слова из текста:\n\n{draft}", "4 слова")
+            else:
+                self.flash.show_text(line, "4 слова")
             return False
         emit("result", window="seed", detail=f"{len(cues)} cues", fragment_id=fragment_id, source_hash=source_hash)
         if adopted:
@@ -1887,7 +1931,7 @@ class DesktopApp:
             except Exception as exc:  # noqa: BLE001
                 debug(f"4-words-batch failed: {exc}\n{traceback.format_exc()}")
                 run_popup(
-                    {"mode": "text", "title": "4 слова — серия", "text": f"Ошибка серии:\n\n{exc}"},
+                    {"mode": "text", "title": "4 слова — серия", "text": human_error(exc)},
                     window="text",
                 )
             finally:
@@ -2351,7 +2395,7 @@ class DesktopApp:
         self._busy = False
         if error:
             emit("error", window="feynman", detail=str(error))
-            self.flash.show_text(f"Ошибка вопроса Фейнмана:\n\n{error}", "Фейнман")
+            self.flash.show_text(human_error(error), "Фейнман")
             return False
         explanation = popup_input(question, "Feynman check")
         if not explanation:
@@ -2381,7 +2425,7 @@ class DesktopApp:
         self._busy = False
         if error:
             emit("error", window="feynman", detail=str(error))
-            self.flash.show_text(f"Ошибка проверки Фейнмана:\n\n{error}", "Фейнман")
+            self.flash.show_text(human_error(error), "Фейнман")
             return False
         emit("result", window="feynman", detail=f"{status}, {len(gaps)} gaps")
         if status == "passed":
@@ -2445,7 +2489,7 @@ class DesktopApp:
         except Exception as exc:  # noqa: BLE001 - a lost note must be visible
             debug(f"error note failed: {exc}")
             emit("error", window="note", detail=str(exc))
-            self.flash.show_text(f"Заметка не записана:\n\n{exc}", "Ошибка чтения")
+            self.flash.show_text("Заметка не записана. " + human_error(exc), "Ошибка чтения")
             return
         with operation_scope(current_chain().context):
             observation.record_annotation("ledger_link", {"kind": "note", "note_id": note.id,
@@ -2595,7 +2639,7 @@ class DesktopApp:
         self._busy = False
         if error:
             emit("error", window="clarify", detail=str(error))
-            self.flash.show_text(f"Ошибка ответа:\n\n{error}", "Спросить / объяснить")
+            self.flash.show_text(human_error(error), "Спросить / объяснить")
             return False
         observe_artifact("clarify_universe_answer", {
             "question": answer.question, "bridge": answer.bridge, "gap": answer.gap,
@@ -2641,7 +2685,7 @@ class DesktopApp:
         self._busy = False
         if error:
             emit("error", window="clarify", detail=str(error))
-            self.flash.show_text(f"Ошибка ответа:\n\n{error}", "Спросить / объяснить")
+            self.flash.show_text(human_error(error), "Спросить / объяснить")
             return False
         note = ANSWER_GROUNDING_NOTE.get(answer.grounding, "")
         emit(
@@ -2663,7 +2707,7 @@ class DesktopApp:
         self._busy = False
         if error:
             emit("error", window="clarify", detail=str(error))
-            self.flash.show_text(f"Ошибка объяснения:\n\n{error}", "Спросить / объяснить")
+            self.flash.show_text(human_error(error), "Спросить / объяснить")
             return False
         lines = [f"{line['term']} — {line['explanation']}" for line in result.lines]
         if not lines:
@@ -2720,7 +2764,7 @@ class DesktopApp:
         self._busy = False
         if error:
             emit("error", window="summary", detail=str(error))
-            self.flash.show_text(f"Ошибка сжатия:\n\n{error}", "Сжать текст")
+            self.flash.show_text(human_error(error), "Сжать текст")
             return False
         emit("result", window="summary", detail=f"сжат текст, {len(result.text)} chars")
         self.flash.show_text(result.text, "Сжать текст")
@@ -3125,7 +3169,7 @@ class DesktopApp:
         self._busy = False
         if error:
             emit("error", window="example", detail=str(error))
-            self.flash.show_text(f"Ошибка примера:\n\n{error}", "Покажи на примере")
+            self.flash.show_text(human_error(error), "Покажи на примере")
             return False
         if len(self._example_cache) >= 32:
             self._example_cache.clear()

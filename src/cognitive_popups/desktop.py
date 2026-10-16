@@ -83,12 +83,14 @@ RECORDS = RecordStore(os.environ.get("COGNITIVE_RECORD_DB") or STATE_DIR / "reco
 #: of inventing a combination, so nothing here promises a key that does not work.
 KEYS_REFERENCE = (
     ("Alt+W", "четыре слова из выделенного текста"),
-    ("Ctrl+Alt+W", "4-words-batch: три ракурса, mindmap, итоговый тезис"),
-    ("Alt+F", "проверка понимания по Фейнману"),
+    ("Ctrl+Alt+P", "моя гипотеза: проверить свою мысль по тексту"),
     ("Alt+E", "заметка к выделенному месту"),
     ("Alt+C", "объяснить слово или задать вопрос"),
-    ("Ctrl+Q", "сжать выделение до сути"),
-    ("Alt+I", "учебный шаг · рождение звезды"),
+    ("Alt+I", "шаг на 15 минут (звезда сессии)"),
+    ("Alt+K", "эта справка по клавишам"),
+    ("Ctrl+Alt+Shift+P", "сохранённые ответы на гипотезы"),
+    ("Ctrl+Alt+W", "три ракурса 4 слов и итоговый тезис"),
+    ("Alt+F", "проверка понимания по Фейнману"),
     ("Alt+G", "один конкретный пример"),
     ("Alt+Shift+G", "пример со своим запросом"),
     ("Alt+L", "ступенька к трудному месту (эксперимент)"),
@@ -96,8 +98,7 @@ KEYS_REFERENCE = (
     ("Alt+Shift+T", "новая задача по старому материалу"),
     ("Alt+Y", "попытка последней задачи"),
     ("Alt+H", "боковая панель (сейчас заморожена)"),
-    ("—", "проверка гипотезы: кнопка «…» в панели"),
-    ("Alt+K", "эта справка по клавишам"),
+    ("—", "сжать до сути: меню «Ещё» в боковой панели"),
 )
 
 MODE_MENU = [
@@ -108,6 +109,7 @@ MODE_MENU = [
     {"label": "Моя гипотеза", "action": "prediction"},
     {"label": "Сохранённые ответы на гипотезы", "action": "prediction_history"},
     {"label": "Спросить / объяснить", "action": "clarify"},
+    {"label": "Сжать до сути", "action": "summary"},
     {"label": "Клавиши", "action": "keys"},
 ]
 
@@ -1674,7 +1676,8 @@ class DesktopApp:
         elif mode == "feynman":
             self.start_feynman()
         elif mode == "prediction":
-            self.start_prediction()
+            # The guess window blocks; never on the main loop (Ctrl+Alt+P does the same).
+            self._off_main("prediction", self.start_prediction)
         elif mode == "prediction_history":
             self.show_prediction_history()
         elif mode == "reframe":
@@ -1683,6 +1686,8 @@ class DesktopApp:
             self.explain_terms()
         elif mode == "keys":
             self.show_keys()
+        elif mode == "summary":
+            self.summarize_text()
         elif mode == "example":
             self.show_example()
         elif mode == "intent":
@@ -2759,7 +2764,7 @@ class DesktopApp:
             return
         observe_artifact("summary_source", {"selection": text})
         emit("action", window="summary",
-             detail=f"сжат текст (Ctrl+Q): {text[:60]}")
+             detail=f"сжат текст: {text[:60]}")
         self._busy = True
         self._log_prompt("summary", "summary")
 
@@ -3623,7 +3628,7 @@ class DesktopApp:
             emit("action", window="reframe", detail="frozen")
             return True
         if request == "summary":
-            begin_interaction("hotkey", window="summary", detail="сжат текст (Ctrl+Q)")
+            begin_interaction("hotkey", window="summary", detail="сжат текст")
             self._split_idle_session()
             self.summarize_text()
             return True

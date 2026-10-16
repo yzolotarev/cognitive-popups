@@ -28,13 +28,13 @@ if __package__ in (None, ""):
     from cognitive_popups import observation
     from cognitive_popups.operation_context import operation_scope
     from cognitive_popups.sound import play_close_sound
-    from cognitive_popups import sound, orbital, slack
+    from cognitive_popups import sound, orbital, slack, theme, motion
 else:
     from .event_log import EventChain, EventLog
     from . import observation
     from .operation_context import operation_scope
     from .sound import play_close_sound
-    from . import sound, orbital, slack
+    from . import sound, orbital, slack, theme, motion
 
 _LOG = EventLog()
 _CHAIN = EventChain.from_env(_LOG, origin="popup", pid=os.getpid())
@@ -329,7 +329,7 @@ def _monitor_workarea(Gdk, px=None, py=None):
 def apply_popup_font(Gtk, Gdk):
     provider = Gtk.CssProvider()
     provider.load_from_data(
-        ('* { font-family: "Noto Sans"; font-size: %dpx; }' % FONT_SIZE_PX).encode('utf-8')
+        ('* { font-family: %s; font-size: %dpx; }' % (theme.CSS_FONT_FAMILY, FONT_SIZE_PX)).encode('utf-8')
     )
     screen = Gdk.Screen.get_default()
     if screen is not None:
@@ -515,7 +515,7 @@ def apply_zoom(Gtk, Gdk, scale):
     provider = Gtk.CssProvider()
     size = max(11, int(round(FONT_SIZE_PX * scale)))
     provider.load_from_data(
-        ('* { font-family: "Noto Sans"; font-size: %dpx; }' % size).encode('utf-8')
+        ('* { font-family: %s; font-size: %dpx; }' % (theme.CSS_FONT_FAMILY, size)).encode('utf-8')
     )
     screen = Gdk.Screen.get_default()
     if screen is not None:
@@ -609,7 +609,7 @@ def step_line_label(Gtk):
         return None
     from gi.repository import Pango
     label = Gtk.Label(xalign=0)
-    label.set_markup('<span size="small" foreground="#8a8a8a"><span foreground="#e8c27a">●</span>'
+    label.set_markup(f'<span size="small" foreground="{theme.DARK["ink_muted"]}"><span foreground="{theme.DARK["accent"]}">●</span>'
                      ' шаг · %s</span>' % _escape_markup(STEP_LINE))
     label.set_ellipsize(Pango.EllipsizeMode.END)
     label.set_max_width_chars(60)
@@ -673,7 +673,7 @@ def show_notice_popup(text, px=None, py=None, hold_ms=1200, fade_ms=300):
 
 #: The reader's own words look the same everywhere they come back: italic, one
 #: colour, a thin bar. No label: the look itself says "this is yours".
-OWN_WORDS_RGB = '#9fc3e8'
+OWN_WORDS_RGB = theme.DARK['own_words']
 
 
 def take_keyboard_focus():
@@ -1466,12 +1466,8 @@ def show_orbital_popup(items, px=None, py=None, title='', reduced_motion=None, a
     bounds = geometry.footprint
     state = orbital.Disclosure(rows)
     focus = _orbital_focus_mode()
-    if reduced_motion is None:
-        reduced_motion = os.environ.get('COGNITIVE_REDUCED_MOTION', '').lower() in {
-            '1', 'true', 'yes', 'on'}
-    settings = Gtk.Settings.get_default()
-    reduced_motion = reduced_motion or (settings is not None and
-                                         not settings.get_property('gtk-enable-animations'))
+    # One rule for every window: env, motion.reduced / sand.reduced, or GTK.
+    reduced_motion = bool(reduced_motion) or motion.reduced(Gtk)
 
     from .orbital_motion import Tween, rect_values, visual_rect
     from .orbital_assets import composite_pixbuf, input_runs, apply_input_regions
@@ -1531,8 +1527,8 @@ def show_orbital_popup(items, px=None, py=None, title='', reduced_motion=None, a
             canvas.set_size_request(bounds.width, bounds.height)
             overlay.add(canvas)
             provider = Gtk.CssProvider()
-            provider.load_from_data(b'* { background-color: transparent; background-image: none; '
-                                                b'box-shadow: none; color: #eeeeee; }')
+            provider.load_from_data(('* { background-color: transparent; background-image: none; '
+                                     'box-shadow: none; color: %s; }' % theme.DARK['ink']).encode('utf-8'))
             cue_provider = Gtk.CssProvider()
             cue_provider.load_from_data(
                 ('label { font-size: %dpx; font-weight: 500; }' % ORBITAL_CUE_PX).encode())
@@ -1604,7 +1600,7 @@ def show_orbital_popup(items, px=None, py=None, title='', reduced_motion=None, a
                 # The running step, one quiet line above the top cue, as in every
                 # other window; it never covers a cue.
                 step = Gtk.Label(xalign=.5)
-                step.set_markup('<span size="small" foreground="#8a8a8a"><span foreground="#e8c27a">●</span>'
+                step.set_markup(f'<span size="small" foreground="{theme.DARK["ink_muted"]}"><span foreground="{theme.DARK["accent"]}">●</span>'
                                 ' шаг · %s</span>' % _escape_markup(STEP_LINE))
                 step.set_ellipsize(Pango.EllipsizeMode.END)
                 step.set_size_request(bounds.width, -1)

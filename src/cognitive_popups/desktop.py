@@ -1518,6 +1518,28 @@ class DesktopApp:
         except Exception:
             RECORDS.finale_state(session_key, "pending")
             raise
+        self._save_session_card(session_key, rows, notes)
+
+    def _save_session_card(self, session_key, rows, notes) -> None:
+        """The session as one SVG in <state>/sky/: misses bright, own notes beside them."""
+        try:
+            from . import session_card
+            start = rows[0]["started_epoch"]
+            end = max(r.get("finished_epoch") or r["started_epoch"] for r in rows)
+            conn = RECORDS._connect()
+            try:
+                hypotheses = [dict(row) for row in conn.execute(
+                    "SELECT hypothesis, status FROM predictions WHERE created_epoch BETWEEN ? AND ?"
+                    " ORDER BY created_epoch", (float(start), float(end)))]
+            finally:
+                conn.close()
+            closure = RECORDS.closure(session_key) or {}
+            svg = session_card.build_card(hypotheses, [{"comment": n.comment} for n in notes],
+                                          session_key, closure.get("remaining") or None)
+            path = session_card.save_card(svg, STATE_DIR)
+            emit("result", window="session", detail=f"card {path.name}")
+        except Exception as exc:  # noqa: BLE001 - the card is a keepsake, never a blocker
+            debug(f"session card failed: {exc}")
 
     def _show_initium(self, journey, *, birth=False):
         # GTK fixture has no DrawingArea; production always does.
@@ -1720,8 +1742,40 @@ class DesktopApp:
             ),
         )
 
+    def _handover(self, cues) -> None:
+        """Once per session, after the first four words: «на бумагу» (0.9 s).
+
+        The words leave for the corners of a sheet: the links are the reader's
+        to draw by hand. Main loop only; never blocks or raises.
+        """
+        session_id = getattr(getattr(self, "service", None), "session", None)
+        session_id = getattr(session_id, "id", None)
+        if not session_id or self.__dict__.get("_handover_session") == session_id:
+            return
+        self._handover_session = session_id
+        words = [c["simple"] for c in FlashWindow.cue_items(cues)]
+        words = [w for w in words if w][:4]
+        if len(words) < 2:
+            return
+        position = cursor_position() or (0, 0)
+        try:
+            from . import paper_scene
+            self._paper = paper_scene.play(words, position)
+        except Exception as exc:  # noqa: BLE001 - a picture never breaks the words
+            debug(f"paper scene failed: {exc}")
+
+    def _finish_scene(self) -> None:
+        """Any next hotkey jumps the running scene to its last frame."""
+        scene = self.__dict__.pop("_paper", None)
+        if scene is not None:
+            try:
+                idle_add(lambda: scene.finish() and False)
+            except Exception:  # noqa: BLE001
+                pass
+
     def seed(self) -> None:
         """Capture once, reserve the operation, ask intention off the GTK loop."""
+        self._finish_scene()
         if self.__dict__.get("_seed_request_running"):
             return
         self._seed_request_running = True
@@ -1834,6 +1888,7 @@ class DesktopApp:
                 self.flash.show_cues(cues, origin=label)
             else:
                 self.flash.show_cues(cues)
+            self._handover(cues)
 
             self._seed_request_running = False
             return
@@ -1885,6 +1940,7 @@ class DesktopApp:
                 self.flash.show_text(line, "4 слова")
             return False
         emit("result", window="seed", detail=f"{len(cues)} cues", fragment_id=fragment_id, source_hash=source_hash)
+        self._handover(cues)
         if adopted:
             # The waiting sand on screen turns into these words itself.
             return False
@@ -3685,6 +3741,7 @@ class DesktopApp:
         window is still open brings that window forward; if it is gone or does
         not come up, it is replaced by a fresh one (see `repeat_press`).
         """
+        self._finish_scene()
         running = self.__dict__.setdefault("_windows_running", set())
         raised = self.__dict__.setdefault("_windows_raised", {})
         reopen = self.__dict__.setdefault("_windows_reopen", set())

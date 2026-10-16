@@ -88,6 +88,8 @@ hl.bind("ALT + SHIFT + T", hl.dsp.exec_cmd(tasks .. " --revisit-menu"))
 hl.bind("ALT + Y", hl.dsp.exec_cmd(tasks .. " --practice"))
 -- Справка по клавишам: минималистичное окно «клавиша — что делает».
 hl.bind("ALT + K", hl.dsp.exec_cmd(signal .. " keys"))
+-- Меню всех действий: обзор за неделю, сжать до сути и остальное.
+hl.bind("ALT + SHIFT + K", hl.dsp.exec_cmd(signal .. " menu"))
 -- Боковая панель: те же действия мышью и тихая подсветка готовой задачи.
 -- Первое нажатие запускает панель, следующие показывают и скрывают её.
 -- Alt+H frozen 2026-10-07: the panel does not start while var/hud.frozen exists.

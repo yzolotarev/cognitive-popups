@@ -16,7 +16,8 @@ from functools import wraps
 from pathlib import Path
 from collections.abc import Sequence
 
-from .client import GeminiWeb2API, Web2APIError
+from .client import GeminiWeb2API, Web2APIError, client_from_env
+from . import paths
 from .event_log import EventChain, EventLog, new_session
 from .history import SessionHistory
 from .notes import NoteStore
@@ -51,7 +52,7 @@ except (ImportError, ValueError) as exc:  # pragma: no cover - desktop dependenc
     raise SystemExit(f"GTK3/PyGObject is required for the desktop UI: {exc}") from exc
 
 
-STATE_DIR = Path(os.environ.get("COGNITIVE_STATE_DIR", "~/.local/state/cognitive-popups")).expanduser()
+STATE_DIR = paths.state_dir()
 HISTORY_PATH = STATE_DIR / "history.json"
 PID_PATH = STATE_DIR / "desktop.pid"
 REQUEST_PATH = STATE_DIR / "request"
@@ -69,13 +70,13 @@ EXTERNAL_POPUP_HELPER = Path(
         "~/.local/bin/objects-tooltip-popup.py",
     )
 ).expanduser()
-EVENTS = EventLog(os.environ.get("COGNITIVE_EVENT_DB") or STATE_DIR / "events.sqlite3")
+EVENTS = EventLog(paths.db_path("events.sqlite3"))
 # Notes are the reader's own words, so they get their own file: different
 # lifetime and different tolerance for failure than telemetry.
-NOTES = NoteStore(os.environ.get("COGNITIVE_NOTES_DB") or STATE_DIR / "notes.sqlite3")
+NOTES = NoteStore(paths.db_path("notes.sqlite3"))
 # The reading ledger: sessions, fragments, hypotheses. Durable; a failed write
 # is a lost day, so its methods raise instead of swallowing (see records.py).
-RECORDS = RecordStore(os.environ.get("COGNITIVE_RECORD_DB") or STATE_DIR / "records.sqlite3")
+RECORDS = RecordStore(paths.db_path("records.sqlite3"))
 
 #: The shortcut reference opened by Alt+K, and offered in the panel. Order is the
 #: order a reading session tends to meet them in, not alphabetical: orient, ask,
@@ -88,6 +89,7 @@ KEYS_REFERENCE = (
     ("Alt+C", "объяснить слово или задать вопрос"),
     ("Alt+I", "шаг на 15 минут (звезда сессии)"),
     ("Alt+K", "эта справка по клавишам"),
+    ("Alt+Shift+K", "меню: обзор за неделю, сжать до сути и др."),
     ("Ctrl+Alt+Shift+P", "сохранённые ответы на гипотезы"),
     ("Ctrl+Alt+W", "три ракурса 4 слов и итоговый тезис"),
     ("Alt+F", "проверка понимания по Фейнману"),
@@ -98,7 +100,7 @@ KEYS_REFERENCE = (
     ("Alt+Shift+T", "новая задача по старому материалу"),
     ("Alt+Y", "попытка последней задачи"),
     ("Alt+H", "боковая панель (сейчас заморожена)"),
-    ("—", "сжать до сути: меню «Ещё» в боковой панели"),
+    ("—", "обзор в терминале: cog stats"),
 )
 
 MODE_MENU = [
@@ -111,6 +113,7 @@ MODE_MENU = [
     {"label": "Спросить / объяснить", "action": "clarify"},
     {"label": "Сжать до сути", "action": "summary"},
     {"label": "Клавиши", "action": "keys"},
+    {"label": "Обзор за неделю", "action": "overview"},
 ]
 
 #: Where the side panel's actions land (see hud.py). A fixed set of names: the
@@ -1710,11 +1713,26 @@ class DesktopApp:
             self.show_keys()
         elif mode == "summary":
             self.summarize_text()
+        elif mode == "overview":
+            self.show_overview()
         elif mode == "example":
             self.show_example()
         elif mode == "intent":
             self.start_step()
         return False
+
+    def show_overview(self) -> None:
+        """«Обзор»: the week in the reader's own misses, stumbles and returns. Read-only."""
+        def worker():
+            try:
+                from . import overview
+                text = overview.render(overview.overview(None, time.time() - 7 * 86400))
+            except Exception as exc:  # noqa: BLE001
+                debug(f"overview failed: {exc}\n{traceback.format_exc()}")
+                text = "Обзор не собрался. " + human_error(exc)
+            emit("action", window="overview", detail=f"{len(text)} chars")
+            idle_add(lambda: self.flash.show_text(text, "Обзор за неделю") and False)
+        threading.Thread(target=bind_chain(worker), daemon=True).start()
 
     def show_keys(self) -> None:
         """Alt+K: the shortcut reference, from a table already in memory.
@@ -3799,13 +3817,14 @@ class DesktopApp:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Cognitive Popups desktop layer")
-    parser.add_argument("--api-url", default=os.environ.get("COGNITIVE_API_URL", "http://127.0.0.1:8081/v1/chat/completions"))
-    parser.add_argument("--model", default=os.environ.get("COGNITIVE_MODEL", "gemini-flash-lite"))
+    # None means "from the environment" (client_from_env), so the key and timeout apply too.
+    parser.add_argument("--api-url", default=None)
+    parser.add_argument("--model", default=None)
     parser.add_argument("--diagnose", action="store_true", help="print what each selection source returns and exit")
     args = parser.parse_args()
     if args.diagnose:
         return diagnose_selection()
-    app = DesktopApp(GeminiWeb2API(url=args.api_url, model=args.model))
+    app = DesktopApp(client_from_env(url=args.api_url, model=args.model))
     app.run()
     return 0
 

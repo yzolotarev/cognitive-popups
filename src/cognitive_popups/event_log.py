@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from .operation_context import RUN_ID, OperationContext, bind_operation
-from .observation import backup_database, report_failure, DB_TIMEOUT, disabled
+from .observation import backup_database, prune_backups, report_failure, DB_TIMEOUT, disabled
 from .paths import state_dir
 
 #: One root for everything the app writes: `COGNITIVE_STATE_DIR` moves the whole
@@ -139,6 +139,8 @@ class EventLog:
             if version < SCHEMA_VERSION:
                 conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             conn.commit()
+            if columns and missing:
+                prune_backups(self.path)
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             return conn

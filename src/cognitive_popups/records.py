@@ -39,7 +39,7 @@ STATE_ROOT = str(state_dir())
 DEFAULT_DB = os.path.join(STATE_ROOT, "records.sqlite3")
 ENV_DB = "COGNITIVE_RECORD_DB"
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -213,6 +213,25 @@ CREATE TABLE IF NOT EXISTS study_goal_periods (
     step_session_key TEXT NOT NULL DEFAULT '',
     accepted_epoch REAL NOT NULL, activity_epoch REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS returns (
+    prediction_id TEXT PRIMARY KEY,
+    due_epoch     REAL NOT NULL,
+    step          INTEGER NOT NULL DEFAULT 0,
+    shown_epoch   REAL,
+    answer        TEXT,
+    outcome       TEXT,
+    updated_epoch REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS returns_due_idx ON returns(due_epoch);
+CREATE TABLE IF NOT EXISTS return_answers (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    prediction_id TEXT NOT NULL,
+    step          INTEGER NOT NULL,
+    answer        TEXT,
+    outcome       TEXT NOT NULL,
+    answered_epoch REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS return_answers_prediction_idx ON return_answers(prediction_id);
 CREATE INDEX IF NOT EXISTS records_sessions_epoch_idx ON sessions(created_epoch);
 CREATE INDEX IF NOT EXISTS records_fragments_session_idx ON fragments(session_id, position);
 CREATE INDEX IF NOT EXISTS records_fragments_hash_idx ON fragments(source_hash);
@@ -340,6 +359,55 @@ def match_fragment(fragments: list[Fragment], anchor: str) -> Fragment | None:
     return None
 
 
+_warned_newer: set[str] = set()
+
+
+def _warn_newer(path: Path, version: int) -> None:
+    key = str(path)
+    if key in _warned_newer:
+        return
+    _warned_newer.add(key)
+    print(f"cognitive records: {path} has schema {version}, newer than this code"
+          f" ({SCHEMA_VERSION}); left as it is", file=sys.stderr)
+
+
+def looks_like_node_words(text: str | None) -> list[str]:
+    """The parts of a " · "-joined node list, or [] when `text` is a sentence.
+
+    Nodes mode once stored its four words in `one_delta`. A node is a short
+    label: at most three words, no sentence punctuation. Anything else is a
+    real correction phrase and stays where it is.
+    """
+    parts = [part.strip() for part in str(text or "").split(" · ")]
+    if len(parts) < 2 or not all(parts):
+        return []
+    for part in parts:
+        if len(part.split()) > 3 or any(mark in part for mark in ".,;:!?«»\"()"):
+            return []
+    return parts
+
+
+def _move_node_words(conn: sqlite3.Connection) -> int:
+    """One-time: node words saved as `one_delta` move to `nodes_json`."""
+    moved = 0
+    rows = conn.execute("SELECT id, one_delta, nodes_json FROM predictions"
+                        " WHERE one_delta LIKE '% · %'").fetchall()
+    for row in rows:
+        parts = looks_like_node_words(row["one_delta"])
+        if not parts:
+            continue
+        try:
+            existing = json.loads(row["nodes_json"] or "[]")
+        except ValueError:
+            existing = []
+        if existing and existing != parts:
+            continue
+        conn.execute("UPDATE predictions SET nodes_json = ?, one_delta = '' WHERE id = ?",
+                     (json.dumps(parts, ensure_ascii=False), row["id"]))
+        moved += 1
+    return moved
+
+
 class RecordStore:
     """SQLite home for the reading ledger (see module docstring)."""
 
@@ -355,22 +423,42 @@ class RecordStore:
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA foreign_keys=ON")
             if not self._schema_ready:
-                self._backup_before_migration(conn)
-                conn.executescript(_SCHEMA)
-                _ensure_columns(conn)
-                conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                self._migrate(conn)
                 self._schema_ready = True
             return conn
         except (sqlite3.Error, OSError) as exc:
             raise RecordError(f"cannot open {self.path}: {exc}") from exc
 
-    def _backup_before_migration(self, conn: sqlite3.Connection) -> None:
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        """Bring the file up to `SCHEMA_VERSION`; never down.
+
+        A database written by a newer checkout keeps its version: lowering it
+        made the newer code back up and migrate the same file again on every
+        switch. Only additive DDL (`IF NOT EXISTS`, missing columns) runs on it.
+        """
+        current = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+        backed_up = self._backup_before_migration(conn)
+        conn.executescript(_SCHEMA)
+        _ensure_columns(conn)
+        if current > SCHEMA_VERSION:
+            _warn_newer(self.path, current)
+            return
+        if current and current < 12:
+            _move_node_words(conn)
+        conn.execute(f"PRAGMA user_version={max(current, SCHEMA_VERSION)}")
+        conn.commit()
+        if backed_up:
+            from .observation import prune_backups
+            prune_backups(self.path)
+
+    def _backup_before_migration(self, conn: sqlite3.Connection) -> bool:
         """Copy the ledger before a schema upgrade can touch it.
 
         `CREATE TABLE IF NOT EXISTS` only adds objects, but the copy is the one
         chance to preserve the previous shape. A database that is empty or
         already current needs no copy, and a fresh file is not a database yet.
         A failed copy stops the open instead of migrating unbacked-up data.
+        Returns whether a copy was made.
         """
         try:
             version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
@@ -378,14 +466,15 @@ class RecordStore:
                 "SELECT count(*) FROM sqlite_master WHERE type='table'"
             ).fetchone()[0])
         except (sqlite3.Error, TypeError, ValueError):
-            return
+            return False
         if version >= SCHEMA_VERSION or not tables:
-            return
+            return False
         try:
             from .observation import backup_database
             backup_database(self.path)
         except Exception as exc:  # noqa: BLE001 - migration must not proceed silently
             raise RecordError(f"cannot back up {self.path} before migration: {exc}") from exc
+        return True
 
     def _ensure_session(self, conn: sqlite3.Connection, session) -> None:
         created_utc = getattr(session, "created_at", None) or now_iso()
@@ -612,7 +701,7 @@ class RecordStore:
         conn = self._connect()
         try:
             row = conn.execute(
-                "SELECT * FROM practice_preparations ORDER BY created_epoch, rowid DESC LIMIT 1"
+                "SELECT * FROM practice_preparations ORDER BY created_epoch DESC, rowid DESC LIMIT 1"
             ).fetchone()
         finally:
             conn.close()
@@ -686,17 +775,33 @@ class RecordStore:
             conn.close()
 
     def close_stale(self, reason: str = "crash") -> int:
-        """Mark sessions left open by a previous run; return how many closed."""
-        moment = now_iso()
+        """Mark sessions left open by a previous run; return how many closed.
+
+        Each closes at its own last activity (newest fragment, hypothesis or
+        Feynman check), not at the restart: a crash at 10:00 found at 18:00 is
+        not an eight-hour session. A session with no activity closes at its start.
+        """
         conn = self._connect()
         try:
-            cursor = conn.execute(
-                "UPDATE sessions SET closed_utc = ?, closed_epoch = ?, close_reason = ?"
-                " WHERE closed_utc IS NULL",
-                (moment, _epoch(moment), reason),
-            )
+            rows = conn.execute(
+                """SELECT s.id, max(s.created_epoch,
+                       coalesce((SELECT max(created_epoch) FROM fragments WHERE session_id = s.id), 0),
+                       coalesce((SELECT max(created_epoch) FROM predictions WHERE session_id = s.id), 0),
+                       coalesce((SELECT max(created_epoch) FROM feynman_checks WHERE session_id = s.id), 0),
+                       coalesce((SELECT max(created_epoch) FROM tasks WHERE session_id = s.id), 0)
+                   ) AS last_epoch
+                   FROM sessions s WHERE s.closed_utc IS NULL"""
+            ).fetchall()
+            for row in rows:
+                epoch = float(row["last_epoch"])
+                moment = datetime.fromtimestamp(epoch, timezone.utc).isoformat(timespec="seconds")
+                conn.execute(
+                    "UPDATE sessions SET closed_utc = ?, closed_epoch = ?, close_reason = ?"
+                    " WHERE id = ? AND closed_utc IS NULL",
+                    (moment, epoch, reason, row["id"]),
+                )
             conn.commit()
-            return int(cursor.rowcount or 0)
+            return len(rows)
         except (sqlite3.Error, OSError) as exc:
             raise RecordError(f"cannot write to {self.path}: {exc}") from exc
         finally:

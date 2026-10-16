@@ -55,6 +55,12 @@ MIN_SCORE = 1.2
 MIN_SCORE_LEXICAL = 1.8
 KNOWN_LIMIT = 400
 ANCHOR_CHARS = 500
+#: A thought the model failed to name this many times is skipped for good, so
+#: one poisoned thought cannot make the 5-minute timer ask about it forever.
+MAX_ATTEMPTS = 3
+#: Verdicts after which a hypothesis is the reader's guess that the text did not
+#: back: its concepts are named, but its relations never become graph links.
+UNBACKED_VERDICTS = frozenset({"contradicted", "not_supported"})
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS thoughts (
@@ -68,7 +74,9 @@ CREATE TABLE IF NOT EXISTS thoughts (
     hidden        INTEGER NOT NULL DEFAULT 0,
     topic         TEXT,
     about_system  INTEGER,
-    extracted_utc TEXT
+    extracted_utc TEXT,
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    last_error    TEXT
 );
 CREATE TABLE IF NOT EXISTS thought_concepts (
     thought_id TEXT NOT NULL REFERENCES thoughts(id) ON DELETE CASCADE,
@@ -113,7 +121,8 @@ NAMING_SYSTEM = """Ты ведёшь карту мыслей одного чит
   концепция, обучение, чтение, ассоциация, подход.
   Если понятие уже есть в KNOWN_CONCEPTS - используй ровно это имя.
 - relations: 0-3 тройки [понятие, связь, понятие], только если связь явно есть
-  в мысли или между мыслью и её местом текста. Связь - 1-3 слова:
+  в мысли или между мыслью и её местом текста. Если verdict мысли contradicted
+  или not_supported, текст её не подтвердил: relations для неё не возвращай. Связь - 1-3 слова:
   "похоже на", "отличается от", "часть", "пример", "путает с", "вызывает".
 
 Верни только JSON: {"items":[{"id":"...","topic":"...","about_system":false,
@@ -146,6 +155,13 @@ def now() -> str:
 
 def state_root() -> Path:
     return state_dir()
+
+
+def _content_failure(exc: Exception) -> bool:
+    """Whether the failure is about the batch (bad JSON, nothing usable), not the
+    bridge being down: only the first kind counts against the thoughts."""
+    from .errors import classify
+    return classify(exc) in {"json", "empty", "validation"}
 
 
 def norm(concept: object) -> str:
@@ -182,6 +198,10 @@ class Universe:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._db() as db:
             db.executescript(SCHEMA)
+            have = {row[1] for row in db.execute("PRAGMA table_info(thoughts)")}
+            for column, kind in (("attempts", "INTEGER NOT NULL DEFAULT 0"), ("last_error", "TEXT")):
+                if column not in have:
+                    db.execute(f"ALTER TABLE thoughts ADD COLUMN {column} {kind}")
 
     def _db(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=10)
@@ -244,10 +264,26 @@ class Universe:
         with self._db() as db:
             return db.execute(
                 "select id, kind, text, anchor from thoughts where extracted_utc is null and hidden = 0"
-                " order by created_utc limit ?", (limit,)).fetchall()
+                " and attempts < ? order by attempts, created_utc limit ?", (MAX_ATTEMPTS, limit)).fetchall()
+
+    def attempts(self, thought_id: str) -> int:
+        with self._db() as db:
+            row = db.execute("select attempts from thoughts where id = ?", (thought_id,)).fetchone()
+        return int(row[0]) if row else 0
+
+    def record_failure(self, batch: list[tuple], error: str) -> None:
+        """Count one failed naming against each thought of the batch."""
+        with self._db() as db:
+            db.executemany("update thoughts set attempts = attempts + 1, last_error = ? where id = ?",
+                           [(error[:300], tid) for tid, *_ in batch])
 
     def name_batch(self, client, batch: list[tuple]) -> int:
-        items = [{"id": tid, "kind": kind, "thought": text, "place_in_text": anchor or ""}
+        with self._db() as db:
+            marks = ",".join("?" * len(batch))
+            verdicts = dict(db.execute(f"select id, verdict from thoughts where id in ({marks})",
+                                       [tid for tid, *_ in batch]))
+        items = [{"id": tid, "kind": kind, "thought": text, "place_in_text": anchor or "",
+                  **({"verdict": verdicts[tid]} if verdicts.get(tid) else {})}
                  for tid, kind, text, anchor in batch]
         user = ("<KNOWN_CONCEPTS>\n" + json.dumps(self.known_concepts(), ensure_ascii=False)
                 + "\n</KNOWN_CONCEPTS>\n\n<THOUGHTS>\n"
@@ -271,7 +307,8 @@ class Universe:
                 db.execute("delete from links where thought_id = ?", (tid,))
                 db.executemany("insert or ignore into thought_concepts values (?, ?)",
                                [(tid, c) for c in concepts])
-                for relation in (item.get("relations") or [])[:3]:
+                unbacked = (verdicts.get(tid) or "") in UNBACKED_VERDICTS
+                for relation in [] if unbacked else (item.get("relations") or [])[:3]:
                     if isinstance(relation, list) and len(relation) == 3:
                         a, rel, b = norm(relation[0]), norm(relation[1]), norm(relation[2])
                         if a and b and rel and a != b:
@@ -345,16 +382,23 @@ class Universe:
             batch = self.pending(BATCH)
             if not batch:
                 break
+            # Fresh thoughts come first; one that already failed is retried on
+            # its own, so a poisoned thought cannot sink seven innocent ones.
+            if self.attempts(batch[0][0]):
+                batch = batch[:1]
             spent += 1
             try:
                 count = self.name_batch(client, batch)
             except (Web2APIError, ValueError) as exc:
                 print(f"universe: naming stopped: {exc}", file=sys.stderr)
+                if _content_failure(exc):
+                    self.record_failure(batch, str(exc))
                 failed += len(batch)
                 break
             named += count
             if count == 0:
                 # The model answered but named nothing we asked for; do not spin.
+                self.record_failure(batch, "nothing named")
                 failed += len(batch)
                 break
         if named and allowed():

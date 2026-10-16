@@ -9,6 +9,7 @@ import copy
 import json
 import os
 import re
+import sys
 import threading
 import time
 import uuid
@@ -145,9 +146,8 @@ class Focus:
         self.lock = threading.RLock()
         self.state = None
         if self.path.exists():
-            self.state = json.loads(self.path.read_text(encoding="utf-8"))
-            if not isinstance(self.state, dict) or not {"id", "status", "goal", "started_at", "deadline"} <= self.state.keys():
-                raise ValueError("invalid focus state")
+            self.state = self._read_or_set_aside()
+        if self.state is not None:
             # Adopt an existing Alt+I timer from its ledger row, including old files
             # that predate the marker; generated 15→1 blocks retain legacy recovery.
             if not self.state.get("study_step") and hasattr(records, "step"):
@@ -157,6 +157,27 @@ class Focus:
             # Only a still-running legacy timer can resume without a model call.
             if not self.state.get("study_step") and self.state["status"] in ACTIVE and (self.state["status"] != "running" or self.clock() >= self.state["deadline"]):
                 self._save({**self.state, "status": "interrupted", "finished_at": self.clock()})
+
+    def _read_or_set_aside(self):
+        """The saved state, or None after moving an unreadable file to `.broken`.
+
+        A torn or hand-edited focus.json used to raise in the daemon's
+        constructor, and systemd restarted it every 3 s forever. The file is
+        kept (renamed, never deleted) so nothing is lost, and the app starts clean.
+        """
+        try:
+            state = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            state = None
+        if isinstance(state, dict) and {"id", "status", "goal", "started_at", "deadline"} <= state.keys():
+            return state
+        broken = self.path.with_name(self.path.name + ".broken")
+        try:
+            os.replace(self.path, broken)
+        except OSError:
+            pass
+        print(f"cognitive focus: unreadable {self.path} moved to {broken}", file=sys.stderr)
+        return None
 
     def _save(self, state):
         self.path.parent.mkdir(parents=True, exist_ok=True)

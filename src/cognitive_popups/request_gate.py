@@ -54,6 +54,9 @@ WAITERS_DIR = "request_waiters"
 #: long it is willing to yield before it runs anyway.
 POLL_SECONDS = 0.05
 MAX_POLLS = 200  # ~10 s: a stale waiter must not hold the app up forever.
+#: A waiter marker older than this is a leftover, even if its pid is alive again:
+#: pids are reused, and no manual request waits this long for the bridge.
+STALE_SECONDS = 120.0
 
 
 def enabled() -> bool:
@@ -90,20 +93,23 @@ def _alive(pid: int) -> bool:
 def waiting_manual_requests(root: str | Path | None = None) -> bool:
     """Whether a person is waiting to make a request right now.
 
-    A marker whose process is gone is a leftover from a crash, not a waiter, and
-    is removed instead of stalling background work forever.
+    A marker whose process is gone, or that is older than `STALE_SECONDS`, is a
+    leftover from a crash, not a waiter, and is removed instead of stalling
+    background work.
     """
     directory = _waiters_dir(resolve_root(root))
     try:
         entries = list(directory.iterdir())
     except OSError:
         return False
+    now = time.time()
     for entry in entries:
         try:
             pid = int(entry.read_text(encoding="utf-8").strip() or 0)
+            fresh = now - entry.stat().st_mtime <= STALE_SECONDS
         except (OSError, ValueError):
-            pid = 0
-        if pid and _alive(pid):
+            pid, fresh = 0, False
+        if pid and fresh and _alive(pid):
             return True
         try:
             entry.unlink()

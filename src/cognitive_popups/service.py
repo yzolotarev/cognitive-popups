@@ -53,8 +53,13 @@ def observed_operation(kind):
                 arguments = dict(signature(method).bind(self, *args, **kwargs).arguments)
                 arguments.pop("self")
                 source = observation.record_artifact(kind + "_input", {
-                    "arguments": arguments, "buffer": self.session.to_dict(),
-                    "buffer_context": self.session.buffer_context(),
+                    # Ids and hashes only: the text is already in the ledger, and
+                    # copying the whole buffer into every input grew records fast.
+                    "arguments": arguments, "buffer": {
+                        "session_id": self.session.id,
+                        "fragments": [{"id": f.id, "source_hash": getattr(f, "source_hash", None)}
+                                      for f in self.session.fragments],
+                    },
                 })
                 store = getattr(self.client, "observation_store", None)
                 requests = store.request_ids_for_operation if store is not None else observation.request_ids_for_operation
@@ -329,6 +334,28 @@ _QUESTION_PHRASES = ("если бы", "можно ли", "стоит ли", "п�
 _TERM_CHUNK_WORDS = 4
 
 
+#: Labels that fit any paragraph: 214 of 624 simple words were one of these and
+#: the reader's guesses glued them together ("структура включает систему").
+GENERIC_SIMPLE = frozenset({
+    "процесс", "метод", "функция", "программа", "структура", "инструмент", "подход",
+    "концепция", "технология", "система", "модель", "элемент", "объект", "способ",
+    "механизм", "принцип", "свойство", "понятие", "явление", "операция", "данные",
+    "process", "method", "function", "system", "structure", "tool", "approach", "concept", "model",
+})
+
+
+def repair_simple(simple: str, term: str) -> str:
+    """One recognisable content word: the first word, or a word of the term over a generic label."""
+    words = simple.split()
+    simple = words[0].strip(" ,.;:«»\"'") if words else simple
+    if simple.casefold() in GENERIC_SIMPLE:
+        for word in term.split():
+            word = word.strip(" ,.;:()«»\"'")
+            if len(word) >= 3 and word.casefold() not in GENERIC_SIMPLE and not word.isdigit():
+                return word
+    return simple
+
+
 def looks_like_question(raw: str) -> bool:
     """Whether the reader typed a question rather than a list of terms.
 
@@ -445,7 +472,7 @@ class CognitiveService:
             raise ValueError("source text must not be empty")
         system_prompt, language = self._language_prompt("four_words", text)
         if perspective:
-            system_prompt += "\\n\\nРАКУРС ЭТОГО ПРОХОДА: " + perspective + ". Выбери четыре опоры именно с этого ракурса, не повторяя набор предыдущего прохода, если текст позволяет."
+            system_prompt += "\n\nРАКУРС ЭТОГО ПРОХОДА: " + perspective + ". Выбери четыре опоры именно с этого ракурса, не повторяя набор предыдущего прохода, если текст позволяет."
         model = self._model_name()
         cache_key = self._cue_cache_key(source_text, system_prompt, language)
         problems: list[str] = []
@@ -486,16 +513,10 @@ class CognitiveService:
                 if not simple or not term or not meaning:
                     invalid = f"пустое поле у объекта {term or simple or '?'!r}"
                     break
-                if len(simple.split()) != 1:
-                    invalid = f"simple не одно слово: {simple!r}"
-                    break
-
-                if len(meaning.split()) > 12:
-                    invalid = f"meaning длиннее двенадцати слов: {meaning!r}"
-                    break
-                if simple.casefold() == term.casefold():
-                    invalid = f"simple совпадает с term: {simple!r}"
-                    break
+                # A cue the model got slightly wrong is repaired, not thrown away with
+                # the other three: one bad card used to cost the reader all four (note 99).
+                simple = repair_simple(simple, term)
+                meaning = " ".join(meaning.split()[:12])
                 normalized.append({
                     "simple": simple,
                     "term": term,
@@ -651,13 +672,16 @@ class CognitiveService:
         statement = hypothesis.strip()
         if not statement:
             raise ValueError("hypothesis must not be empty")
-        ground = material.selection or (self.session.fragments[-1].source_text if self.session.fragments else "")
+        history = history or {}
+        used = nodes.recent_words(history)
+        last = self.session.fragments[-1].source_text if self.session.fragments else ""
+        ground, focus = nodes.choose_ground(material.selection, last, used)
         if not ground.strip():
             raise ValueError("the common buffer is empty")
-        history = history or {}
         system_prompt = self._prompt("prediction_nodes")
-        used = nodes.recent_words(history)
         blocks = [f"<SELECTED>\n{ground[:UNIVERSE_PASSAGE_CHARS]}\n</SELECTED>"]
+        if focus:
+            blocks.append(f"<FOCUS>\n{focus[:200]}\n</FOCUS>")
         if used:
             blocks.append(f"<USED>\n{', '.join(used)}\n</USED>")
         if mine:
@@ -666,22 +690,41 @@ class CognitiveService:
         data = parse_json_object(self.client.complete(
             [{"role": "system", "content": system_prompt}, {"role": "user", "content": "\n\n".join(blocks)}],
             max_tokens=400))
+        raw_mark = data.get("mark") if data.get("mark") in nodes.STATUS_OF_MARK else "wrong"
+        gated, vague, kind = nodes.gate(raw_mark, bool(data.get("vague")), statement, ground, used)
+        if gated != raw_mark:
+            data = dict(data, mark=gated, sure=False if gated == "partly" else data.get("sure"))
+        data = dict(data, vague=vague)
         shown = nodes.assemble(data, statement, ground, history)
         bolder = shown["vague"] and not insist
-        if bolder:
+        if bolder or kind == "question":
             shown = dict(shown, mark="", words=[])
         sources = [_normalise_grounding(text) for text in material.passages()] or [_normalise_grounding(ground)]
+        sources.append(_normalise_grounding(ground))
         quote = str(data.get("gap_quote") or "").strip()
+        verbatim = quote if quote and any(_normalise_grounding(quote) in s for s in sources) else ""
+        right = " ".join(str(data.get("right") or "").split())[:160] if kind == "claim" else ""
+        if kind == "question":
+            status = "question"
+        elif bolder:
+            status = nodes.VAGUE_STATUS
+        else:
+            status = nodes.STATUS_OF_MARK.get(shown["raw_mark"], "unclear")
         check = PredictionCheck(
             buffer_fragment_ids=[f.id for f in self.session.fragments
                                  if any(_normalise_grounding(f.source_text) in s for s in sources)],
             hypothesis=statement,
-            status=nodes.VAGUE_STATUS if bolder else nodes.STATUS_OF_MARK.get(shown["raw_mark"], "unclear"),
-            evidence=quote if quote and any(_normalise_grounding(quote) in s for s in sources) else "",
-            one_delta=" · ".join(shown["words"]),
+            status=status,
+            # Kept for the reader's return to this mistake days later (returns.py);
+            # the nodes never go here again (they did from 07.10 to 12.10).
+            mismatch=" ".join(str(data.get("mismatch") or "").split())[:200]
+            if shown["raw_mark"] in {"partly", "wrong"} and kind == "claim" else "",
+            evidence=verbatim,
+            one_delta="",
             prompt_hash=prompt_hash(system_prompt),
             model=self._model_name(),
-            display=nodes.BOLDER if bolder else nodes.describe(shown["mark"], shown["words"]),
+            display=nodes.BOLDER if bolder else nodes.answer_text(
+                shown["mark"], right, verbatim, shown["words"], kind=kind),
             nodes=shown["words"],
             mark=shown["mark"],
         )
@@ -1127,10 +1170,12 @@ class CognitiveService:
         stopped rather than with the returning press: a session closed only when
         the reader comes back would look hours longer than it was.
 
-        `now` (monotonic seconds) and `at_utc` are injectable for tests, the same
-        way the ledger lets a caller pass `created_utc`.
+        `now` (wall-clock seconds) and `at_utc` are injectable for tests, the same
+        way the ledger lets a caller pass `created_utc`. Wall clock, because a
+        monotonic clock stands still while the laptop sleeps and a night's
+        suspend then never counted as a pause.
         """
-        moment = time.monotonic() if now is None else now
+        moment = time.time() if now is None else now
         stamp = at_utc or now_iso()
         retired: SessionSplit | None = None
         if self._last_activity is not None and moment - self._last_activity > IDLE_SESSION_SECONDS:

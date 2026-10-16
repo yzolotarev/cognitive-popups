@@ -157,6 +157,11 @@ def test_dev_capture_gives_four_words_but_never_enters_study_buffer(desktop, mon
                                       source_hash="h"))
     app._commit_fragment = lambda fragment: None
     app.flash = SimpleNamespace(show_cues=lambda c, origin="": shown.append((c, origin)))
+    class ImmediateThread:
+        def __init__(self, target, **kw): self.target = target
+        def start(self): self.target()
+    monkeypatch.setattr(desktop, 'threading', SimpleNamespace(Thread=ImmediateThread))
+    app._split_idle_session = lambda: None
     app.seed()
     assert shown and shown[0][0] == cues
     assert "не в учебную историю" in shown[0][1]
@@ -542,17 +547,40 @@ def test_mixer_drops_finished_voices_and_soft_clips(tmp_path):
     mixer.close()
 
 
-def test_sand_sound_respects_mute_and_global_off(tmp_path, monkeypatch):
+def test_sand_sound_is_opt_in_and_respects_mute_and_global_off(tmp_path, monkeypatch):
     from cognitive_popups import sand_audio
     monkeypatch.setenv("COGNITIVE_STATE_DIR", str(tmp_path))
     (tmp_path / "sand.enabled").touch()
     monkeypatch.delenv("COGNITIVE_SOUND", raising=False)
+    assert not sand_audio.enabled()          # sand on, sound still off by default
+    (tmp_path / "sand.sound").touch()
     assert sand_audio.enabled()
-    (tmp_path / "sand.silent").touch()
+    (tmp_path / "sand.silent").touch()       # the legacy mute still wins
     assert not sand_audio.enabled()
     (tmp_path / "sand.silent").unlink()
     monkeypatch.setenv("COGNITIVE_SOUND", "off")
     assert not sand_audio.enabled()
+
+
+def test_sand_cli_mute_and_unmute_toggle_the_opt_in(tmp_path, monkeypatch, capsys):
+    from cognitive_popups import sand_audio, sand_cli
+    monkeypatch.setenv("COGNITIVE_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("COGNITIVE_SOUND", raising=False)
+    (tmp_path / "sand.enabled").touch()
+    assert sand_cli.main(["unmute"]) == 0 and sand_audio.enabled()
+    assert sand_cli.main(["mute"]) == 0 and not sand_audio.enabled()
+    assert not (tmp_path / "sand.sound").exists()
+    assert sand_cli.main(["reduced"]) == 0 and (tmp_path / "motion.reduced").exists()
+    (tmp_path / "sand.reduced").touch()
+    assert sand_cli.main(["motion"]) == 0
+    assert not (tmp_path / "motion.reduced").exists() and not (tmp_path / "sand.reduced").exists()
+
+
+def test_hovering_sand_words_is_silent():
+    import inspect
+    from cognitive_popups.sand_cues import SandWords
+    assert "self.audio" not in inspect.getsource(SandWords.on_motion)
+    assert "self.mouse" not in inspect.getsource(SandWords.sound_frame)
 
 
 def _alphas(buckets):

@@ -89,7 +89,7 @@ def test_play_is_fire_and_forget_and_detached(monkeypatch, tmp_path):
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
-    sound.play("orbital_close")
+    sound.play("step_done")
 
     assert calls["command"] == ["pw-play", str(audio)]
     assert calls["kwargs"]["start_new_session"] is True
@@ -130,8 +130,8 @@ def test_roles_resolve_but_bare_roles_are_frozen(monkeypatch, private_sounds, ro
     sound.play(role)
 
 
-@pytest.mark.parametrize("event", ["orbital_close"])
-def test_only_orbital_fold_and_close_play_cheers(monkeypatch, private_sounds, event):
+@pytest.mark.parametrize("event", ["step_done", "session_close"])
+def test_only_reader_completion_points_play_cheers(monkeypatch, private_sounds, event):
     asset = private_sounds / "resolve.wav"
     asset.write_bytes(b"RIFF")
     for role in ("materialize", "reveal", "correction"):
@@ -140,7 +140,7 @@ def test_only_orbital_fold_and_close_play_cheers(monkeypatch, private_sounds, ev
     monkeypatch.setattr(sound, "_player_command", lambda path: ["player", str(path)])
     monkeypatch.setattr(subprocess, "Popen", lambda command, **kwargs: calls.append(command))
     for silent in ("orbital_open", "term_reveal", "meaning_reveal", "evidence_reveal", "cue_select",
-                   "orbital_collapse"):  # folding a cue back is silent (owner, 07.10)
+                   "orbital_collapse", "orbital_close"):  # closing Orbital is silent too
         sound.play(silent)
     assert calls == []
     sound.play(event)
@@ -210,7 +210,7 @@ def test_debug_spawn_timestamps_only_when_enabled(monkeypatch, private_sounds, c
         assert capsys.readouterr().err == "", "logging must happen after spawning"
         calls.append(command)
     monkeypatch.setattr(subprocess, "Popen", spawn)
-    sound.play("orbital_close")
+    sound.play("step_done")
     output = capsys.readouterr()
     assert calls == [["/usr/bin/pw-play", str(asset)]]
     assert output.out == ""
@@ -245,7 +245,7 @@ def test_debug_logging_failure_does_not_retry_or_raise(monkeypatch, private_soun
         def write(self, text):
             raise OSError("journal unavailable")
     monkeypatch.setattr(sound.sys, "stderr", BrokenStream())
-    sound.play("orbital_close")
+    sound.play("step_done")
     assert len(calls) == 1
 
 

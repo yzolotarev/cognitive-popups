@@ -20,6 +20,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from . import paths
 
 RING_FILE = "recent-passages.json"
 RING_SIZE = 12
@@ -31,8 +32,7 @@ RECENT_LIMIT = 3
 
 
 def state_root(root: str | Path | None = None) -> Path:
-    return Path(root or os.environ.get("COGNITIVE_STATE_DIR")
-                or "~/.local/state/cognitive-popups").expanduser()
+    return Path(root).expanduser() if root else paths.state_dir()
 
 
 def _fold(text: str) -> str:

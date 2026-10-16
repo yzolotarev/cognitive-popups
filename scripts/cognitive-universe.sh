@@ -10,5 +10,5 @@ PROJECT="${COGNITIVE_PROJECT:-$(cd -- "$SCRIPT_DIR/.." && pwd)}"
 
 exec env \
   PYTHONPATH="$PROJECT/src${PYTHONPATH:+:$PYTHONPATH}" \
-  COGNITIVE_STATE_DIR="${COGNITIVE_STATE_DIR:-$PROJECT/var}" \
+  COGNITIVE_STATE_DIR="${COGNITIVE_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/cognitive-popups}" \
   python3 -m cognitive_popups.universe "$@"

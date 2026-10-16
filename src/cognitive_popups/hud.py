@@ -34,6 +34,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import theme
+from .paths import state_dir
 from .hud_ipc import resolve_socket_path, send as hud_send
 
 try:
@@ -45,7 +47,7 @@ except (ImportError, ValueError) as exc:  # pragma: no cover - desktop dependenc
     raise SystemExit(f"GTK3/PyGObject is required for the side panel: {exc}") from exc
 
 
-STATE_DIR = Path(os.environ.get("COGNITIVE_STATE_DIR", "~/.local/state/cognitive-popups")).expanduser()
+STATE_DIR = state_dir()
 PID_PATH = STATE_DIR / "hud.pid"
 
 #: Fixed positions; captions show only shortcuts that perform the button's action.
@@ -76,7 +78,11 @@ REFRESH_MS = 3000
 #: next state read sees the result; one delayed read is enough.
 SETTLE_MS = 900
 
-CSS = b"""
+CSS = (f"""
+.hud-panel, .hud-panel label, .hud-panel button {{
+    font-family: {theme.CSS_FONT_FAMILY};
+}}
+""" + """
 /* The plate lives on the inner box, not on the window: this window is
    app-paintable (so the rounded corners can be genuinely transparent), and GTK
 does not draw an app-paintable window's own background. A no-window container
@@ -95,7 +101,7 @@ still paints its CSS background, which is where the plate has to go. */
     font-size: 17px;
 }
 .hud-panel .hud-shortcut {
-    font-size: 9px;
+    font-size: %(small)dpx;
 }
 .hud-panel button.hud-ready {
     background-image: none;
@@ -121,9 +127,9 @@ still paints its CSS background, which is where the plate has to go. */
     background-color: alpha(@theme_selected_bg_color, 0.5);
 }
 .hud-panel .hud-status {
-    font-size: 9px;
+    font-size: %(small)dpx;
 }
-"""
+""" % {"small": theme.SMALL}).encode("utf-8")
 
 
 class ScaleBar(Gtk.Box):
@@ -203,6 +209,23 @@ def monitor_geometry() -> Gdk.Rectangle | None:
     return monitor.get_geometry()
 
 
+def signal_add(signum, handler, *, glib=None):
+    """A Unix signal handler on the main loop, on old and new PyGObject alike.
+
+    ``GLibUnix.signal_add`` replaces the deprecated ``GLib.unix_signal_add``;
+    the old name is used only when the new module is missing.
+    """
+    glib = GLib if glib is None else glib
+    try:
+        import gi as _gi
+        _gi.require_version("GLibUnix", "2.0")
+        from gi.repository import GLibUnix
+        return GLibUnix.signal_add(glib.PRIORITY_DEFAULT, signum, handler)
+    except (ImportError, ValueError, AttributeError):
+        pass
+    return glib.unix_signal_add(glib.PRIORITY_DEFAULT, signum, handler)
+
+
 def _install_css(widget) -> None:
     screen = Gdk.Screen.get_default()
     if screen is None:
@@ -252,17 +275,23 @@ class HudPanel:
         window = self.window
         # The X11 class Hyprland matches in config/hypr-v2.lua. `set_wmclass` is
         # deprecated for the multi-backend era, but it is still the only way to
-        # name the X11 class, and this window is deliberately an X11 one.
-        window.set_wmclass("cognitive-hud", "cognitive-hud")
+        # name the X11 class, and this window is deliberately an X11 one. A
+        # future PyGObject without it must still get a panel.
+        try:
+            window.set_wmclass("cognitive-hud", "cognitive-hud")
+        except Exception:  # noqa: BLE001 - deprecated API, naming is optional
+            pass
         from .sand_surface import configure, enabled
         configure(window, Gtk, Gdk)
         if enabled():
             # Transparent plate, but preserve the factual passive status marks.
             provider = Gtk.CssProvider()
-            provider.load_from_data(b'.hud-segment { border-bottom: 2px solid rgba(218,189,140,.15); } '
-                b'.hud-seg-on { border-bottom-color: #d6ad79; } '
-                b'.hud-seg-working { border-bottom-color: rgba(218,189,140,.5); } '
-                b'button.hud-ready, button.hud-on { border: 1px solid #d6ad79; }')
+            amber = theme.DARK["accent"]
+            provider.load_from_data((
+                f'.hud-segment {{ border-bottom: 2px solid {theme.css_rgba(amber, .15)}; }} '
+                f'.hud-seg-on {{ border-bottom-color: {amber}; }} '
+                f'.hud-seg-working {{ border-bottom-color: {theme.css_rgba(amber, .5)}; }} '
+                f'button.hud-ready, button.hud-on {{ border: 1px solid {amber}; }}').encode("utf-8"))
             Gtk.StyleContext.add_provider_for_screen(window.get_screen(),provider,Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION+110)
         window.set_decorated(False)
         window.set_resizable(False)
@@ -562,8 +591,7 @@ FROZEN_FLAG = "hud.frozen"
 
 
 def panel_frozen() -> bool:
-    root = os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-popups"
-    return (Path(root).expanduser() / FROZEN_FLAG).exists()
+    return (state_dir() / FROZEN_FLAG).exists()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -592,9 +620,9 @@ def main(argv: list[str] | None = None) -> int:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     PID_PATH.write_text(str(os.getpid()), encoding="utf-8")
     GLib.timeout_add(REFRESH_MS, panel.refresh)
-    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1, panel.toggle)
-    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, panel.quit)
-    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, panel.quit)
+    signal_add(signal.SIGUSR1, panel.toggle)
+    signal_add(signal.SIGTERM, panel.quit)
+    signal_add(signal.SIGINT, panel.quit)
     panel._refresh_once()
     try:
         Gtk.main()

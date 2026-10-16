@@ -178,30 +178,22 @@ def test_extract_cues_retries_malformed_json():
     assert client.calls == 2
 
 
-def test_extract_cues_reports_which_rule_was_broken():
-    # Two words in `simple` is rejected; the error must name the offending rule
-    # instead of a bare "error" the popup cannot explain.
+def test_extract_cues_repairs_a_slightly_wrong_card_instead_of_dropping_four():
+    # Note 99: "simple совпадает с term: 'реестр'" used to cost the reader all four
+    # words. A card the model got slightly wrong is repaired in place.
     bad = (
         "{\"cues\":["
         + CUE.format(s="две слова", t="memory", m="удержание") + ","
-        + CUE.format(s="предел", t="limit", m="ограничение") + ","
-        + CUE.format(s="группы", t="chunking", m="объединение") + ","
+        + CUE.format(s="реестр", t="реестр", m="ограничение") + ","
+        + CUE.format(s="процесс", t="chunking группировка", m=" ".join(["слово"] * 14)) + ","
         + CUE.format(s="заметка", t="note", m="внешняя опора")
         + "]}"
     )
     client = ScriptedClient(bad)
-    service = CognitiveService(client)
-
-    try:
-        service.extract_cues("Working memory has a limited capacity.")
-    except Web2APIError as exc:
-        message = str(exc)
-    else:  # pragma: no cover - the call must fail
-        raise AssertionError("expected Web2APIError")
-
-    assert "simple не одно слово" in message
-    assert "попытка 1" in message and "попытка 2" in message
-    assert client.calls == 2
+    cues = CognitiveService(client).extract_cues("Working memory has a limited capacity.")
+    assert client.calls == 1
+    assert [c["simple"] for c in cues] == ["две", "реестр", "chunking", "заметка"]
+    assert len(cues[2]["meaning"].split()) == 12
 
 
 def test_extract_cues_reports_wrong_cue_count():
@@ -246,9 +238,6 @@ def test_extract_cues_preserves_long_terms(tmp_path, term):
     ("count", "ожидалось 4 объекта, получено 3"),
     ("object", "элемент списка не объект"),
     ("empty", "пустое поле"),
-    ("simple", "simple не одно слово: 'два слова'"),
-    ("meaning", "meaning длиннее двенадцати слов"),
-    ("same", "simple совпадает с term: 'memory'"),
 ])
 def test_extract_cues_retry_names_actual_error(tmp_path, violation, error):
     data = json.loads(four_cues())

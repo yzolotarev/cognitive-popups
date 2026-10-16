@@ -14,6 +14,8 @@ import math
 import random
 from dataclasses import dataclass, field
 
+from .theme import STAR_TINTS
+
 # --- Входные данные ------------------------------------------------------
 
 @dataclass
@@ -58,10 +60,17 @@ MODE_NAMES = {"dorian": "дорийский", "aeolian": "эолийский", "
               "mixolydian": "миксолидийский", "ionian": "ионийский", "lydian": "лидийский",
               "acoustic": "акустический"}
 PENT = [0, 1, 2, 4, 5]          # консонантные ступени лада для обычных звёзд
-TINTS = ["#F5C4B3", "#B5D4F4", "#FAC775", "#CECBF6", "#9FE1CB"]
+TINTS = list(STAR_TINTS)
 
-# тайминг (секунды от начала)
-T_LIFT, T_FORM, STAR_GAP, T_TITLE, T_END = 4.2, 8.3, 0.42, 13.9, 17.5
+# Тайминг (секунды от начала). Вся сцена укладывается в 4 с (было 17.5):
+# это переход, а не представление; любая клавиша сразу даёт финальный кадр.
+T_LIFT, T_FORM, STAR_GAP, T_TITLE, T_END = 0.6, 1.4, 0.12, 3.0, 4.0
+MAX_SECONDS = T_END
+
+
+def star_gap(count: int) -> float:
+    """Пауза между звёздами: все загораются до заголовка при любом их числе."""
+    return min(STAR_GAP, (T_TITLE - 0.4 - T_FORM) / max(1, count - 1))
 
 
 @dataclass
@@ -208,7 +217,7 @@ def build_scene(day: DaySummary) -> Scene:
     edges = [(a, b, False) for a, b in links]
     deg = [sum(1 for e in links if i in e) for i in range(n)]
     central = max(range(n), key=lambda i: deg[i]) if n else 0
-    order = [central] + [i for i in range(n) if i != central]
+    order = ([central] + [i for i in range(n) if i != central]) if n else []
 
     if day.far_edge:
         fx, fy = 0.9, 0.1 + R.random() * 0.12
@@ -235,8 +244,9 @@ def build_scene(day: DaySummary) -> Scene:
     m2 = "ionian" if day.steps_yes >= 3 else "mixolydian"
     m3 = "acoustic" if (errs and day.comet) else "lydian" if (day.ladder or day.comet or day.far_edge) else "ionian"
 
+    gap = star_gap(len(order))
     for r, i in enumerate(order):
-        s = stars[i]; s.ignite = round(T_FORM + r * STAR_GAP, 2); s.rank = r
+        s = stars[i]; s.ignite = round(T_FORM + r * gap, 2); s.rank = r
         if s.kind == "err":     # напряжение, которое разрешается
             s.notes = [(0.0, 3, 1), (0.5, 2 if m3 == "ionian" else 4, 1)]
         elif s.kind == "gap":
@@ -257,10 +267,31 @@ def build_scene(day: DaySummary) -> Scene:
         nebula=day.steps_partial > 0, comet=day.comet,
         stats={"мысли": len(day.thoughts), "сохранённые ошибки": errs, "ступеньки": len(day.ladder),
                "трудные места": n_hard},
-        timeline={"lift": T_LIFT, "form": T_FORM,
-                  "title": max(T_TITLE, T_FORM + max(0, len(stars)-1)*STAR_GAP + 1.4),
-                  "end": max(T_END, T_FORM + max(0, len(stars)-1)*STAR_GAP + 3.6)},
+        timeline={"lift": T_LIFT, "form": T_FORM, "title": T_TITLE, "end": T_END},
     )
+
+
+def playhead(elapsed: float, *, end: float = T_END, reduced: bool = False, skipped: bool = False) -> float:
+    """Время кадра: при reduced motion или после любой клавиши — сразу финал."""
+    if reduced or skipped:
+        return min(end, MAX_SECONDS)
+    return max(0.0, min(elapsed, end, MAX_SECONDS))
+
+
+def fit_timeline(scene: dict) -> dict:
+    """Сохранённая сцена любой длины (старые шли 17.5 с) → не длиннее 4 с.
+
+    Все моменты сжимаются одним множителем, поэтому порядок звёзд и
+    заголовка сохраняется, а к финалу горят все звёзды.
+    """
+    timeline = dict(scene.get("timeline") or {})
+    end = float(timeline.get("end") or 0)
+    if end <= MAX_SECONDS:
+        return scene
+    k = MAX_SECONDS / end
+    fitted = dict(scene, timeline={key: round(float(v) * k, 3) for key, v in timeline.items()})
+    fitted["stars"] = [dict(star, ignite=round(float(star.get("ignite", 0)) * k, 3)) for star in scene.get("stars", [])]
+    return fitted
 
 
 def note_midi(root_midi: int, mode: str, degree: int, octave: int) -> int:

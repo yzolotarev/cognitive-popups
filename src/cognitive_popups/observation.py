@@ -21,6 +21,7 @@ import time
 import uuid
 
 from .operation_context import RUN_ID, OperationContext, current_operation
+from .paths import db_path
 
 SCHEMA_VERSION = 1
 DB_TIMEOUT = 0.25
@@ -68,10 +69,32 @@ def digest(value):
     return hashlib.sha256(encode(value).encode()).hexdigest()
 
 
+#: Copies kept per database after a successful migration or a `maintain` run.
+KEEP_BACKUPS = 3
+#: The copy may take this long per MiB of database, and never less than the
+#: floor: a fixed 2 s turned a slow disk into "the ledger never opens".
+BACKUP_SECONDS_PER_MIB = 2.0
+BACKUP_MIN_SECONDS = 30.0
+
+
+def backup_timeout(path) -> float:
+    try:
+        size = Path(path).stat().st_size
+    except OSError:
+        size = 0
+    return max(BACKUP_MIN_SECONDS, size / (1 << 20) * BACKUP_SECONDS_PER_MIB)
+
+
 def backup_database(path):
-    """Called under a reserved write lock, before DDL; backup reads committed state."""
-    target = Path(str(path) + f".backup-{uuid.uuid4().hex}.sqlite3")
-    deadline = time.monotonic() + 2
+    """Copy `path` next to itself before DDL; returns the copy's path.
+
+    Called under a reserved write lock; the backup reads committed state. The
+    name carries the schema version being left and the date, so a listing says
+    which copy is which: `records.sqlite3.backup-v11-20261016-101500-1a2b.sqlite3`.
+    """
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    deadline = time.monotonic() + backup_timeout(path)
+    target = None
 
     def progress(status, remaining, total):
         if time.monotonic() > deadline:
@@ -80,11 +103,37 @@ def backup_database(path):
     try:
         with closing(sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True,
                                      timeout=DB_TIMEOUT)) as source:
+            version = int(source.execute("PRAGMA user_version").fetchone()[0] or 0)
+            target = Path(str(path) + f".backup-v{version}-{stamp}-{uuid.uuid4().hex[:4]}.sqlite3")
             with closing(sqlite3.connect(target, timeout=DB_TIMEOUT)) as dest:
-                source.backup(dest, pages=256, progress=progress, sleep=0.01)
+                source.backup(dest, pages=1024, progress=progress, sleep=0.005)
     except BaseException:
-        target.unlink(missing_ok=True)
+        if target is not None:
+            target.unlink(missing_ok=True)
         raise
+    return target
+
+
+def list_backups(path) -> list[Path]:
+    """Automatic copies of `path`, newest first. Hand-named copies are not listed."""
+    path = Path(path)
+    found = [entry for entry in path.parent.glob(path.name + ".backup-*.sqlite3") if entry.is_file()]
+    return sorted(found, key=lambda entry: (entry.stat().st_mtime, entry.name), reverse=True)
+
+
+def prune_backups(path, keep=KEEP_BACKUPS, *, dry_run=False) -> list[Path]:
+    """Delete all but the `keep` newest automatic copies; returns what went."""
+    removed = []
+    for old in list_backups(path)[max(0, int(keep)):]:
+        removed.append(old)
+        if dry_run:
+            continue
+        for leftover in (old, Path(str(old) + "-wal"), Path(str(old) + "-shm")):
+            try:
+                leftover.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return removed
 
 
 _SCHEMA = """
@@ -117,6 +166,24 @@ CREATE TABLE IF NOT EXISTS obs_presentations (
 """
 
 
+_source_hashes: dict[str, str] | None = None
+
+
+def source_hashes() -> dict[str, str]:
+    """Hashes of the installed Python sources, computed once per process.
+
+    Hashing every file on every request cost a directory scan per call and,
+    while editing, a new obs_configs row per save. The running code is what
+    was imported, so the first hash is the honest one anyway. Never scans the
+    environment or secrets.
+    """
+    global _source_hashes
+    if _source_hashes is None:
+        _source_hashes = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                          for p in sorted(Path(__file__).parent.glob("*.py"))}
+    return _source_hashes
+
+
 class ObservationStore:
     def __init__(self, path=None, *, enabled=True):
         self._path = Path(path).expanduser() if path is not None else None
@@ -124,9 +191,7 @@ class ObservationStore:
 
     @property
     def path(self):
-        return self._path or Path(os.environ.get("COGNITIVE_RECORD_DB") or
-            str(Path(os.environ.get("COGNITIVE_STATE_DIR") or
-                     "~/.local/state/cognitive-popups") / "records.sqlite3")).expanduser()
+        return self._path or db_path("records.sqlite3")
 
     @contextmanager
     def connect(self):
@@ -151,15 +216,19 @@ class ObservationStore:
             conn.execute("BEGIN IMMEDIATE")
             tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             version = conn.execute("SELECT max(version) FROM obs_schema").fetchone()[0] if "obs_schema" in tables else 0
+            backed_up = False
             if not version:
                 if tables:
                     backup_database(path)
+                    backed_up = True
                 for statement in _SCHEMA.split(";"):
                     if statement.strip():
                         conn.execute(statement)
                 conn.execute("INSERT INTO obs_schema VALUES (?)", (SCHEMA_VERSION,))
             result = action(conn)
             conn.commit()
+            if backed_up:
+                prune_backups(path)
             return result
         except Exception as exc:
             report_failure("observation.write", exc)
@@ -173,9 +242,7 @@ class ObservationStore:
             return None
         try:
             stamp = started or timestamp()
-            # Hash actual installed Python sources; never scan environment/secrets.
-            sources = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
-                       for p in sorted(Path(__file__).parent.glob("*.py"))}
+            sources = source_hashes()
             config = {"sources": sources, "parameters": parameters,
                       "system_messages": [m for m in messages if m.get("role") in ("system", "developer")]}
             config_id = digest(config)

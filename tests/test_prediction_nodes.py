@@ -51,7 +51,9 @@ def test_check_prediction_nodes_returns_marked_nodes_and_never_an_explanation(tm
     request = Client.calls[0][1]["content"]
     assert "<USED>\nстарое" in request and "- моя мысль" in request and "<HYPOTHESIS>" in request
     assert check.nodes == ["нумерация", "порядок", "граница", "матрица"] and check.mark == "partly"
-    assert check.status == "partially_confirmed" and check.display == "≈\nнумерация · порядок · граница · матрица"
+    assert check.status == "partially_confirmed" and check.display == (
+        "≈ частично\nсмотри: «из какого по счёту столбца»\nузлы: нумерация · порядок · граница · матрица")
+    assert check.one_delta == ""
 
 
 def test_the_switch_is_a_file_and_history_is_kept(tmp_path):
@@ -83,3 +85,83 @@ def test_vague_guess_gets_bolder_once_and_is_marked_on_insist(tmp_path):
     second = service.check_prediction_nodes("функция имеет определённые параметры", pack, insist=True)
     assert second.status == "confirmed" and second.mark == "ok"
     assert [c.status for c in service.session.prediction_checks] == [nodes.VAGUE_STATUS, "confirmed"]  # both kept
+
+
+# --- honest verdicts: script gates over the model (swarm C, M1-M3) -------------
+
+PASSAGE = ("Номенклатура дел — это перечень дел организации с указанием сроков хранения. "
+           "Каждому делу присваивается индекс, а документ получает номер внутри дела.")
+
+
+def test_selection_made_of_issued_nodes_is_a_pointer_not_the_ground():
+    # 12.10 05:06: the selection was the previous turn's nodes, and a guess built
+    # from them was "confirmed" by them.
+    ground, focus = nodes.choose_ground("таблица данные структура операция", PASSAGE,
+                                        ["таблица", "данные", "структура", "операция"])
+    assert ground == PASSAGE and focus == "таблица данные структура операция"
+
+
+def test_short_selection_points_into_the_last_passage():
+    ground, focus = nodes.choose_ground("индекс", PASSAGE, [])
+    assert (ground, focus) == (PASSAGE, "индекс")
+
+
+def test_a_real_passage_is_its_own_ground():
+    assert nodes.choose_ground(PASSAGE, "другое", []) == (PASSAGE, "")
+
+
+def test_a_question_is_never_marked():
+    assert nodes.gate("partly", False, "Мы тут юзаем int и trunc для округления вниз или вверх?",
+                      PASSAGE, []) == ("none", False, "question")
+
+
+def test_glued_vague_labels_are_vague_whatever_the_model_said():
+    # 8c2b270e, 317e2031: confirmed by the model, nothing anyone could refute.
+    assert nodes.gate("ok", False, "задача имеет в себе уравнение определённой формы и метод решения",
+                      PASSAGE, [])[1] is True
+
+
+def test_a_tick_needs_something_of_this_passage():
+    # c14b3779: none of these words is in the paragraph; checked against the nodes.
+    mark, _, _ = nodes.gate("ok", False, "функция в алгоритме, алгоритм — набор операций",
+                            PASSAGE, ["функция", "операция", "алгоритм", "трансформация"])
+    assert mark == "partly"
+
+
+def test_a_concrete_true_guess_keeps_its_tick():
+    assert nodes.gate("ok", False, "у каждого дела свой индекс, а документ нумеруется внутри дела",
+                      PASSAGE, []) == ("ok", False, "claim")
+
+
+def test_the_answer_stays_readable_and_never_gives_the_answer_away():
+    text = nodes.answer_text("wrong", "дело — это папка", "документ получает номер внутри дела", [])
+    assert text.splitlines() == ["? расходится с текстом", "верно у тебя: дело — это папка",
+                                 "смотри: «документ получает номер внутри дела»"]
+    assert nodes.answer_text("", "", "", [], kind="question") == nodes.QUESTION_REPLY
+
+
+def test_nodes_check_stores_the_mismatch_not_the_nodes(tmp_path):
+    class Client:
+        def complete(self, messages, **kwargs):
+            return json.dumps({"vague": False, "mark": "wrong", "sure": True,
+                               "gap_quote": "документ получает номер внутри дела",
+                               "right": "у дела свой индекс", "mismatch": "у него индекс у документа, а не у дела",
+                               "specific": True, "words": ["перечень", "срок", "хранение", "организация"]},
+                              ensure_ascii=False)
+    service = CognitiveService(Client())
+    check = service.check_prediction_nodes("индекс есть и у документов, и у папок",
+                                           context.pack(PASSAGE, root=tmp_path, now=1))
+    assert check.mismatch == "у него индекс у документа, а не у дела"
+    assert check.one_delta == "" and check.nodes == ["перечень", "срок", "хранение", "организация"]
+    assert "верно у тебя: у дела свой индекс" in check.display
+
+
+def test_a_question_gets_asked_for_its_answer(tmp_path):
+    class Client:
+        def complete(self, messages, **kwargs):
+            return json.dumps({"vague": False, "mark": "partly", "sure": True, "gap_quote": "",
+                               "specific": True, "words": ["a", "b", "c", "d"]})
+    check = CognitiveService(Client()).check_prediction_nodes(
+        "а индекс у документа есть?", context.pack(PASSAGE, root=tmp_path, now=1))
+    assert check.status == "question" and check.mark == "" and check.nodes == []
+    assert check.display == nodes.QUESTION_REPLY

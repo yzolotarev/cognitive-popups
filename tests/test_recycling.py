@@ -5,6 +5,7 @@ import pytest
 
 from cognitive_popups.context import Pack
 from cognitive_popups.models import PredictionCheck
+from cognitive_popups import recycling
 from cognitive_popups.recycling import RecyclingStore, parse_result
 from cognitive_popups.service import CognitiveService
 
@@ -113,9 +114,31 @@ def test_fourth_submission_replaces_normal_result_and_fifth_does_not(desktop, mo
     app.flash = SimpleNamespace(show_text=lambda *a, **kw: paragraphs.append((a, kw)))
     for i in range(4):
         app.run_prediction(f"thought {i}")
-    assert len(normal) == 3 and len(paragraphs) == 1
-    assert paragraphs[0][0][0] == result()["text"]
-    assert paragraphs[0][1]["cues"] == result()["cues"]
+    # The verdict never waits for the batch: four normal answers, one offer.
+    assert len(normal) == 4 and paragraphs == []
+    offer = app._recycle_offer
+    assert offer and [c.hypothesis for c in offer[1]] == [f"thought {i}" for i in range(4)]
+    app._recycle(offer)
+    [(args, kwargs)] = paragraphs
+    # None of the four held, so no paragraph is sewn from them: the guesses come back verbatim.
+    assert args[0].splitlines() == [f"·  thought {i}" for i in range(4)]
+    assert kwargs["note"] == recycling.GROUP_HINT
     assert len(desktop.RECORDS.load_predictions(app.service.session.id)) == 4
+    app._recycle_offer = None
     app.run_prediction("fifth thought")
-    assert len(normal) == 4 and len(paragraphs) == 1
+    assert len(normal) == 5 and app._recycle_offer is None
+
+
+def test_only_guesses_that_held_feed_a_paragraph():
+    from types import SimpleNamespace as C
+    checks = [C(status="confirmed", hypothesis="a"), C(status="contradicted", hypothesis="b"),
+              C(status="partially_confirmed", hypothesis="c"), C(status="not_supported", hypothesis="d")]
+    assert [c.hypothesis for c in recycling.usable(checks)] == ["a", "c"]
+    assert recycling.verbatim_card(checks).splitlines() == ["✓  a", "?  b", "≈  c", "?  d"]
+
+
+def test_cue_from_a_lemma_matches_the_inflected_paragraph():
+    # Note 111: the model gave «документ», the paragraph said «документы».
+    data = result()
+    data["cues"][0] = {"simple": "документ", "term": "архив хранит документ", "meaning": "что хранится"}
+    assert recycling.parse_result(data)["cues"][0]["simple"] == "документ"

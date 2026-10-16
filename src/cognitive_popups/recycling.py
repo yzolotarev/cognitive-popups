@@ -25,8 +25,30 @@ meaning — её смысл только внутри этого абзаца, �
 """
 
 
+#: Under the reader's guesses: the grouping is theirs, on paper (rubric §0).
+GROUP_HINT = "Какие 2–3 из них держатся одной причиной? Назови группу сам, на листе."
+#: Marks as the reader saw them; a wrong guess stays visible as wrong.
+_SEEN_MARK = {"confirmed": "✓", "partially_confirmed": "≈", "contradicted": "?",
+              "not_supported": "?", "question": "вопрос", "unclear": "·"}
+
+
 def normalise(text):
     return " ".join(text.casefold().split())
+
+
+def _stems(text):
+    import re
+    return {w.casefold().replace("ё", "е")[:4] for w in re.findall(r"[A-Za-zА-Яа-яЁё]{3,}", text or "")}
+
+
+def usable(checks):
+    """Guesses that held at least in part: only these may feed a paragraph."""
+    return [c for c in checks if c.status in {"confirmed", "partially_confirmed"}]
+
+
+def verbatim_card(checks):
+    """The reader's guesses as written, each with the mark it got."""
+    return "\n".join(f"{_SEEN_MARK.get(c.status, '·')}  {' '.join(c.hypothesis.split())}" for c in checks)
 
 
 def parse_result(data):
@@ -45,7 +67,11 @@ def parse_result(data):
         ):
             raise ValueError("Не получились пояснения к словам")
         item = {key: cue[key].strip() for key in ("simple", "term", "meaning")}
-        if normalise(item["simple"]) not in paragraph or normalise(item["term"]) not in paragraph:
+        # By word stems, not by substring: the model gives the lemma, the paragraph
+        # the inflected form, and half of the batches failed on that (note 111).
+        words = _stems(text)
+        term = _stems(item["term"])
+        if not _stems(item["simple"]) <= words or len(term & words) * 2 < len(term):
             raise ValueError("Слово и фраза должны быть взяты из абзаца")
         cleaned.append(item)
     if len({normalise(cue["simple"]) for cue in cleaned}) != BATCH_SIZE:
@@ -119,6 +145,8 @@ class RecyclingStore:
             return None
         for row in self._read(session_id):
             result = json.loads(row["result_json"])
+            if not (result.get("text") or "").strip():
+                continue
             paragraph = normalise(result["text"])
             words = result["cues"]
             labels = {normalise(" ".join(cue["simple"] for cue in words)),

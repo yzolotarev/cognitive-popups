@@ -2,7 +2,7 @@
 # No clipboard content is logged or saved: only ownership-change timestamps.
 set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-TASK_STATE="${COGNITIVE_STATE_DIR:-$SCRIPT_DIR/../var}"
+TASK_STATE="${COGNITIVE_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/cognitive-popups}"
 mkdir -p "$TASK_STATE"
 exec 9>"$TASK_STATE/clipboard-watch.lock"
 flock -n 9 || exit 0

@@ -165,16 +165,19 @@ def test_mode_menu_routes_every_action(desktop):
     app = desktop.DesktopApp.__new__(desktop.DesktopApp)
     seen = []
     for name in ("seed", "start_feynman", "start_prediction", "start_reframe",
-                 "explain_terms", "show_example", "start_step", "show_keys", "show_prediction_history"):
+                 "explain_terms", "show_example", "start_step", "show_keys", "show_prediction_history",
+                 "summarize_text", "show_overview"):
         setattr(app, name, (lambda label: lambda *a, **k: seen.append(label))(name))
+    # The guess window blocks, so the menu hands it off the main loop.
+    app._off_main = lambda _name, action: action()
 
     actions = [item["action"] for item in desktop.MODE_MENU]
     assert set(actions) == {"example", "intent", "four_words", "feynman",
-                            "prediction", "prediction_history", "clarify", "keys"}
+                            "prediction", "prediction_history", "clarify", "summary", "keys", "overview"}
     for action in actions:
         app.run_mode(action)
 
     assert seen == [
         "show_example", "start_step", "seed", "start_feynman",
-        "start_prediction", "show_prediction_history", "explain_terms", "show_keys",
+        "start_prediction", "show_prediction_history", "explain_terms", "summarize_text", "show_keys", "show_overview",
     ]

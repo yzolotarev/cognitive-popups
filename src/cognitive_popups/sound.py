@@ -30,8 +30,8 @@ LOSSLESS_SUFFIXES = {".wav", ".ogg", ".oga", ".flac", ".aiff", ".aif"}
 
 
 def _state_root() -> Path:
-    root = os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-popups"
-    return Path(root).expanduser()
+    from .motion import state_dir
+    return state_dir()
 
 
 MATERIALIZE = "materialize"
@@ -40,13 +40,12 @@ CORRECTION = "correction"
 RESOLVE = "resolve"
 ROLES = (MATERIALIZE, REVEAL, CORRECTION, RESOLVE)
 
-# Frozen 2026-10-07: one cue only. Folding an open Orbital cue or closing
-# Orbital plays RESOLVE (the "cheers" asset). Every other event and every bare
-# role is silent until the sound system is deliberately reopened.
+# Frozen 2026-10-07: one cue only, RESOLVE (the "cheers" asset), and only at
+# the reader's own completion points: a step marked done and a study session
+# closed. Never a model verdict, never an ordinary close (closing Orbital is
+# silent). Every other event and every bare role is silent until the sound
+# system is deliberately reopened.
 EVENT_ROLES = {
-    "orbital_close": RESOLVE,
-    # The reader's own completion points (2026-10-07): a step marked done and a
-    # study session closed. Never a model verdict, never an ordinary close.
     "step_done": RESOLVE,
     "session_close": RESOLVE,
 }

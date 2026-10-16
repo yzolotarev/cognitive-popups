@@ -7,8 +7,8 @@ Wants=gemini-web2api.service
 Type=oneshot
 # Rendered by scripts/install-user.sh; rerun it after moving the checkout.
 WorkingDirectory=@COGNITIVE_PROJECT@
-Environment="PYTHONPATH=@COGNITIVE_PROJECT@/src"
-Environment="COGNITIVE_STATE_DIR=@COGNITIVE_PROJECT@/var"
+Environment="COGNITIVE_PROJECT=@COGNITIVE_PROJECT@"
+Environment="COGNITIVE_STATE_DIR=%S/cognitive-popups"
 # Background priority: a person waiting on a hotkey always reaches the model first.
-ExecStart=/usr/bin/python3 -m cognitive_popups.universe sync --limit 80 --slack
+ExecStart="@COGNITIVE_PROJECT@/scripts/cognitive-service.sh" -m cognitive_popups.universe sync --limit 80 --slack
 Nice=10

@@ -6,7 +6,9 @@ plucked notes with their reverb) are mixed with grains synthesised on the fly,
 so the rustle can follow the pointer's speed. Only the standard library: the
 mix is a few thousand multiply-adds per block, written to ``pw-cat``.
 
-Off with ``COGNITIVE_SOUND=off`` or ``cognitive-sand.sh mute``.
+Opt-in (note 122, «шубуршания начинают надоедать»): silent unless the flag
+``sand.sound`` exists (``cognitive-sand.sh unmute``). ``sand.silent``,
+``cognitive-sand.sh mute`` and ``COGNITIVE_SOUND=off`` still silence it.
 """
 from __future__ import annotations
 
@@ -31,14 +33,21 @@ DISABLED = {"0", "off", "none", "false", "no"}
 
 
 def state_root() -> Path:
-    return Path(os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-popups").expanduser()
+    from .motion import state_dir
+    return state_dir()
+
+
+def opted_in(root: Path | None = None) -> bool:
+    """The reader asked for sand sound (``sand.sound``) and did not mute it."""
+    root = state_root() if root is None else root
+    return (root / "sand.sound").exists() and not (root / "sand.silent").exists()
 
 
 def enabled() -> bool:
     if os.environ.get("COGNITIVE_SOUND", "").strip().lower() in DISABLED:
         return False
     root = state_root()
-    return (root / "sand.enabled").exists() and not (root / "sand.silent").exists()
+    return (root / "sand.enabled").exists() and opted_in(root)
 
 
 def asset_dir() -> Path:

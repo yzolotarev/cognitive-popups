@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -9,12 +10,13 @@ import threading
 from pathlib import Path
 from typing import Mapping
 
+from . import paths
 from . import prompts
 
 
 #: Prompts travel with the rest of the state, so `COGNITIVE_STATE_DIR` moves the
 #: whole app at once; `COGNITIVE_PROMPTS_PATH` overrides this file alone.
-STATE_ROOT = os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-popups"
+STATE_ROOT = str(paths.state_dir())
 DEFAULT_PATH = Path(
     os.environ.get("COGNITIVE_PROMPTS_PATH") or os.path.join(STATE_ROOT, "prompts.json")
 ).expanduser()
@@ -41,6 +43,15 @@ PROMPT_ATTRS: Mapping[str, str] = {
     "practice_analysis": "PRACTICE_ANALYSIS_SYSTEM",
 }
 PROMPT_KEYS = tuple(PROMPT_ATTRS)
+
+#: Saved next to the overrides: the hash of the built-in text each one replaced.
+#: An override whose built-in has moved on since is stale: the 19.09 copy of
+#: four_words silently shadowed the 09.10 rewrite for every one of 63 requests.
+BASE_KEY = "_base"
+
+
+def text_digest(text: str) -> str:
+    return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()[:16]
 
 _SOURCE = Path(getattr(prompts, "__file__", "") or "")
 _CACHE: dict[str, object] = {"stamp": None, "values": {}}
@@ -118,6 +129,23 @@ class PromptSettings:
             for key, value in data.items()
             if key in PROMPT_ATTRS and isinstance(value, str) and value.strip()
         } if isinstance(data, dict) else {}
+        base = data.get(BASE_KEY) if isinstance(data, dict) else None
+        self._base = {k: v for k, v in base.items() if isinstance(v, str)} if isinstance(base, dict) else {}
+
+    def stale_keys(self) -> list[str]:
+        """Overrides written against a built-in text that has changed since.
+
+        A stale override is not applied: the current built-in is used and the
+        saved text stays in the file, so it can be re-saved on purpose
+        (`cognitive-prompts.py edit KEY`) or dropped (`reset KEY`).
+        """
+        return [key for key, value in self._overrides.items()
+                if value.strip() != self.default(key).strip()
+                and self._base.get(key) != text_digest(self.default(key))]
+
+    def saved(self, key: str) -> str:
+        """The override as written in the file, applied or not."""
+        return self._overrides.get(key, "")
 
     def default(self, key: str) -> str:
         """The built-in text for `key` as `prompts.py` has it right now."""
@@ -125,6 +153,8 @@ class PromptSettings:
 
     def get(self, key: str) -> str:
         value = self._overrides.get(key)
+        if value and key in self.stale_keys():
+            return self.default(key)
         # An override that only repeats the built-in text is not a customisation:
         # let the file's version win, so a redundant saved prompt cannot freeze a
         # key against later edits to `prompts.py`.
@@ -168,27 +198,34 @@ class PromptSettings:
         if not value:
             raise ValueError("prompt must not be empty")
         self._overrides[key] = value
+        self._base[key] = text_digest(self.default(key))
         self._save()
 
     def reset(self, key: str) -> None:
         if key not in PROMPT_ATTRS:
             raise KeyError(key)
         self._overrides.pop(key, None)
+        self._base.pop(key, None)
         self._save()
 
     def reset_all(self) -> None:
         self._overrides.clear()
+        self._base.clear()
         self._save()
 
     def is_custom(self, key: str) -> bool:
         """Whether the saved text actually differs from the built-in one."""
         value = self._overrides.get(key)
-        return bool(value) and value.strip() != self.default(key).strip()
+        return bool(value) and value.strip() != self.default(key).strip() and key not in self.stale_keys()
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        data: dict[str, object] = dict(self._overrides)
+        base = {k: v for k, v in self._base.items() if k in self._overrides}
+        if base:
+            data[BASE_KEY] = base
         self.path.write_text(
-            json.dumps(self._overrides, ensure_ascii=False, indent=2) + "\n",
+            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
 
@@ -197,7 +234,8 @@ def edit_prompt(settings: PromptSettings, key: str) -> None:
     editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "vi"
     with tempfile.NamedTemporaryFile("w+", encoding="utf-8", suffix=".prompt", delete=False) as handle:
         path = Path(handle.name)
-        handle.write(settings.get(key))
+        # A stale override opens as it was saved: saving it again applies it on purpose.
+        handle.write(settings.saved(key) or settings.get(key))
         handle.write("\n")
     try:
         subprocess.run([editor, str(path)], check=True)
@@ -216,8 +254,11 @@ def main() -> int:
     args = parser.parse_args()
     settings = PromptSettings()
     if args.list:
+        stale = set(settings.stale_keys())
         for key in PROMPT_KEYS:
-            print(f"{key}: {'custom' if settings.is_custom(key) else 'default'}")
+            state = "stale (ignored: the built-in changed)" if key in stale else (
+                "custom" if settings.is_custom(key) else "default")
+            print(f"{key}: {state}")
         return 0
     if args.reset_all:
         settings.reset_all()

@@ -23,6 +23,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import motion, theme
 from .orbital import Disclosure
 from .sand_core import sample_mask
 
@@ -488,7 +489,6 @@ class SandWords:
         gi.require_version("Gtk", "3.0")
         from gi.repository import Gtk, Gdk, GLib, Pango
         from . import popup_helper as helper
-        from .sand_fx import reduced_motion
         from .sand_surface import configure, palette
         from .sand_canvas import connect_draw, rgb
         self.Gtk, self.Gdk, self.GLib, self.Pango, self.helper = Gtk, Gdk, GLib, Pango, helper
@@ -501,7 +501,7 @@ class SandWords:
         x, y = payload.get("x"), payload.get("y")
         self.anchor = helper.get_mouse_position() if x is None or y is None else (x, y)
         self.workarea = helper._monitor_workarea(Gdk, *self.anchor)
-        self.quiet = reduced_motion(Gtk) or bool(self.reduced_flag)
+        self.quiet = motion.reduced(Gtk) or bool(self.reduced_flag)
         self.actions = list(payload.get("actions") or [])
         self.origin, self.title = str(payload.get("origin") or ""), str(payload.get("title") or "")
         count = len(self.rows) or 4
@@ -521,21 +521,20 @@ class SandWords:
             points = [(x - ox, y - oy) for x, y in letters] or None
         self.lights = self.image = None
         self.shot, self.halos = shot, []
-        import os as _os
-        state_dir = Path(_os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-popups").expanduser()
+        state_dir = motion.state_dir()
         self.frosted = (state_dir / "sand.frosted").exists()
         # Owner's experiment, 10.10.2026: words made of sand only, no text layer.
         self.grains_only = (state_dir / "sand.grains_only").exists()
         if shot:
             self.lights = sand_screen.light_map(shot, (*self.plan.position, self.plan.width, self.plan.height))
             light = sum(self.lights[::97]) * 97 > len(self.lights) / 2
-            self.colours = {"text": "#2a2016" if light else "#f2e6cf"}
+            self.colours = {"text": theme.pick(255 if light else 0)["ink"]}
         else:
             src = self.plan.source
             self.colours = palette(Gdk, self.plan.position[0] + src.x, self.plan.position[1] + src.y,
                                    max(8, src.width), max(8, src.height))
         self.ink = rgb(self.colours["text"])
-        self.light_ink, self.dark_ink = rgb("#f2e6cf"), rgb("#2a2016")
+        self.light_ink, self.dark_ink = rgb(theme.DARK["ink"]), rgb(theme.LIGHT["ink"])
         marks.append(("page", time.monotonic()))
         self.sand = WordSand(self.plan, seed=seed, count=count, points=points)
         self.startup = [(name, round((at - self.launched) * 1000)) for name, at in marks]
@@ -621,9 +620,9 @@ class SandWords:
             if len(self.rows) != self.sand.count or self.actions:
                 self.replan(plan(self.workarea, self.anchor, len(self.rows), len(self.actions), self.selection))
             self.state = Disclosure(self.rows)
-        self.step_layout = self.make_layout(helper.STEP_LINE, "Sans 9.5", DETAIL_W, centre=True) if helper.STEP_LINE else None
+        self.step_layout = self.make_layout(helper.STEP_LINE, theme.pango(theme.TEXT), DETAIL_W, centre=True) if helper.STEP_LINE else None
         self.footer_layout = self.make_layout(self.origin or "1–4: раскрыть · Esc: вернуться к тексту",
-                                              "Sans 9", DETAIL_W, centre=True)
+                                              theme.pango(theme.TEXT), DETAIL_W, centre=True)
         self.build_words()
         self.build_actions()
         self.window.set_accept_focus(True)
@@ -711,7 +710,7 @@ class SandWords:
             size = 18
             while True:
                 # Semi-bold and never under ~20 px: it is read as text, not texture.
-                layout = self.make_layout(simple, f"Sans SemiBold {size}", width, centre=True)
+                layout = self.make_layout(simple, theme.pango(size, "SemiBold", px=False), width, centre=True)
                 w, h = layout.get_pixel_size()
                 if (layout.get_line_count() <= 2 and h <= WORD_H) or size <= 15:
                     break
@@ -781,7 +780,7 @@ class SandWords:
         if meaning:
             markup += "\n\n" + GLib.markup_escape_text(meaning)
         width = min(DETAIL_W, self.plan.width - 16)
-        self.detail_layout = self.make_layout(markup, "Sans 12", width, markup=True)
+        self.detail_layout = self.make_layout(markup, theme.pango(theme.LARGE), width, markup=True)
         self.detail_h = self.detail_layout.get_pixel_size()[1]
         d = self.detail_box = detail_box(self.plan, state.active, self.detail_h)
         ink_w = self.detail_layout.get_pixel_extents()[1].width
@@ -880,13 +879,8 @@ class SandWords:
         return True
 
     def sound_frame(self, dt):
-        """Rustle under a moving pointer; a faint trickle while a stream flows."""
-        sand, now = self.sand, time.monotonic()
-        speed = math.hypot(self.mvx, self.mvy)
-        if self.mouse is not None and sand.near > 5 and speed > 1.2 and now - self.last_grain > .02:
-            self.last_grain = now
-            self.audio.grain(2000 + speed * 260 + sand.rnd.random() * 3000, min(.08, speed * sand.near * .0003),
-                             self.pan(self.mouse[0]))
+        """A faint trickle while a stream flows; the pointer itself makes no sound."""
+        sand = self.sand
         active = self.state.active
         if active is not None and self.streams and self.calm < .5 and sand.rnd.random() < .1 * dt:
             self.audio.grain(5000 + sand.rnd.random() * 4000, .012, self.pan(self.plan.words[active][0]))
@@ -1031,7 +1025,7 @@ class SandWords:
             collapses = active == g and (self.state.layer >= 3 or not self.rows[g][2])
             mark = "−" if collapses else "+"
             if mark not in self.marks:
-                self.marks[mark] = self.make_layout(mark, "Sans SemiBold 11", 20)
+                self.marks[mark] = self.make_layout(mark, theme.pango(theme.LARGE, "SemiBold"), 20)
             painter.text(self.marks[mark], mx, my, ink, (.45 + (.45 if self.hover == g else 0)) * shown)
         for x, y, radius, alpha in sand.rings:
             painter.ring(x, y, radius, self.ink_at(x, y), alpha)
@@ -1049,7 +1043,7 @@ class SandWords:
             if waited > 1.2 and not sand.ready:
                 key = "ещё думаю…" if waited > 10 else "думаю…"
                 if self.think_text != key:
-                    self.think_text, self.think = key, self.make_layout(key, "Sans 10", 120, centre=True)
+                    self.think_text, self.think = key, self.make_layout(key, theme.pango(theme.TEXT), 120, centre=True)
                 x, y = sand.core[0] - 60, sand.core[1] + 34
                 self.write(painter, self.think, x, y, .7 * clamp(waited - 1.2), self.small_look(self.think, x, y, 120, 20))
         if self.opened and sand.mode == "form":
@@ -1078,10 +1072,8 @@ class SandWords:
         hover = -1 if self.quiet else self.word_at(event.x, event.y)
         if hover != self.hover:
             self.hover = hover
+            # Hovering is silent (note 122): sound answers clicks, never the pointer.
             self.trace("hover", word=hover)
-            if self.audio and hover >= 0:
-                pan = self.pan(self.plan.words[hover][0])
-                self.audio.pour(.25, 10, pan, pan, low=6000, high=9000, gain=.03)
         self.wake()
         return False
 

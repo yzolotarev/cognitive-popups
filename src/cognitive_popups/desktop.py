@@ -16,7 +16,8 @@ from functools import wraps
 from pathlib import Path
 from collections.abc import Sequence
 
-from .client import GeminiWeb2API, Web2APIError
+from .client import GeminiWeb2API, Web2APIError, client_from_env
+from . import paths
 from .event_log import EventChain, EventLog, new_session
 from .history import SessionHistory
 from .notes import NoteStore
@@ -25,12 +26,16 @@ from .models import text_hash
 from .records import RecordError, RecordStore, match_fragment
 from .service import CLARIFY_WORDS, CognitiveService, looks_like_question, parse_terms, output_artifact, prompt_hash
 from . import observation
+from . import study_goals
 from . import goals
 from . import hud_state
 from . import practice
 from . import context, focus, slack, sound, steps
 from . import prediction_nodes as nodes
 from . import recycling
+from . import instant_cues
+from . import returns
+from .errors import human_error
 from .manual_queue import queued_action
 from . import capture
 from .sand_store import SandStore
@@ -47,7 +52,7 @@ except (ImportError, ValueError) as exc:  # pragma: no cover - desktop dependenc
     raise SystemExit(f"GTK3/PyGObject is required for the desktop UI: {exc}") from exc
 
 
-STATE_DIR = Path(os.environ.get("COGNITIVE_STATE_DIR", "~/.local/state/cognitive-popups")).expanduser()
+STATE_DIR = paths.state_dir()
 HISTORY_PATH = STATE_DIR / "history.json"
 PID_PATH = STATE_DIR / "desktop.pid"
 REQUEST_PATH = STATE_DIR / "request"
@@ -65,13 +70,13 @@ EXTERNAL_POPUP_HELPER = Path(
         "~/.local/bin/objects-tooltip-popup.py",
     )
 ).expanduser()
-EVENTS = EventLog(os.environ.get("COGNITIVE_EVENT_DB") or STATE_DIR / "events.sqlite3")
+EVENTS = EventLog(paths.db_path("events.sqlite3"))
 # Notes are the reader's own words, so they get their own file: different
 # lifetime and different tolerance for failure than telemetry.
-NOTES = NoteStore(os.environ.get("COGNITIVE_NOTES_DB") or STATE_DIR / "notes.sqlite3")
+NOTES = NoteStore(paths.db_path("notes.sqlite3"))
 # The reading ledger: sessions, fragments, hypotheses. Durable; a failed write
 # is a lost day, so its methods raise instead of swallowing (see records.py).
-RECORDS = RecordStore(os.environ.get("COGNITIVE_RECORD_DB") or STATE_DIR / "records.sqlite3")
+RECORDS = RecordStore(paths.db_path("records.sqlite3"))
 
 #: The shortcut reference opened by Alt+K, and offered in the panel. Order is the
 #: order a reading session tends to meet them in, not alphabetical: orient, ask,
@@ -79,12 +84,15 @@ RECORDS = RecordStore(os.environ.get("COGNITIVE_RECORD_DB") or STATE_DIR / "reco
 #: of inventing a combination, so nothing here promises a key that does not work.
 KEYS_REFERENCE = (
     ("Alt+W", "четыре слова из выделенного текста"),
-    ("Ctrl+Alt+W", "4-words-batch: три ракурса, mindmap, итоговый тезис"),
-    ("Alt+F", "проверка понимания по Фейнману"),
+    ("Ctrl+Alt+P", "моя гипотеза: проверить свою мысль по тексту"),
     ("Alt+E", "заметка к выделенному месту"),
     ("Alt+C", "объяснить слово или задать вопрос"),
-    ("Ctrl+Q", "сжать выделение до сути"),
-    ("Alt+I", "закладка «сейчас хочу»"),
+    ("Alt+I", "шаг на 15 минут (звезда сессии)"),
+    ("Alt+K", "эта справка по клавишам"),
+    ("Alt+Shift+K", "меню: обзор за неделю, сжать до сути и др."),
+    ("Ctrl+Alt+Shift+P", "сохранённые ответы на гипотезы"),
+    ("Ctrl+Alt+W", "три ракурса 4 слов и итоговый тезис"),
+    ("Alt+F", "проверка понимания по Фейнману"),
     ("Alt+G", "один конкретный пример"),
     ("Alt+Shift+G", "пример со своим запросом"),
     ("Alt+L", "ступенька к трудному месту (эксперимент)"),
@@ -92,8 +100,7 @@ KEYS_REFERENCE = (
     ("Alt+Shift+T", "новая задача по старому материалу"),
     ("Alt+Y", "попытка последней задачи"),
     ("Alt+H", "боковая панель (сейчас заморожена)"),
-    ("—", "проверка гипотезы: кнопка «…» в панели"),
-    ("Alt+K", "эта справка по клавишам"),
+    ("—", "обзор в терминале: cog stats"),
 )
 
 MODE_MENU = [
@@ -104,7 +111,9 @@ MODE_MENU = [
     {"label": "Моя гипотеза", "action": "prediction"},
     {"label": "Сохранённые ответы на гипотезы", "action": "prediction_history"},
     {"label": "Спросить / объяснить", "action": "clarify"},
+    {"label": "Сжать до сути", "action": "summary"},
     {"label": "Клавиши", "action": "keys"},
+    {"label": "Обзор за неделю", "action": "overview"},
 ]
 
 #: Where the side panel's actions land (see hud.py). A fixed set of names: the
@@ -185,6 +194,9 @@ def begin_interaction(event: str, **fields) -> EventChain:
     CURRENT.set(chain)
     output_artifact.set(None)
     chain.emit(event, **fields)
+    if event == "hotkey" and fields.get("window") in {
+            "prediction", "feynman", "note", "clarify", "summary", "example", "ladder", "seed_batch"}:
+        study_goals.StudyGoals(RECORDS).touch()
     return chain
 
 
@@ -243,6 +255,9 @@ def prepare_popup(payload, window):
 
 def emit(event: str, **fields) -> int | None:
     """Record one event in the current interaction, starting one if needed."""
+    if event in {"click", "submit", "action"} and fields.get("window") in {
+            "prediction", "feynman", "step", "note", "clarify", "summary", "example", "ladder"}:
+        study_goals.StudyGoals(RECORDS).touch()
     return current_chain().emit(event, **fields)
 
 
@@ -348,25 +363,122 @@ def cursor_position() -> tuple[int, int] | None:
         return None
 
 
+#: The hotkey action a worker thread is running, so the popup it opens can be
+#: found again when the same key is pressed while that window is still open.
+_POPUP_OWNER = threading.local()
+_LIVE_POPUPS: dict[str, subprocess.Popen] = {}
+_LIVE_LOCK = threading.Lock()
+
+#: A second press within this many seconds of raising a window that did not come
+#: up replaces it: the reader evidently cannot see it.
+RAISE_GRACE_S = 20.0
+
+
+def live_popup(name: str) -> subprocess.Popen | None:
+    with _LIVE_LOCK:
+        proc = _LIVE_POPUPS.get(name)
+    return proc if proc is not None and proc.poll() is None else None
+
+
+def mapped_window(pid: int) -> bool | None:
+    """Whether Hyprland shows a window of `pid`; None when it cannot be asked."""
+    try:
+        clients = json.loads(subprocess.run(["hyprctl", "clients", "-j"], capture_output=True,
+                                            text=True, timeout=1).stdout or "[]")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    return any(c.get("pid") == pid and c.get("mapped", True) for c in clients)
+
+
+def focus_pid(pid: int) -> None:
+    try:
+        subprocess.run(["hyprctl", "dispatch", "focuswindow", f"pid:{pid}"],
+                       capture_output=True, timeout=1)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def return_prompt(item: dict) -> str:
+    """The return window: the reader's own guess and where it split, never the source."""
+    made = datetime.fromtimestamp(float(item.get("created_epoch") or 0)).strftime("%d.%m")
+    lines = [f"Возврат к гипотезе от {made} (без текста).", "", f"Ты писал: {item.get('hypothesis') or ''}"]
+    if item.get("mismatch"):
+        lines += ["", f"Расходилось: {item['mismatch']}"]
+    lines += ["", "Как это устроено на самом деле? Своими словами. Можно закрыть."]
+    return "\n".join(lines)
+
+
+SEED_REPEAT_S = 120.0
+
+
+def repeat_seed(last: tuple[str, float] | None, key: str, now: float) -> bool:
+    """True when Alt+W saw this same text a moment ago (no new fragment)."""
+    return bool(last) and last[0] == key and 0 <= now - last[1] < SEED_REPEAT_S
+
+
+def offline_cues(text: str) -> str:
+    """Up to four words picked from the text itself, for when the model fails."""
+    if not text.strip():
+        return ""
+    try:
+        draft = instant_cues.draft_cues(text)
+    except Exception:  # noqa: BLE001 - a fallback must never raise
+        return ""
+    return " · ".join(c["term"] for c in draft.get("cues", []) if c.get("term"))
+
+
+def repeat_press(mapped: bool | None, raised_at: float | None, now: float) -> str:
+    """What a repeated hotkey does to its own still-open window.
+
+    'raise' brings a visible window forward; 'replace' kills one that is gone
+    (closed by the compositor, lost on another workspace) or that a raise did not
+    bring back, so the key never stays dead until a restart (notes 105, 110).
+    """
+    if mapped is False:
+        return "replace"
+    if raised_at is not None and now - raised_at <= RAISE_GRACE_S:
+        return "replace"
+    return "raise"
+
+
+def _spawn_popup(command: list[str], payload: str, env: dict[str, str]):
+    """Run the helper; a hotkey's own window is registered so a repeat press finds it."""
+    owner = getattr(_POPUP_OWNER, "name", None)
+    if not owner:
+        return subprocess.run(command, input=payload, capture_output=True, text=True,
+                              env=env, timeout=3600)
+    proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, env=env)
+    with _LIVE_LOCK:
+        _LIVE_POPUPS[owner] = proc
+    try:
+        stdout, stderr = proc.communicate(payload, timeout=3600)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+    finally:
+        with _LIVE_LOCK:
+            if _LIVE_POPUPS.get(owner) is proc:
+                del _LIVE_POPUPS[owner]
+    return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
+
+
 def run_popup(payload: dict[str, object], *, window: str, detail: str = "") -> str:
     """Open one popup and return its stdout; empty when the reader cancels."""
     command = popup_helper_command()
     if command is None:
         emit("error", window=window, detail="popup helper missing")
+        if payload.get("mode") == "cutscene":
+            raise RuntimeError("popup helper missing")
         return ""
     position = cursor_position()
     if position:
         payload["x"], payload["y"] = position
     payload = prepare_popup(payload, window)
     try:
-        result = subprocess.run(
-            command,
-            input=json.dumps(payload, ensure_ascii=False),
-            capture_output=True,
-            text=True,
-            env=popup_env(),
-            timeout=3600,
-        )
+        result = _spawn_popup(command, json.dumps(payload, ensure_ascii=False), popup_env())
+        if payload.get("mode") == "cutscene" and result.returncode:
+            raise RuntimeError(f"cutscene failed: {result.stderr[-500:]}")
         if payload.get("mode") in {"input", "note"}:
             if result.stdout:
                 observe_artifact("submitted_input", {"text": result.stdout,
@@ -380,6 +492,8 @@ def run_popup(payload: dict[str, object], *, window: str, detail: str = "") -> s
                     })
         return result.stdout if payload.get("preserve_raw") else result.stdout.strip()
     except (OSError, subprocess.SubprocessError):
+        if payload.get("mode") == "cutscene":
+            raise
         return ""
 
 
@@ -410,7 +524,13 @@ def universe_body(answer) -> str:
 
 def popup_input(prompt: str, title: str, initial: str = "", *, preserve_raw: bool = False,
                 quote: str = "", quote_hint: str = "", pin_text: str = "", on_pin=None,
-                step_draft: str = "") -> str:
+                step_draft: str = "", journey: dict | None = None, structured: bool = False) -> str | None:
+    """The reader's line; with `structured`, None means the window was cancelled.
+
+    A plain input returns "" both for an empty Enter and for Esc. Where the two
+    mean different things (Esc on the step window must not start a step), the
+    helper answers in JSON and an empty stdout is a cancel.
+    """
     payload: dict[str, object] = {"mode": "input", "prompt": prompt, "title": title}
     if quote:
         # The reader's own past thought, shown above the field (see universe.py).
@@ -425,10 +545,19 @@ def popup_input(prompt: str, title: str, initial: str = "", *, preserve_raw: boo
         payload["initial"] = initial
     if pin_text or step_draft:
         payload.update(pin_text=pin_text, step_draft=step_draft)
+    if journey is not None:
+        payload["journey"] = journey
+    if structured:
+        payload["structured"] = True
     response = run_popup(payload, window="input", detail=title)
-    if (pin_text or step_draft) and response:
+    if structured and not response:
+        return None
+    if (pin_text or step_draft or journey is not None or structured) and response:
         try:
             data = json.loads(response)
+            if journey is not None:
+                journey["target_steps"] = data.get("target_steps")
+                journey["goal"] = str(data.get("goal") or "")
             if data.get("pin_edge") and on_pin:
                 on_pin()
             return str(data.get("text") or "")
@@ -611,6 +740,10 @@ class FlashWindow:
             if position:
                 payload["x"], payload["y"] = position
             payload = prepare_popup(payload, "dual")
+            previous = self.__dict__.get("_cue_proc")
+            if previous is not None and previous.poll() is None:
+                # One four-words window at a time: the new one replaces it.
+                previous.terminate()
             proc = subprocess.Popen(
                 command,
                 stdin=subprocess.PIPE,
@@ -620,6 +753,7 @@ class FlashWindow:
                 start_new_session=True,
                 env=popup_env(),
             )
+            self._cue_proc = proc
             if proc.stdin is not None:
                 proc.stdin.write(json.dumps(payload, ensure_ascii=False))
                 proc.stdin.close()
@@ -955,6 +1089,9 @@ class DesktopApp:
             return None
 
     def _study_key(self):
+        journey = RECORDS.open_journey()
+        if journey:
+            return journey["session_key"]
         last = RECORDS.last_step()
         if last and RECORDS.closure(last["session_key"]) is None:
             return last["session_key"]
@@ -1037,6 +1174,8 @@ class DesktopApp:
         self.hud: HudServer | None = None
         self.client = client
         self.focus = focus.Focus(STATE_DIR / "focus.json", RECORDS, client)
+        self.study_goals = study_goals.StudyGoals(RECORDS)
+        self._study_goal_lock = threading.Lock()
         self.focus_timer = None
         self._focus_prompting = False
         #: Background preparation of one practice task (see practice.py). Built
@@ -1097,24 +1236,45 @@ class DesktopApp:
         if state and state["status"] in focus.ACTIVE:
             # Before the deadline: end early. After it: the end window was closed
             # without a mark, and Alt+I brings it back.
+            star = getattr(self, "initium_star", None)
+            if star:
+                star.pulse(sound=True)
             self._step_end(state["id"], early=time.time() < state["deadline"])
             return
         self._focus_prompting = True
-        selected, selected_origin = selected_text_source() if (STATE_DIR / "sand.enabled").exists() else ("", "")
-        from .manual_queue import selection
-        if getattr(selection, "context", "unknown") == "dev":
-            selected, selected_origin = "", ""
+        last = RECORDS.last_step()
+        journey = RECORDS.open_journey()
+        prior = RECORDS.journey(last["session_key"]) if last else None
+        new_session = not journey and (bool(prior and prior['finale'] in ('playing','shown')) or steps.is_new_session(
+            last, RECORDS.closure(last["session_key"]) if last else None))
+        session_key = journey["session_key"] if journey else (uuid.uuid4().hex if new_session else last["session_key"])
+        try:
+            journey = RECORDS.ensure_journey(session_key)
+            self._show_initium(journey, birth=new_session)
+        except Exception as exc:
+            self._focus_prompting = False
+            self.flash.show_text(str(exc), "Звезда: не удалось сохранить")
+            return
+        from .initium import at_end
+        if journey.get("finale") == "pending" or at_end(journey):
+            self._focus_prompting = False
+            self._off_main("session", lambda: self._close_study_session(session_key, automatic=True))
+            return
 
         def worker():
+            self._offer_return()
             try:
-                last = RECORDS.last_step()
-                new_session = steps.is_new_session(
-                    last, RECORDS.closure(last["session_key"]) if last else None)
-                session_key = uuid.uuid4().hex if new_session else last["session_key"]
-                goal_id = "" if new_session else (last.get("goal_id") or "")
+                selected, selected_origin = selected_text_source() if (STATE_DIR / "sand.enabled").exists() else ("", "")
+                from .manual_queue import selection
+                if getattr(selection, "context", "unknown") == "dev":
+                    selected, selected_origin = "", ""
+                if not self._ensure_study_goal(selected, selected_origin):
+                    return
+                self.study_goals.touch()
+                journey["goal_confirmed"] = True
+                goal_id = "" if new_session else ((last or {}).get("goal_id") or "")
                 bridge = steps.bridge(last, RECORDS.last_closure(), new_session=new_session)
-                # The goal is not asked here: for an unknown text it comes after the
-                # start (owner, 07.10). It is asked once, when the session closes.
+                # Optional goal is collapsed in the first step; no prerequisite form.
                 sand = self._sand()
                 if new_session and (STATE_DIR / "sand.enabled").exists():
                     sand.move_session(self.service.session.id, session_key)
@@ -1127,10 +1287,23 @@ class DesktopApp:
                 raw = popup_input(STEP_PROMPT, "Шаг", quote=bridge.text if bridge else "",
                                   quote_hint=bridge.hint if bridge else "", pin_text=selected,
                                   on_pin=pin_edge,
-                                  step_draft=rungs[-1]["text"] if rungs else "")
+                                  step_draft=rungs[-1]["text"] if rungs else "",
+                                  journey=journey if not RECORDS.session_steps(session_key) else None,
+                                  structured=True)
+                if raw is None:
+                    # Esc is "not now": no step, no timer (12.10: Esc started a 15-minute «читаю»).
+                    emit("action", window="step", detail="step cancelled")
+                    return
+                RECORDS.plan_journey(session_key, journey["target_steps"])
+                period = self.study_goals.current()
+                if journey.get("goal", "").strip():
+                    period = self.study_goals.accept(journey["goal"], step_session_key=session_key)
+                if period:
+                    goal_id = period["goal_id"]
+                    self.study_goals.bind_step_session(session_key)
                 minutes, text = steps.parse_step(raw)
                 text = text or steps.READING
-                state = self.focus.start(text, steps.step_seconds(minutes))
+                state = self.focus.start(text, steps.step_seconds(minutes), study_step=True)
                 RECORDS.add_step(state["id"], text, session_key=session_key, minutes=minutes,
                                  goal_id=goal_id, started_epoch=state["started_at"],
                                  deadline_epoch=state["deadline"])
@@ -1139,6 +1312,7 @@ class DesktopApp:
                     sand.bind_step(rungs[-1]["id"], state["id"])
                 emit("action", window="step",
                      detail=f"step started, {minutes} min, new_session={new_session}")
+                GLib.idle_add(self._refresh_initium_once)
                 GLib.idle_add(self._show_step_timer, state)
             except Exception as exc:  # noqa: BLE001 - shown, not swallowed
                 debug(f"step start failed: {exc}\n{traceback.format_exc()}")
@@ -1187,6 +1361,9 @@ class DesktopApp:
         This is the one window that may arrive on its own, and only because the
         reader started the timer. Closing it leaves the step unmarked, not failed.
         """
+        if getattr(self, "_ending_step", None):
+            return
+        self._ending_step = block_id
         def worker():
             finished = False
             try:
@@ -1196,7 +1373,7 @@ class DesktopApp:
                 minutes = (state["deadline"] - state["started_at"]) / 60
                 options = [("Да", "done"), ("Частично", "partly"), ("Нет", "not")]
                 if early:
-                    options.append(("Продолжить шаг", "continue"))
+                    options += [("Продолжить шаг", "continue"), ("Отменить шаг", "cancel")]
                 if state["goal"] == steps.READING:
                     # Nothing was set to do, so nothing to mark: only what was taken away.
                     choice = "read"
@@ -1205,16 +1382,28 @@ class DesktopApp:
                                           "Шаг", options)
                 if early and choice in ("", "continue"):
                     return
+                if choice == "cancel":
+                    # "Как остановиться?" (note 126): a step can be dropped, not only marked.
+                    RECORDS.finish_step(block_id, "cancelled")
+                    self.focus.finish(block_id)
+                    GLib.idle_add(self._close_focus_timer, block_id)
+                    GLib.idle_add(self._refresh_initium_once)
+                    emit("action", window="step", detail="step cancelled early")
+                    return
                 if choice not in steps.OUTCOMES and choice != "read":
                     # Closed without a mark: the step stays open and the clock keeps
                     # showing "Время"; Alt+I opens this window again.
                     emit("action", window="step", detail="end window closed without a mark")
                     return
                 outcome = choice
+                check = self._choose(steps.SELF_CHECK_PROMPT, "Шаг", list(steps.SELF_CHECK),
+                                     window="self_check")
+                emit("result", window="self_check", detail=check or "skipped")
                 takeaway = popup_input(STEP_TAKEAWAY_PROMPT, "Шаг")
+                if not RECORDS.finish_step(block_id, outcome, takeaway):
+                    return
                 self.focus.complete(block_id)
                 finished = True
-                RECORDS.finish_step(block_id, outcome, takeaway)
                 if self.SAND_KNOWN_MARKS and (STATE_DIR / "sand.enabled").exists():
                     rung = self._sand().rung_for_step(block_id)
                     if rung:
@@ -1228,6 +1417,13 @@ class DesktopApp:
                 if outcome == "done":
                     sound.play("step_done")
                 step = RECORDS.step(block_id)
+                journey = RECORDS.journey(step["session_key"]) if step else None
+                GLib.idle_add(self._refresh_initium_once)
+                from .initium import at_end
+                if at_end(journey):
+                    RECORDS.finale_state(step["session_key"], "pending")
+                    self._close_study_session(step["session_key"], automatic=True)
+                    return
                 after = self._choose("Дальше?", "Шаг", [("Следующий шаг", "next"),
                                                         ("Перерыв", "break"),
                                                         ("Закончить сессию", "close")])
@@ -1240,6 +1436,7 @@ class DesktopApp:
                 debug(f"step end failed: {exc}\n{traceback.format_exc()}")
                 GLib.idle_add(self.flash.show_text, f"Не удалось закончить шаг: {exc}", "Шаг")
             finally:
+                self._ending_step = None
                 if finished:
                     GLib.idle_add(self._close_focus_timer, block_id)
 
@@ -1249,10 +1446,19 @@ class DesktopApp:
         self.start_step()
         return False
 
-    def _close_study_session(self, session_key: str) -> None:
+    def _close_study_session(self, session_key: str, *, automatic=False) -> None:
         """Hand the session back: goal, steps, takeaways, own notes; one question."""
         rows = RECORDS.session_steps(session_key)
         if not rows:
+            return
+        if automatic:
+            # Explicitly selected length + a persisted confirmation are sufficient.
+            # No extra goal/assessment/menu stands between the last step and its sky.
+            end = max(r.get("finished_epoch") or r["started_epoch"] for r in rows)
+            notes = [n for n in NOTES.list() if n.created_utc and rows[0]["started_epoch"] <= _utc_epoch(n.created_utc) <= end]
+            self._sand_close(session_key, rows, notes, ask_edge=False)
+            return
+        if RECORDS.closure(session_key):
             return
         goal_id = next((row["goal_id"] for row in rows if row.get("goal_id")), "")
         intention = RECORDS.intention(goal_id) if goal_id else None
@@ -1264,7 +1470,7 @@ class DesktopApp:
                 goal_id = intention.id
         started = rows[0]["started_epoch"]
         notes = [note for note in NOTES.list()
-                 if note.created_utc and _utc_epoch(note.created_utc) >= started]
+                 if note.created_utc and started <= _utc_epoch(note.created_utc) <= time.time()]
         summary = steps.session_summary(intention.text if intention else "", rows, notes)
         question = "Получил то, ради чего начинал?" if intention else "Сессия дала то, что было нужно?"
         outcome = self._choose(f"{summary}\n\n{question}", "Сессия",
@@ -1276,13 +1482,12 @@ class DesktopApp:
         emit("result", window="session",
              detail=f"session closed: {outcome or 'unmarked'}, steps={len(rows)}")
         sound.play("session_close")
-        if (STATE_DIR / "sand.enabled").exists():
-            self._sand_close(session_key, rows, notes)
+        self._sand_close(session_key, rows, notes)
 
-    def _sand_close(self, session_key, rows, notes):
+    def _sand_close(self, session_key, rows, notes, *, ask_edge=True):
         sand = self._sand()
         edge = sand.edge(session_key)
-        if edge:
+        if edge and ask_edge:
             guess = popup_input(f"{edge['text']}\n\nТвоя догадка о далёком ребре. Можно пропустить.", "Сессия", preserve_raw=True)
             if guess.strip():
                 guess_id = sand.guess(edge["id"], "close", guess, "pending")
@@ -1298,10 +1503,90 @@ class DesktopApp:
                 finally:
                     self._busy = False
         from .session_scene import scene_for_session
-        scene = scene_for_session(session_key, rows, notes, sand, self._universe())
-        sand.save_scene(session_key, scene)
-        sand.close(session_key)
-        run_popup({"mode": "cutscene", "scene": scene}, window="session", detail="per aspera ad astra")
+        journey = RECORDS.ensure_journey(session_key)
+        if journey['finale'] in ('playing', 'shown'):
+            return
+        try:
+            scene = scene_for_session(session_key, rows, notes, sand, self._universe())
+            sand.save_scene(session_key, scene)
+            if not RECORDS.claim_finale(session_key):
+                return
+            # Closure before playback is durable; metadata records the single launch.
+            if RECORDS.closure(session_key) is None:
+                RECORDS.close_study_session(session_key)
+            sand.close(session_key)
+            GLib.idle_add(self._hide_initium)
+            run_popup({"mode": "cutscene", "scene": scene}, window="session", detail="per aspera ad astra")
+            RECORDS.finale_state(session_key, "shown")
+        except Exception:
+            RECORDS.finale_state(session_key, "pending")
+            raise
+        self._save_session_card(session_key, rows, notes)
+
+    def _save_session_card(self, session_key, rows, notes) -> None:
+        """The session as one SVG in <state>/sky/: misses bright, own notes beside them."""
+        try:
+            from . import session_card
+            start = rows[0]["started_epoch"]
+            end = max(r.get("finished_epoch") or r["started_epoch"] for r in rows)
+            conn = RECORDS._connect()
+            try:
+                hypotheses = [dict(row) for row in conn.execute(
+                    "SELECT hypothesis, status FROM predictions WHERE created_epoch BETWEEN ? AND ?"
+                    " ORDER BY created_epoch", (float(start), float(end)))]
+            finally:
+                conn.close()
+            closure = RECORDS.closure(session_key) or {}
+            svg = session_card.build_card(hypotheses, [{"comment": n.comment} for n in notes],
+                                          session_key, closure.get("remaining") or None)
+            path = session_card.save_card(svg, STATE_DIR)
+            emit("result", window="session", detail=f"card {path.name}")
+        except Exception as exc:  # noqa: BLE001 - the card is a keepsake, never a blocker
+            debug(f"session card failed: {exc}")
+
+    def _show_initium(self, journey, *, birth=False):
+        # GTK fixture has no DrawingArea; production always does.
+        if not hasattr(Gtk, "DrawingArea"):
+            return False
+        star = getattr(self, "initium_star", None)
+        if star and star.journey["session_key"] == journey["session_key"]:
+            star.pulse()
+            return False
+        self._hide_initium()
+        from .initium_star import InitiumStar
+        self.initium_star = InitiumStar(journey, birth=birth, position=cursor_position())
+        if not getattr(self, "_initium_refresh_source", None):
+            self._initium_refresh_source = GLib.timeout_add(2000, self._refresh_initium)
+        return False
+
+    def _hide_initium(self):
+        star = getattr(self, "initium_star", None)
+        if star:
+            star.close()
+            self.initium_star = None
+        source = getattr(self, "_initium_refresh_source", None)
+        if source:
+            GLib.source_remove(source)
+            self._initium_refresh_source = None
+        return False
+
+    def _refresh_initium_once(self):
+        self._refresh_initium()
+        return False
+
+    def _refresh_initium(self):
+        star = getattr(self, "initium_star", None)
+        if star is None:
+            return False
+        try:
+            key = star.journey["session_key"]
+            rows = RECORDS.session_steps(key)
+            from .session_scene import session_thoughts
+            thoughts = session_thoughts(rows, NOTES.list(), self._sand(), end=time.time())
+            star.update(RECORDS.journey(key), thoughts)
+        except Exception as exc:
+            debug(f"star refresh failed: {exc}")
+        return True
 
     def _focus_prompt_done(self):
         self._focus_prompting = False
@@ -1416,7 +1701,8 @@ class DesktopApp:
         elif mode == "feynman":
             self.start_feynman()
         elif mode == "prediction":
-            self.start_prediction()
+            # The guess window blocks; never on the main loop (Ctrl+Alt+P does the same).
+            self._off_main("prediction", self.start_prediction)
         elif mode == "prediction_history":
             self.show_prediction_history()
         elif mode == "reframe":
@@ -1425,11 +1711,28 @@ class DesktopApp:
             self.explain_terms()
         elif mode == "keys":
             self.show_keys()
+        elif mode == "summary":
+            self.summarize_text()
+        elif mode == "overview":
+            self.show_overview()
         elif mode == "example":
             self.show_example()
         elif mode == "intent":
             self.start_step()
         return False
+
+    def show_overview(self) -> None:
+        """«Обзор»: the week in the reader's own misses, stumbles and returns. Read-only."""
+        def worker():
+            try:
+                from . import overview
+                text = overview.render(overview.overview(None, time.time() - 7 * 86400))
+            except Exception as exc:  # noqa: BLE001
+                debug(f"overview failed: {exc}\n{traceback.format_exc()}")
+                text = "Обзор не собрался. " + human_error(exc)
+            emit("action", window="overview", detail=f"{len(text)} chars")
+            idle_add(lambda: self.flash.show_text(text, "Обзор за неделю") and False)
+        threading.Thread(target=bind_chain(worker), daemon=True).start()
 
     def show_keys(self) -> None:
         """Alt+K: the shortcut reference, from a table already in memory.
@@ -1457,25 +1760,108 @@ class DesktopApp:
             ),
         )
 
-    @queued_action
+    def _handover(self, cues) -> None:
+        """Once per session, after the first four words: «на бумагу» (0.9 s).
+
+        The words leave for the corners of a sheet: the links are the reader's
+        to draw by hand. Main loop only; never blocks or raises.
+        """
+        session_id = getattr(getattr(self, "service", None), "session", None)
+        session_id = getattr(session_id, "id", None)
+        if not session_id or self.__dict__.get("_handover_session") == session_id:
+            return
+        self._handover_session = session_id
+        words = [c["simple"] for c in FlashWindow.cue_items(cues)]
+        words = [w for w in words if w][:4]
+        if len(words) < 2:
+            return
+        position = cursor_position() or (0, 0)
+        try:
+            from . import paper_scene
+            self._paper = paper_scene.play(words, position)
+        except Exception as exc:  # noqa: BLE001 - a picture never breaks the words
+            debug(f"paper scene failed: {exc}")
+
+    def _finish_scene(self) -> None:
+        """Any next hotkey jumps the running scene to its last frame."""
+        scene = self.__dict__.pop("_paper", None)
+        if scene is not None:
+            try:
+                idle_add(lambda: scene.finish() and False)
+            except Exception:  # noqa: BLE001
+                pass
+
     def seed(self) -> None:
-        from .manual_queue import selection
-        if (STATE_DIR / "sand.enabled").exists():
-            text, origin = selected_text_source()
-        else:
-            text, origin = selected_text(), getattr(selection, "origin", "")
+        """Capture once, reserve the operation, ask intention off the GTK loop."""
+        self._finish_scene()
+        if self.__dict__.get("_seed_request_running"):
+            return
+        self._seed_request_running = True
+        def prepare():
+            try:
+                from .manual_queue import selection
+                text, origin = selected_text_source()
+                dev = getattr(selection, "context", "unknown") == "dev"
+                if not text:
+                    idle_add(self._seed_cancelled)
+                    idle_add(self.flash.show_notice, capture.failure_message(getattr(selection, "capture_notes", [])))
+                    return
+                if not dev:
+                    if not self._ensure_study_goal(text, origin):
+                        idle_add(self._seed_cancelled)
+                        return
+                    self.study_goals.touch()
+                idle_add(self._resume_seed, text, origin, dev)
+            except Exception as exc:
+                idle_add(self._seed_cancelled)
+                idle_add(self.flash.show_text, str(exc), "Цель: не удалось сохранить")
+        threading.Thread(target=bind_chain(prepare), daemon=True).start()
+
+    def _seed_cancelled(self):
+        self._seed_request_running = False
+        return False
+
+    def _ensure_study_goal(self, text, origin):
+        if not self._study_goal_lock.acquire(blocking=False):
+            return False
+        try:
+            return self._ask_study_goal(text, origin)
+        finally:
+            self._study_goal_lock.release()
+
+    def _ask_study_goal(self, text, origin):
+        state = self.focus.snapshot()
+        active = bool(state and state.get("study_step") and state.get("status") in focus.ACTIVE)
+        if not self.study_goals.needs_goal(active_step=active):
+            return True
+        previous = RECORDS.current_intention()
+        phrase = run_popup({"mode": "input", "prompt": "Что хочешь сейчас понять?",
+                            "title": "Цель", "required": True,
+                            "reuse": previous.text if previous else ""},
+                           window="study_goal", detail="начало учёбы")
+        if not phrase.strip():
+            return False
+        key = self._study_key() if active else ""
+        self.study_goals.accept(phrase, material=text, origin=origin, step_session_key=key)
+        emit("action", window="study_goal", detail="intention accepted")
+        return True
+
+    def _resume_seed(self, text, origin, dev):
+        if self._busy:
+            # Keep this accepted operation separate from the replaceable manual queue.
+            GLib.timeout_add(50, bind_chain(lambda: self._resume_seed(text, origin, dev)))
+            return False
+        self._split_idle_session()
+        try:
+            self._seed_material(text, origin, dev)
+        except Exception as exc:
+            self._seed_request_running = False
+            self.flash.show_text(str(exc), "4 слова")
+        return False
+
+    def _seed_material(self, text, origin, dev):
         token = self.__dict__.get("_seed_token", 0) + 1
         self._seed_token = token
-        if not text:
-            debug("seed: no selection from any source")
-            emit("action", window="seed", detail="no selection")
-            message = (capture.failure_message(getattr(selection, 'capture_notes', []))
-                       if (STATE_DIR / 'sand.enabled').exists() else 'нет выделения')
-            self.flash.show_notice(message)
-            return
-        # Owner, 10.10.2026: Alt+W gives four words everywhere. Text from a
-        # terminal or an AI chat still never enters the study buffer.
-        dev = getattr(selection, "context", "unknown") == "dev"
         if dev:
             origin = "dev"
         debug(f"seed: text ({len(text)} chars) {text[:60]!r}")
@@ -1484,6 +1870,18 @@ class DesktopApp:
             context.remember(text, "seed", root=STATE_DIR)
         cache_key = self.service.cue_cache_key(text)
         cues = self._cue_cache.get(cache_key)
+        self._seed_text = text
+        now = time.monotonic()
+        last = self.__dict__.get("_last_seed")
+        if cues and repeat_seed(last, cache_key, now):
+            # Same text again within a couple of minutes: show the words,
+            # don't count a second fragment.
+            debug("seed: repeat, reshowing")
+            emit("action", window="seed", detail="repeat, reshown")
+            self.flash.show_cues(cues)
+            self._seed_request_running = False
+            return
+        self._last_seed = (cache_key, now)
         if cues:
             debug("seed: cache hit")
             fragment = bind_chain(self.service.add_fragment_with_cues)(text, cues)
@@ -1508,12 +1906,11 @@ class DesktopApp:
                 self.flash.show_cues(cues, origin=label)
             else:
                 self.flash.show_cues(cues)
+            self._handover(cues)
 
+            self._seed_request_running = False
             return
         debug("seed: cache miss, asking the model")
-        if self._busy:
-            self._queue_manual(type(self).seed.__wrapped__, (), {})
-            return
         self._busy = True
         self._log_prompt("seed", "four_words")
         handle = self._begin_sand_wait()
@@ -1528,12 +1925,13 @@ class DesktopApp:
                 idle_add(self._seed_done, fragment.cue_details, None, fragment.id, fragment.source_hash, handle, token, origin)
             except Exception as exc:  # noqa: BLE001
                 debug(f"seed failed: {exc}\n{traceback.format_exc()}")
-                idle_add(self._seed_done, [], str(exc), None, None, handle, token, origin)
+                idle_add(self._seed_done, [], exc, None, None, handle, token, origin)
 
         threading.Thread(target=bind_chain(worker), daemon=True).start()
 
     def _seed_done(self, cues: list[dict[str, str]], error: str | None, fragment_id=None, source_hash=None,
                    handle=None, token=None, origin=""):
+        self._seed_request_running = False
         self._busy = False
         visible = token is None or token == self.__dict__.get("_seed_token")
         adopted = False
@@ -1551,9 +1949,16 @@ class DesktopApp:
             return False
         if error:
             emit("error", window="seed", detail=str(error))
-            self.flash.show_text(f"Ошибка четырёх слов:\n\n{error}", "4 слова")
+            self._last_seed = None
+            draft = offline_cues(self.__dict__.get("_seed_text", ""))
+            line = human_error(error)
+            if draft:
+                self.flash.show_text(f"{line}\n\nЧерновик без ИИ, только слова из текста:\n\n{draft}", "4 слова")
+            else:
+                self.flash.show_text(line, "4 слова")
             return False
         emit("result", window="seed", detail=f"{len(cues)} cues", fragment_id=fragment_id, source_hash=source_hash)
+        self._handover(cues)
         if adopted:
             # The waiting sand on screen turns into these words itself.
             return False
@@ -1617,7 +2022,7 @@ class DesktopApp:
             except Exception as exc:  # noqa: BLE001
                 debug(f"4-words-batch failed: {exc}\n{traceback.format_exc()}")
                 run_popup(
-                    {"mode": "text", "title": "4 слова — серия", "text": f"Ошибка серии:\n\n{exc}"},
+                    {"mode": "text", "title": "4 слова — серия", "text": human_error(exc)},
                     window="text",
                 )
             finally:
@@ -1669,6 +2074,7 @@ class DesktopApp:
             emit("action", window="prediction", detail="buffer is empty")
             self.flash.show_notice("нет текста: выдели абзац")
             return
+        self._offer_return()
         self._prediction_pack = context.pack(point, root=STATE_DIR)
         original = recycling.RecyclingStore(RECORDS.path).original_material(point, self.service.session.id)
         if original:
@@ -1722,23 +2128,17 @@ class DesktopApp:
                     check = self.service.check_prediction(hypothesis, material)
                 if self._commit_prediction(check) is False:
                     raise RecordError("Гипотеза не записана в журнал")
-                recycled = None
-                recycle_error = ""
+                # The verdict no longer waits for "из твоих гипотез" (12.10: 12.8 s
+                # median, one 38 s): the batch is only offered, on the reader's click.
                 try:
-                    store = recycling.RecyclingStore(RECORDS.path)
-                    batch = store.pending(session_id, self.service.session.prediction_checks)
-                    if batch and material is not None:
-                        recycled = self.service.recycle_hypotheses([c.hypothesis for c in batch])
-                        store.save(session_id, batch, recycled, material)
-                except Exception as exc:  # the hypothesis has already been saved
-                    recycled = None
-                    recycle_error = str(exc)
-                    emit("error", window="recycling", detail=recycle_error)
+                    batch = recycling.RecyclingStore(RECORDS.path).pending(
+                        session_id, self.service.session.prediction_checks)
+                except Exception as exc:  # noqa: BLE001 - the hypothesis is saved already
+                    batch = []
+                    debug(f"recycling pending failed: {exc}")
+                self._recycle_offer = (session_id, batch, material) if batch and material is not None else None
                 if wait and not wait.finish():
                     idle_add(setattr, self, "_busy", False)
-                    return
-                if recycled or recycle_error:
-                    idle_add(self._recycling_done, check, recycled, recycle_error, hypothesis)
                     return
                 idle_add(self._prediction_done, check, None, hypothesis)
             except Exception as exc:  # noqa: BLE001
@@ -1748,18 +2148,32 @@ class DesktopApp:
 
         threading.Thread(target=bind_chain(worker), daemon=True).start()
 
-    def _recycling_done(self, check, result, error, hypothesis):
-        if not result:
-            self._prediction_done(check, None, hypothesis)
-            self.flash.show_text(
-                "Гипотеза сохранена. Абзац из твоих мыслей пока не собрался.\n\n" + error,
-                "Из твоих гипотез")
-            return False
-        self._busy = False
-        emit("result", window="recycling", detail="four hypotheses returned as a paragraph")
-        self.flash.show_text(result["text"], "Из твоих гипотез", expanded=True,
-                             note=recycling.PROVENANCE, cues=result["cues"])
-        return False
+    def _recycle(self, offer) -> None:
+        """«Мои 4 догадки»: the reader's own guesses verbatim, with their marks.
+
+        The paragraph sewn from them by the model kept the wrong ones and read as
+        settled (three of four were wrong on 12.10). Now the guesses come back as
+        written; a paragraph is added only from the ones that held, and the
+        grouping is left to the reader, on paper.
+        """
+        session_id, batch, material = offer
+        store = recycling.RecyclingStore(RECORDS.path)
+        card = recycling.verbatim_card(batch)
+        held = recycling.usable(batch)
+        result = {"text": "", "cues": []}
+        if len(held) >= 2:
+            try:
+                result = self.service.recycle_hypotheses([c.hypothesis for c in held])
+            except Exception as exc:  # noqa: BLE001 - the verbatim card is the answer
+                emit("error", window="recycling", detail=str(exc)[:200])
+        try:
+            store.save(session_id, batch, result, material)
+        except Exception as exc:  # noqa: BLE001
+            debug(f"recycling save failed: {exc}")
+        text = card + ("\n\nИз тех, что держатся:\n" + result["text"] if result.get("text") else "")
+        emit("result", window="recycling", detail=f"{len(batch)} guesses, {len(held)} held")
+        idle_add(lambda: self.flash.show_text(text, recycling.PROVENANCE, expanded=True,
+                                              note=recycling.GROUP_HINT) and False)
 
     def _prediction_done(self, check, error: str | None, hypothesis: str = ""):
         self._busy = False
@@ -1770,14 +2184,15 @@ class DesktopApp:
                 "Формулировка сохранена: окно откроется с ней же, достаточно отправить ещё раз.",
                 "Моя гипотеза",
             )
-            self._retry_prediction(hypothesis)
+            self._in_background(lambda: self._retry_prediction(hypothesis))
             return False
 
         emit("result", window="prediction", detail=check.status)
         if check.status == nodes.VAGUE_STATUS:
-            self._ask_bolder(hypothesis)
+            self._in_background(lambda: self._ask_bolder(hypothesis))
             return False
-        if getattr(check, "mark", "") or getattr(check, "nodes", None) or check.display == "нечего добавить":
+        if getattr(check, "mark", "") or getattr(check, "nodes", None) or check.status == "question" \
+                or (check.display and nodes.enabled(STATE_DIR)):
             self._show_nodes(check)
             return False
         # Keep the result open with an optional, explicit continuation. A click on
@@ -1820,26 +2235,34 @@ class DesktopApp:
         return False
 
     def _show_nodes(self, check) -> None:
-        """The mark, then four nodes around the cursor; or the mark alone, or silence."""
+        """One window per guess that stays until closed: mark, what holds, where to look, nodes.
+
+        The sign used to flash for 1.5 s and the nodes came as clickable words
+        with nothing behind them (notes 31, 67, 75, 77-79).
+        """
         target = getattr(getattr(self, "_prediction_pack", None), "selection", "")
+        offer = getattr(self, "_recycle_offer", None)
+        self._recycle_offer = None
+
         def worker():
-            if check.mark:
-                self.flash.show_notice(nodes.MARK_SYMBOL.get(check.mark, ""))
-            if check.nodes:
-                time.sleep(1.4 if check.mark else 0)
-                cues = [{"simple": w, "term": w, "meaning": ""} for w in check.nodes]
-                if self.SAND_LADDER_BRIDGE and (STATE_DIR / "sand.enabled").exists():
-                    response = run_popup({"mode": "dual", "items": cues,
-                        "actions": [{"label": "Ступенька отсюда", "action": "ladder"}]}, window="prediction_result")
-                    try:
-                        if response and json.loads(response).get("action") == "ladder":
-                            idle_add(self.start_ladder, target, check)
-                    except (ValueError, AttributeError):
-                        pass
-                else:
-                    self.flash.show_cues(cues)
-            elif not check.mark:
-                self.flash.show_notice("нечего добавить")
+            actions = []
+            if offer:
+                actions.append({"label": "Мои 4 догадки", "action": "recycle"})
+            if self.SAND_LADDER_BRIDGE and (STATE_DIR / "sand.enabled").exists() and check.nodes:
+                actions.append({"label": "Ступенька отсюда", "action": "ladder"})
+            payload = {"mode": "text", "text": check.display or nodes.answer_text(
+                check.mark, "", check.evidence, list(check.nodes or [])), "title": "Моя гипотеза"}
+            if actions:
+                payload["actions"] = actions
+            response = run_popup(payload, window="prediction_result", detail=check.status)
+            try:
+                action = json.loads(response).get("action") if response else ""
+            except (ValueError, AttributeError):
+                action = ""
+            if action == "recycle" and offer:
+                self._recycle(offer)
+            elif action == "ladder":
+                idle_add(self.start_ladder, target, check)
         threading.Thread(target=bind_chain(worker), daemon=True).start()
 
     def _reframe_from_result(self, check, source_snapshot: str):
@@ -1922,6 +2345,11 @@ class DesktopApp:
         else:
             self.flash.show_text(step.text, "Ступенька", note=note)
         return False
+
+    @staticmethod
+    def _in_background(action) -> None:
+        """Run a follow-up that opens an input window without holding the main loop."""
+        threading.Thread(target=bind_chain(action), daemon=True).start()
 
     def _ask_bolder(self, hypothesis: str) -> None:
         """A guess nothing could refute: ask once for a bolder one (2026-10-09).
@@ -2040,6 +2468,11 @@ class DesktopApp:
 
     @queued_action
     def start_feynman(self) -> None:
+        carry = self.__dict__.pop("_idle_carry", None)
+        if not self.service.session.fragments and carry:
+            # A break closed the session a moment ago; the passage is still the one
+            # being read, so the check is about it rather than "buffer is empty".
+            self.service.session.fragments.extend(carry)
         if not self.service.session.fragments:
             emit("action", window="feynman", detail="buffer is empty")
             self.flash.show_notice("буфер пуст: сначала Alt+W или выдели текст")
@@ -2064,15 +2497,14 @@ class DesktopApp:
         self._busy = False
         if error:
             emit("error", window="feynman", detail=str(error))
-            self.flash.show_text(f"Ошибка вопроса Фейнмана:\n\n{error}", "Фейнман")
+            self.flash.show_text(human_error(error), "Фейнман")
             return False
-        explanation = popup_input(question, "Feynman check")
-        if not explanation:
-            return False
-        self._busy = True
-        self._log_prompt("feynman", "feynman_check")
-
         def worker():
+            explanation = popup_input(question, "Фейнман")
+            if not explanation:
+                return
+            self._busy = True
+            self._log_prompt("feynman", "feynman_check")
             try:
                 check = self.service.check_feynman(question, explanation)
                 self._commit_feynman(check)
@@ -2094,7 +2526,7 @@ class DesktopApp:
         self._busy = False
         if error:
             emit("error", window="feynman", detail=str(error))
-            self.flash.show_text(f"Ошибка проверки Фейнмана:\n\n{error}", "Фейнман")
+            self.flash.show_text(human_error(error), "Фейнман")
             return False
         emit("result", window="feynman", detail=f"{status}, {len(gaps)} gaps")
         if status == "passed":
@@ -2158,7 +2590,7 @@ class DesktopApp:
         except Exception as exc:  # noqa: BLE001 - a lost note must be visible
             debug(f"error note failed: {exc}")
             emit("error", window="note", detail=str(exc))
-            self.flash.show_text(f"Заметка не записана:\n\n{exc}", "Ошибка чтения")
+            self.flash.show_text("Заметка не записана. " + human_error(exc), "Ошибка чтения")
             return
         with operation_scope(current_chain().context):
             observation.record_annotation("ledger_link", {"kind": "note", "note_id": note.id,
@@ -2308,7 +2740,7 @@ class DesktopApp:
         self._busy = False
         if error:
             emit("error", window="clarify", detail=str(error))
-            self.flash.show_text(f"Ошибка ответа:\n\n{error}", "Спросить / объяснить")
+            self.flash.show_text(human_error(error), "Спросить / объяснить")
             return False
         observe_artifact("clarify_universe_answer", {
             "question": answer.question, "bridge": answer.bridge, "gap": answer.gap,
@@ -2354,7 +2786,7 @@ class DesktopApp:
         self._busy = False
         if error:
             emit("error", window="clarify", detail=str(error))
-            self.flash.show_text(f"Ошибка ответа:\n\n{error}", "Спросить / объяснить")
+            self.flash.show_text(human_error(error), "Спросить / объяснить")
             return False
         note = ANSWER_GROUNDING_NOTE.get(answer.grounding, "")
         emit(
@@ -2376,7 +2808,7 @@ class DesktopApp:
         self._busy = False
         if error:
             emit("error", window="clarify", detail=str(error))
-            self.flash.show_text(f"Ошибка объяснения:\n\n{error}", "Спросить / объяснить")
+            self.flash.show_text(human_error(error), "Спросить / объяснить")
             return False
         lines = [f"{line['term']} — {line['explanation']}" for line in result.lines]
         if not lines:
@@ -2415,7 +2847,7 @@ class DesktopApp:
             return
         observe_artifact("summary_source", {"selection": text})
         emit("action", window="summary",
-             detail=f"сжат текст (Ctrl+Q): {text[:60]}")
+             detail=f"сжат текст: {text[:60]}")
         self._busy = True
         self._log_prompt("summary", "summary")
 
@@ -2433,7 +2865,7 @@ class DesktopApp:
         self._busy = False
         if error:
             emit("error", window="summary", detail=str(error))
-            self.flash.show_text(f"Ошибка сжатия:\n\n{error}", "Сжать текст")
+            self.flash.show_text(human_error(error), "Сжать текст")
             return False
         emit("result", window="summary", detail=f"сжат текст, {len(result.text)} chars")
         self.flash.show_text(result.text, "Сжать текст")
@@ -2838,7 +3270,7 @@ class DesktopApp:
         self._busy = False
         if error:
             emit("error", window="example", detail=str(error))
-            self.flash.show_text(f"Ошибка примера:\n\n{error}", "Покажи на примере")
+            self.flash.show_text(human_error(error), "Покажи на примере")
             return False
         if len(self._example_cache) >= 32:
             self._example_cache.clear()
@@ -2864,6 +3296,7 @@ class DesktopApp:
         )
 
     def _commit_fragment(self, fragment) -> None:
+        self.__dict__.pop("_idle_carry", None)
         try:
             RECORDS.save_fragment(self.service.session, fragment)
         except RecordError as exc:
@@ -2881,7 +3314,38 @@ class DesktopApp:
             debug(f"record prediction failed: {exc}")
             emit("error", window="prediction", detail=f"ledger: {exc}")
             return False
+        if check.status in returns.MISSED_STATUSES:
+            try:
+                returns.ReturnStore(RECORDS).schedule(check.id, time.time())
+            except RecordError as exc:
+                debug(f"schedule return failed: {exc}")
         return True
+
+    def _offer_return(self) -> None:
+        """Once a day, before a guess or a step: one missed guess, rebuilt without the text.
+
+        Blocking; call it off the main loop. Closing the window counts as "not now".
+        """
+        try:
+            store = returns.ReturnStore(RECORDS)
+            item = store.due(time.time())
+        except Exception as exc:  # noqa: BLE001 - a return never blocks the action it precedes
+            debug(f"return lookup failed: {exc}")
+            return
+        if not item:
+            return
+        answer = popup_input(return_prompt(item), "Возврат", structured=True)
+        outcome = "skip"
+        if answer:
+            outcome = self._choose(
+                f"Ты написал: {answer}\n\nТеперь держится?", "Возврат",
+                [("Держится", "better"), ("Ещё шатко", "same")], window="return") or "same"
+        try:
+            store.record_answer(item["prediction_id"], answer or "", outcome, time.time())
+        except (RecordError, ValueError) as exc:
+            debug(f"return answer failed: {exc}")
+            return
+        emit("result", window="return", detail=outcome)
 
     def _commit_feynman(self, check) -> None:
         try:
@@ -2906,6 +3370,7 @@ class DesktopApp:
         retired = self.service.mark_activity()
         if retired is None:
             return
+        self._idle_carry = list(retired.session.fragments[-3:])
         self._close_session(retired.session.id, "idle", closed_utc=retired.ended_utc)
         debug(
             f"idle split: {len(retired.session.fragments)} fragments, "
@@ -3155,9 +3620,25 @@ class DesktopApp:
         emit("app_start", detail=f"pid {os.getpid()}")
         self.hud = self._start_panel_socket()
         self.preparer.start()
+        journey = RECORDS.open_journey()
+        if journey is None:
+            state = self.focus.snapshot()
+            row = RECORDS.step(state["id"]) if state and state.get("study_step") else None
+            if row and RECORDS.closure(row["session_key"]) is None:
+                journey = RECORDS.ensure_journey(row["session_key"])
+        if journey:
+            self._show_initium(journey)
+            self._refresh_initium()
         state = self.focus.snapshot()
         if state and state["status"] == "running":
-            self._show_focus_timer(state)
+            row = RECORDS.step(state["id"])
+            if row and row.get("finished_epoch"):
+                self.focus.complete(state["id"])
+            else:
+                self._show_focus_timer(state)
+        from .initium import at_end
+        if journey and (journey['finale']=='pending' or at_end(journey)):
+            self._off_main("session", lambda: self._close_study_session(journey["session_key"], automatic=True))
         GLib.timeout_add(WATCH_MS, self.watch_selection)
         for signum, handler in ((signal.SIGUSR1, self._signal_seed),
                                 (signal.SIGWINCH, self._signal_menu),
@@ -3176,9 +3657,11 @@ class DesktopApp:
             # shutting down. Work cut off here is closed as `interrupted` on the
             # next start rather than left looking live.
             self.preparer.stop()
+            self._hide_initium()
             state = self.focus.snapshot()
             if state and state["status"] in focus.ACTIVE:
-                self.focus.finish(state["id"], "interrupted")
+                if not state.get("study_step"):
+                    self.focus.finish(state["id"], "interrupted")
                 self._close_focus_timer(state["id"])
             if self.hud is not None:
                 self.hud.stop()
@@ -3194,7 +3677,6 @@ class DesktopApp:
 
     def _signal_seed(self):
         begin_interaction("hotkey", window="seed", detail="4 слова")
-        self._split_idle_session()
         self.seed()
         return True
 
@@ -3231,7 +3713,7 @@ class DesktopApp:
             emit("action", window="reframe", detail="frozen")
             return True
         if request == "summary":
-            begin_interaction("hotkey", window="summary", detail="сжат текст (Ctrl+Q)")
+            begin_interaction("hotkey", window="summary", detail="сжат текст")
             self._split_idle_session()
             self.summarize_text()
             return True
@@ -3285,21 +3767,44 @@ class DesktopApp:
         These actions wait for the reader to close their window; on the main
         loop that held every other hotkey in the queue (07.10: Alt+C "flew away"
         until the note window was closed). The same key pressed while its own
-        window is still open does nothing.
+        window is still open brings that window forward; if it is gone or does
+        not come up, it is replaced by a fresh one (see `repeat_press`).
         """
+        self._finish_scene()
         running = self.__dict__.setdefault("_windows_running", set())
+        raised = self.__dict__.setdefault("_windows_raised", {})
+        reopen = self.__dict__.setdefault("_windows_reopen", set())
         if name in running:
-            emit("action", window=name, detail="already open")
+            proc = live_popup(name)
+            if proc is None:
+                # Still waiting for the model: the window has not opened yet.
+                emit("action", window=name, detail="already open: waiting")
+                return
+            now = time.monotonic()
+            if repeat_press(mapped_window(proc.pid), raised.get(name), now) == "replace":
+                emit("action", window=name, detail="stale window replaced")
+                reopen.add(name)
+                proc.kill()
+                return
+            raised[name] = now
+            emit("action", window=name, detail="raised")
+            focus_pid(proc.pid)
             return
 
         def worker():
+            _POPUP_OWNER.name = name
             try:
                 action()
             except Exception as exc:  # noqa: BLE001 - one failed window must not kill the key
                 debug(f"{name} failed: {exc}\n{traceback.format_exc()}")
                 emit("error", window=name, detail=f"{type(exc).__name__}: {exc}"[:200])
             finally:
+                _POPUP_OWNER.name = None
+                raised.pop(name, None)
                 running.discard(name)
+                if name in reopen:
+                    reopen.discard(name)
+                    idle_add(lambda: self._off_main(name, action) and False)
 
         running.add(name)
         threading.Thread(target=bind_chain(worker), daemon=True).start()
@@ -3312,13 +3817,14 @@ class DesktopApp:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Cognitive Popups desktop layer")
-    parser.add_argument("--api-url", default=os.environ.get("COGNITIVE_API_URL", "http://127.0.0.1:8081/v1/chat/completions"))
-    parser.add_argument("--model", default=os.environ.get("COGNITIVE_MODEL", "gemini-flash-lite"))
+    # None means "from the environment" (client_from_env), so the key and timeout apply too.
+    parser.add_argument("--api-url", default=None)
+    parser.add_argument("--model", default=None)
     parser.add_argument("--diagnose", action="store_true", help="print what each selection source returns and exit")
     args = parser.parse_args()
     if args.diagnose:
         return diagnose_selection()
-    app = DesktopApp(GeminiWeb2API(url=args.api_url, model=args.model))
+    app = DesktopApp(client_from_env(url=args.api_url, model=args.model))
     app.run()
     return 0
 

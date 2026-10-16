@@ -66,8 +66,12 @@ hl.bind("ALT + E", hl.dsp.exec_cmd(signal .. " note"))
 -- Спросить или объяснить: слова из буфера, которые не понял, — вручную; вопрос —
 -- свободной строкой. Один хоткей закрывает оба случая, режим выбирается по вводу.
 hl.bind("ALT + C", hl.dsp.exec_cmd(signal .. " clarify"))
--- Сжать выделенный текст до короткой сути; вход и ответ пишутся в лог.
-hl.bind("CTRL + Q", hl.dsp.exec_cmd(signal .. " summary"))
+-- Ctrl+Q (сжать до сути) убран 2026-10-16: он закрывал окна в других
+-- программах, а сжатие осталось в боковой панели.
+-- Моя гипотеза: одна своя мысль о связи, проверка по тексту.
+hl.bind("CTRL + ALT + P", hl.dsp.exec_cmd(signal .. " prediction"))
+-- Сохранённые ответы на гипотезы.
+hl.bind("CTRL + ALT + SHIFT + P", hl.dsp.exec_cmd(signal .. " prediction-history"))
 -- Закладка намерения: одна фраза «сейчас хочу…», вернуть её после перерыва.
 hl.bind("ALT + I", hl.dsp.exec_cmd(signal .. " intent"))
 -- Покажи на примере: один маленький конкретный случай к выделенному тексту.
@@ -84,6 +88,8 @@ hl.bind("ALT + SHIFT + T", hl.dsp.exec_cmd(tasks .. " --revisit-menu"))
 hl.bind("ALT + Y", hl.dsp.exec_cmd(tasks .. " --practice"))
 -- Справка по клавишам: минималистичное окно «клавиша — что делает».
 hl.bind("ALT + K", hl.dsp.exec_cmd(signal .. " keys"))
+-- Меню всех действий: обзор за неделю, сжать до сути и остальное.
+hl.bind("ALT + SHIFT + K", hl.dsp.exec_cmd(signal .. " menu"))
 -- Боковая панель: те же действия мышью и тихая подсветка готовой задачи.
 -- Первое нажатие запускает панель, следующие показывают и скрывают её.
 -- Alt+H frozen 2026-10-07: the panel does not start while var/hud.frozen exists.

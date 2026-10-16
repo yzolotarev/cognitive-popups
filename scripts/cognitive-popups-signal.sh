@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The state directory follows the checkout, so renaming or moving the project keeps
-# the hotkeys working; COGNITIVE_STATE_DIR still overrides it.
+# One state directory for the service, the scripts and the CLI (paths.py):
+# COGNITIVE_STATE_DIR, else the XDG state directory.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-STATE_DIR="${COGNITIVE_STATE_DIR:-$SCRIPT_DIR/../var}"
+STATE_DIR="${COGNITIVE_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/cognitive-popups}"
 PID_FILE="$STATE_DIR/desktop.pid"
 ACTION="${1:-}"
 REQUEST=""

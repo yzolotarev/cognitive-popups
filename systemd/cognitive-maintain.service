@@ -1,0 +1,13 @@
+[Unit]
+Description=Cognitive Popups: weekly upkeep (telemetry retention, old backups, VACUUM)
+
+[Service]
+Type=oneshot
+# Rendered by scripts/install-user.sh; rerun it after moving the checkout.
+WorkingDirectory=@COGNITIVE_PROJECT@
+Environment="COGNITIVE_PROJECT=@COGNITIVE_PROJECT@"
+Environment="COGNITIVE_STATE_DIR=%S/cognitive-popups"
+# Notes, hypotheses and the ledger are never deleted; see maintain.py.
+ExecStart="@COGNITIVE_PROJECT@/scripts/cognitive-service.sh" -m cognitive_popups.maintain
+Nice=19
+IOSchedulingClass=idle

@@ -32,12 +32,14 @@ from typing import Any
 
 from .models import FeynmanCheck, Fragment, Intention, PredictionCheck, now_iso
 from .notes import NoteStore, local_stamp, normalise_anchor
+from .paths import state_dir
 
-STATE_ROOT = os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-popups"
+#: Import-time snapshots kept for callers that read them; paths resolve per call.
+STATE_ROOT = str(state_dir())
 DEFAULT_DB = os.path.join(STATE_ROOT, "records.sqlite3")
 ENV_DB = "COGNITIVE_RECORD_DB"
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 12
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -184,6 +186,13 @@ CREATE TABLE IF NOT EXISTS step_closures (
     closed_utc    TEXT NOT NULL,
     closed_epoch  REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS step_journeys (
+    session_key TEXT PRIMARY KEY,
+    identity TEXT NOT NULL,
+    target_steps INTEGER CHECK (target_steps IN (1,3,5) OR target_steps IS NULL),
+    created_epoch REAL NOT NULL,
+    finale TEXT NOT NULL DEFAULT 'open' CHECK (finale IN ('open','pending','playing','shown'))
+);
 CREATE TABLE IF NOT EXISTS intents (
     id            TEXT PRIMARY KEY,
     text          TEXT NOT NULL,
@@ -199,6 +208,30 @@ CREATE TABLE IF NOT EXISTS intents (
     updated_epoch REAL,
     status        TEXT NOT NULL DEFAULT 'current'
 );
+CREATE TABLE IF NOT EXISTS study_goal_periods (
+    id TEXT PRIMARY KEY, goal_id TEXT NOT NULL REFERENCES intents(id),
+    step_session_key TEXT NOT NULL DEFAULT '',
+    accepted_epoch REAL NOT NULL, activity_epoch REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS returns (
+    prediction_id TEXT PRIMARY KEY,
+    due_epoch     REAL,
+    step          INTEGER NOT NULL DEFAULT 0,
+    shown_epoch   REAL,
+    answer        TEXT,
+    outcome       TEXT,
+    updated_epoch REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS returns_due_idx ON returns(due_epoch);
+CREATE TABLE IF NOT EXISTS return_answers (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    prediction_id TEXT NOT NULL,
+    step          INTEGER NOT NULL,
+    answer        TEXT,
+    outcome       TEXT NOT NULL,
+    answered_epoch REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS return_answers_prediction_idx ON return_answers(prediction_id);
 CREATE INDEX IF NOT EXISTS records_sessions_epoch_idx ON sessions(created_epoch);
 CREATE INDEX IF NOT EXISTS records_fragments_session_idx ON fragments(session_id, position);
 CREATE INDEX IF NOT EXISTS records_fragments_hash_idx ON fragments(source_hash);
@@ -272,7 +305,7 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
 
 
 def resolve_db_path(path: str | Path | None = None) -> Path:
-    raw = path or os.environ.get(ENV_DB) or DEFAULT_DB
+    raw = path or os.environ.get(ENV_DB) or state_dir() / "records.sqlite3"
     return Path(raw).expanduser()
 
 
@@ -326,6 +359,55 @@ def match_fragment(fragments: list[Fragment], anchor: str) -> Fragment | None:
     return None
 
 
+_warned_newer: set[str] = set()
+
+
+def _warn_newer(path: Path, version: int) -> None:
+    key = str(path)
+    if key in _warned_newer:
+        return
+    _warned_newer.add(key)
+    print(f"cognitive records: {path} has schema {version}, newer than this code"
+          f" ({SCHEMA_VERSION}); left as it is", file=sys.stderr)
+
+
+def looks_like_node_words(text: str | None) -> list[str]:
+    """The parts of a " · "-joined node list, or [] when `text` is a sentence.
+
+    Nodes mode once stored its four words in `one_delta`. A node is a short
+    label: at most three words, no sentence punctuation. Anything else is a
+    real correction phrase and stays where it is.
+    """
+    parts = [part.strip() for part in str(text or "").split(" · ")]
+    if len(parts) < 2 or not all(parts):
+        return []
+    for part in parts:
+        if len(part.split()) > 3 or any(mark in part for mark in ".,;:!?«»\"()"):
+            return []
+    return parts
+
+
+def _move_node_words(conn: sqlite3.Connection) -> int:
+    """One-time: node words saved as `one_delta` move to `nodes_json`."""
+    moved = 0
+    rows = conn.execute("SELECT id, one_delta, nodes_json FROM predictions"
+                        " WHERE one_delta LIKE '% · %'").fetchall()
+    for row in rows:
+        parts = looks_like_node_words(row["one_delta"])
+        if not parts:
+            continue
+        try:
+            existing = json.loads(row["nodes_json"] or "[]")
+        except ValueError:
+            existing = []
+        if existing and existing != parts:
+            continue
+        conn.execute("UPDATE predictions SET nodes_json = ?, one_delta = '' WHERE id = ?",
+                     (json.dumps(parts, ensure_ascii=False), row["id"]))
+        moved += 1
+    return moved
+
+
 class RecordStore:
     """SQLite home for the reading ledger (see module docstring)."""
 
@@ -341,22 +423,42 @@ class RecordStore:
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA foreign_keys=ON")
             if not self._schema_ready:
-                self._backup_before_migration(conn)
-                conn.executescript(_SCHEMA)
-                _ensure_columns(conn)
-                conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                self._migrate(conn)
                 self._schema_ready = True
             return conn
         except (sqlite3.Error, OSError) as exc:
             raise RecordError(f"cannot open {self.path}: {exc}") from exc
 
-    def _backup_before_migration(self, conn: sqlite3.Connection) -> None:
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        """Bring the file up to `SCHEMA_VERSION`; never down.
+
+        A database written by a newer checkout keeps its version: lowering it
+        made the newer code back up and migrate the same file again on every
+        switch. Only additive DDL (`IF NOT EXISTS`, missing columns) runs on it.
+        """
+        current = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+        backed_up = self._backup_before_migration(conn)
+        conn.executescript(_SCHEMA)
+        _ensure_columns(conn)
+        if current > SCHEMA_VERSION:
+            _warn_newer(self.path, current)
+            return
+        if current and current < 12:
+            _move_node_words(conn)
+        conn.execute(f"PRAGMA user_version={max(current, SCHEMA_VERSION)}")
+        conn.commit()
+        if backed_up:
+            from .observation import prune_backups
+            prune_backups(self.path)
+
+    def _backup_before_migration(self, conn: sqlite3.Connection) -> bool:
         """Copy the ledger before a schema upgrade can touch it.
 
         `CREATE TABLE IF NOT EXISTS` only adds objects, but the copy is the one
         chance to preserve the previous shape. A database that is empty or
         already current needs no copy, and a fresh file is not a database yet.
         A failed copy stops the open instead of migrating unbacked-up data.
+        Returns whether a copy was made.
         """
         try:
             version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
@@ -364,14 +466,15 @@ class RecordStore:
                 "SELECT count(*) FROM sqlite_master WHERE type='table'"
             ).fetchone()[0])
         except (sqlite3.Error, TypeError, ValueError):
-            return
+            return False
         if version >= SCHEMA_VERSION or not tables:
-            return
+            return False
         try:
             from .observation import backup_database
             backup_database(self.path)
         except Exception as exc:  # noqa: BLE001 - migration must not proceed silently
             raise RecordError(f"cannot back up {self.path} before migration: {exc}") from exc
+        return True
 
     def _ensure_session(self, conn: sqlite3.Connection, session) -> None:
         created_utc = getattr(session, "created_at", None) or now_iso()
@@ -598,7 +701,7 @@ class RecordStore:
         conn = self._connect()
         try:
             row = conn.execute(
-                "SELECT * FROM practice_preparations ORDER BY created_epoch, rowid DESC LIMIT 1"
+                "SELECT * FROM practice_preparations ORDER BY created_epoch DESC, rowid DESC LIMIT 1"
             ).fetchone()
         finally:
             conn.close()
@@ -672,17 +775,33 @@ class RecordStore:
             conn.close()
 
     def close_stale(self, reason: str = "crash") -> int:
-        """Mark sessions left open by a previous run; return how many closed."""
-        moment = now_iso()
+        """Mark sessions left open by a previous run; return how many closed.
+
+        Each closes at its own last activity (newest fragment, hypothesis or
+        Feynman check), not at the restart: a crash at 10:00 found at 18:00 is
+        not an eight-hour session. A session with no activity closes at its start.
+        """
         conn = self._connect()
         try:
-            cursor = conn.execute(
-                "UPDATE sessions SET closed_utc = ?, closed_epoch = ?, close_reason = ?"
-                " WHERE closed_utc IS NULL",
-                (moment, _epoch(moment), reason),
-            )
+            rows = conn.execute(
+                """SELECT s.id, max(s.created_epoch,
+                       coalesce((SELECT max(created_epoch) FROM fragments WHERE session_id = s.id), 0),
+                       coalesce((SELECT max(created_epoch) FROM predictions WHERE session_id = s.id), 0),
+                       coalesce((SELECT max(created_epoch) FROM feynman_checks WHERE session_id = s.id), 0),
+                       coalesce((SELECT max(created_epoch) FROM tasks WHERE session_id = s.id), 0)
+                   ) AS last_epoch
+                   FROM sessions s WHERE s.closed_utc IS NULL"""
+            ).fetchall()
+            for row in rows:
+                epoch = float(row["last_epoch"])
+                moment = datetime.fromtimestamp(epoch, timezone.utc).isoformat(timespec="seconds")
+                conn.execute(
+                    "UPDATE sessions SET closed_utc = ?, closed_epoch = ?, close_reason = ?"
+                    " WHERE id = ? AND closed_utc IS NULL",
+                    (moment, epoch, reason, row["id"]),
+                )
             conn.commit()
-            return int(cursor.rowcount or 0)
+            return len(rows)
         except (sqlite3.Error, OSError) as exc:
             raise RecordError(f"cannot write to {self.path}: {exc}") from exc
         finally:
@@ -830,6 +949,7 @@ class RecordStore:
         material_origin: str = "",
         direction: str = "",
         created_utc: str | None = None,
+        study_period: tuple[str, str, float] | None = None,
     ) -> Intention:
         """Make a new current bookmark; the previous one becomes 'previous'.
 
@@ -875,6 +995,10 @@ class RecordStore:
                     _epoch(intention.created_at),
                 ),
             )
+            if study_period is not None:
+                period_id, step_key, epoch = study_period
+                conn.execute('INSERT INTO study_goal_periods VALUES (?, ?, ?, ?, ?)',
+                             (period_id, intention.id, step_key, epoch, epoch))
             conn.commit()
         except (sqlite3.Error, OSError) as exc:
             raise RecordError(f"cannot write intention to {self.path}: {exc}") from exc
@@ -1006,7 +1130,7 @@ class RecordStore:
         moment = finished_utc or now_iso()
         return self._write(
             "UPDATE steps SET outcome = ?, takeaway = ?, finished_utc = ?, finished_epoch = ?"
-            " WHERE id = ?",
+            " WHERE id = ? AND finished_epoch IS NULL",
             (outcome, " ".join((takeaway or "").split()) or None, moment, _epoch(moment), step_id),
             "step outcome") == 1
 
@@ -1038,6 +1162,40 @@ class RecordStore:
     def last_closure(self) -> dict[str, Any] | None:
         rows = self._read("SELECT * FROM step_closures ORDER BY closed_epoch DESC LIMIT 1")
         return rows[0] if rows else None
+
+    def ensure_journey(self, session_key: str) -> dict:
+        """Visual metadata on the existing step session, never a second ledger."""
+        from .initium import identity_for
+        import time
+        self._write("INSERT OR IGNORE INTO step_journeys (session_key,identity,created_epoch) VALUES (?,?,?)",
+                    (session_key, json.dumps(identity_for(session_key)), time.time()), "star identity")
+        return self.journey(session_key)
+
+    def journey(self, session_key: str) -> dict | None:
+        rows = self._read("SELECT j.*, (SELECT count(*) FROM steps s WHERE s.session_key=j.session_key AND s.finished_epoch IS NOT NULL) AS completed FROM step_journeys j WHERE j.session_key=?", (session_key,))
+        if not rows:
+            return None
+        row = rows[0]
+        row["identity"] = json.loads(row["identity"])
+        return row
+
+    def open_journey(self) -> dict | None:
+        rows = self._read("SELECT session_key FROM step_journeys WHERE finale='pending' OR (finale='open' AND session_key NOT IN (SELECT session_key FROM step_closures)) ORDER BY created_epoch DESC LIMIT 1")
+        return self.journey(rows[0]["session_key"]) if rows else None
+
+    def plan_journey(self, session_key: str, target: int | None) -> None:
+        if target not in (None, 1, 3, 5):
+            raise ValueError("choose 1, 3, 5 or free")
+        self._write("UPDATE step_journeys SET target_steps=? WHERE session_key=? AND finale='open'", (target, session_key), "journey length")
+
+    def claim_finale(self, session_key: str) -> bool:
+        # A persisted claim prevents repeated callbacks and restarts replaying a finale.
+        return self._write("UPDATE step_journeys SET finale='playing' WHERE session_key=? AND finale IN ('open','pending')", (session_key,), "finale claim") == 1
+
+    def finale_state(self, session_key: str, state: str) -> None:
+        if state not in ('pending', 'shown'):
+            raise ValueError("invalid finale state")
+        self._write("UPDATE step_journeys SET finale=? WHERE session_key=?", (state,session_key), "finale state")
 
     def intention_history(self, *, tail: int | None = None) -> list[Intention]:
         """Replaced bookmarks, newest first; the current one is not repeated."""
@@ -1347,7 +1505,7 @@ def main(argv: list[str] | None = None) -> int:
         description="The durable reading ledger: sessions, 4-word fragments, hypotheses.",
     )
     parser.add_argument("--db", default=None, help=f"ledger path (default {DEFAULT_DB})")
-    parser.add_argument("--notes-db", default=None, help="notes path (default ~/.local/state/cognitive-popups/notes.sqlite3)")
+    parser.add_argument("--notes-db", default=None, help="notes path (default <state dir>/notes.sqlite3)")
     parser.add_argument("--today", action="store_true", help="today's local date (default when no date/session given)")
     parser.add_argument("--date", default=None, help="one local date, YYYY-MM-DD")
     parser.add_argument("--session", default=None, help="one session id, full detail")

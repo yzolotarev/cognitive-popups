@@ -42,7 +42,20 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 from . import observation, verify
-from .client import GeminiWeb2API, Web2APIError, parse_json_object
+from .client import GeminiWeb2API, Web2APIError, client_from_env, parse_json_object
+from .errors import human_error
+from . import client as _client_module
+
+
+def _model_client() -> GeminiWeb2API:
+    """The shared model config (`client_from_env`).
+
+    Goes through this module's `GeminiWeb2API` name only when something has
+    replaced it (the tests stub it), so a stub still wins over the environment.
+    """
+    if GeminiWeb2API is not _client_module.GeminiWeb2API:
+        return GeminiWeb2API()
+    return client_from_env()
 from .event_log import EventChain, default_log
 from .nodes import MODE_KINDS, TaskNode, parse_nodes, render_nodes, select_node, strip_wrapper
 from .operation_context import OperationContext, current_operation, operation_scope
@@ -558,12 +571,15 @@ def generate_task(
     node: TaskNode | None = None,
     nodes: Sequence[TaskNode] = (),
     on_stage=None,
+    priority: str | None = None,
 ) -> GeneratedTask:
     """Generate one task, reporting progress through `on_stage` if given.
 
     `on_stage(name)` is how a caller that cannot show a window — the background
     preparation — reports which part of the work is running. The hotkey path
-    passes nothing and behaves exactly as before.
+    passes nothing and behaves exactly as before. `priority` reaches the model
+    client: the background preparation passes PRIORITY_BACKGROUND so it yields to
+    a person waiting; None keeps the client's default (a person asked).
     """
     notify = on_stage or (lambda _stage: None)
     ctx = current_operation() or OperationContext()
@@ -580,7 +596,7 @@ def generate_task(
         notify("generating")
         try:
             result = _generate_task(client, key, prompt, context, node=node, nodes=nodes,
-                                    on_stage=notify)
+                                    on_stage=notify, priority=priority)
         except BaseException as exc:
             artifact = observation.record_artifact("task_failed", {
                 "error_type": type(exc).__name__,
@@ -606,6 +622,7 @@ def _generate_task(
     node: TaskNode | None = None,
     nodes: Sequence[TaskNode] = (),
     on_stage=None,
+    priority: str | None = None,
 ) -> GeneratedTask:
     """Generate, validate, verify and repair once. An unverified task is never shown."""
     notify = on_stage or (lambda _stage: None)
@@ -622,7 +639,8 @@ def _generate_task(
                 + "\nВерни исправленный JSON полностью. Не добавляй текст вне JSON."
                 + f"\n<PREVIOUS_RESPONSE>\n{last.raw_response if last else ''}\n</PREVIOUS_RESPONSE>"
             )
-        raw = client.complete([{"role": "user", "content": request}], max_tokens=1400)
+        extra = {"priority": priority} if priority is not None else {}
+        raw = client.complete([{"role": "user", "content": request}], max_tokens=1400, **extra)
         parsed, errors = parse_generated_task(raw, key, context)
         verification = verify.VerificationResult("", "")
         if not errors:
@@ -1039,7 +1057,7 @@ def practice_task(task_id: str, context: str, client) -> int:
             feedback = client.complete([{"role": "user", "content": prompt}], max_tokens=900)
         except Web2APIError as exc:
             _chain().emit("error", window="task", detail=str(exc))
-            show_text(f"Ошибка проверки попытки:\n\n{exc}", "Практика")
+            show_text(f"Попытка не проверена. {human_error(exc)}", "Практика")
             return 1
     # Keep the original condition and context; only the learner's attempt and the
     # feedback change. This makes the practice episode auditable in the ledger.
@@ -1108,7 +1126,7 @@ def revisit_task(source_id: str, *, store: RecordStore, client=None, show_popup:
     if len(context) > MAX_CONTEXT_CHARS:
         print("Архивный источник слишком длинный для одной задачи; снимок не обрезан.", file=sys.stderr)
         return 2
-    client = client or GeminiWeb2API()
+    client = client or _model_client()
     prompt = (
         "Это добровольное возвращение к старому материалу. Создай ОДНУ новую задачу "
         "на применение; гипотеза — вопрос читателя, не факт и не опора. "
@@ -1316,7 +1334,7 @@ def _main(argv: list[str] | None = None) -> int:
     if args.practice is not None:
         # The bridge is checked inside practice_task only if a model call is
         # actually needed: a machine checkable attempt is judged in code.
-        return practice_task(args.practice, context, GeminiWeb2API())
+        return practice_task(args.practice, context, _model_client())
 
     if args.menu:
         chain = _chain()
@@ -1336,7 +1354,7 @@ def _main(argv: list[str] | None = None) -> int:
                 "Задача",
             )
             return 0
-        client = GeminiWeb2API()
+        client = _model_client()
         try:
             health = client.health()
             chain.emit(
@@ -1346,7 +1364,7 @@ def _main(argv: list[str] | None = None) -> int:
             )
         except Web2APIError as exc:
             chain.emit("error", window="task", detail=str(exc))
-            show_text(f"Локальный bridge недоступен:\n\n{exc}", "Задача")
+            show_text(human_error(exc, url=client.url), "Задача")
             return 1
         nodes = parse_nodes(strip_wrapper(str(context))) if context else []
         node = select_node(nodes, key) if key in MODE_KINDS else None
@@ -1396,7 +1414,7 @@ def _main(argv: list[str] | None = None) -> int:
                     )
                 except Exception as ledger_exc:  # noqa: BLE001
                     chain.emit("error", window="task", detail=f"ledger: {ledger_exc}")
-            show_text(f"Ошибка генерации:\n\n{exc}", "Задача")
+            show_text(f"Задача не получилась. {human_error(exc)}", "Задача")
             return 1
         assert generated is not None
         if generated.status != "ready":

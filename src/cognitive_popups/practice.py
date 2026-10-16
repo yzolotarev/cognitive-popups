@@ -37,7 +37,7 @@ from . import prompts
 from .client import PRIORITY_BACKGROUND, Web2APIError, parse_json_object
 from .nodes import MODE_KINDS, parse_nodes, select_node, strip_wrapper
 from .operation_context import OperationContext, operation_scope
-from .records import RecordStore
+from .records import RecordError, RecordStore
 from .service import prompt_hash
 from .tasks import (
     DEFAULT_LEVEL,
@@ -54,6 +54,10 @@ STAGES = ("material", "application", "task", "check")
 
 #: What each status means for the scale and for the reader. A status advances the
 #: scale only when the corresponding real step is done — see `PROGRESS`.
+#: A row in one of these states never ran to the end through no fault of the
+#: material: the same context may be prepared again (the row is reset).
+RETRYABLE = ("interrupted", "superseded")
+
 STATUS_LABELS = {
     "queued": "Ждёт очереди",
     "analyzing": "Ищу применение по материалу",
@@ -382,6 +386,7 @@ def prepare(
             node=node,
             nodes=nodes,
             on_stage=advance,
+            priority=PRIORITY_BACKGROUND,
         )
     except TaskValidationError as exc:
         _save_rejected(store, context, analysis, exc.result, prompt, client)
@@ -569,9 +574,10 @@ class PreparationQueue:
             return None
         with self._condition:
             self._latest_key = context.key
-        if self.store.preparation_by_context(context.key) is not None:
+        existing = self.store.preparation_by_context(context.key)
+        if existing is not None and existing.get("status") not in RETRYABLE:
             return None
-        preparation_id = new_preparation_id()
+        preparation_id = existing["id"] if existing is not None else new_preparation_id()
         self.store.save_preparation(
             preparation_id=preparation_id,
             context_key=context.key,
@@ -581,8 +587,18 @@ class PreparationQueue:
             context_json=json.dumps(context.payload(), ensure_ascii=False),
         )
         with self._condition:
+            replaced = self._pending
             self._pending = (context, preparation_id)
             self._condition.notify_all()
+        if replaced is not None and replaced[1] != preparation_id:
+            # The queued row it replaces will never run: say so, instead of
+            # leaving it "queued" and blocking that material for good.
+            try:
+                self.store.update_preparation(replaced[1], status="superseded",
+                                              stage_label=STATUS_LABELS.get("superseded", ""),
+                                              error_code="superseded")
+            except (ValueError, RecordError):
+                pass
         return preparation_id
 
     def latest_context_key(self) -> str:

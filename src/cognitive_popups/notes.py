@@ -29,7 +29,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-STATE_ROOT = os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-popups"
+from .paths import state_dir
+
+#: Import-time snapshots kept for callers that read them; paths resolve per call.
+STATE_ROOT = str(state_dir())
 DEFAULT_DB = os.path.join(STATE_ROOT, "notes.sqlite3")
 ENV_DB = "COGNITIVE_NOTES_DB"
 
@@ -64,7 +67,7 @@ class NoteError(RuntimeError):
 
 
 def resolve_db_path(path: str | Path | None = None) -> Path:
-    raw = path or os.environ.get(ENV_DB) or DEFAULT_DB
+    raw = path or os.environ.get(ENV_DB) or state_dir() / "notes.sqlite3"
     return Path(raw).expanduser()
 
 
@@ -114,7 +117,9 @@ class NoteStore:
             conn.execute("PRAGMA synchronous=NORMAL")
             if not self._schema_ready:
                 conn.executescript(_SCHEMA)
-                conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                # Never lower it: a newer checkout's file keeps its version.
+                current = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+                conn.execute(f"PRAGMA user_version={max(current, SCHEMA_VERSION)}")
                 # Self-migrate: session_id arrived after the ledger landed, so a
                 # database created earlier lacks the column until this runs.
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(error_notes)")}

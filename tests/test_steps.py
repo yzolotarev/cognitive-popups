@@ -96,12 +96,21 @@ def _app(desktop, monkeypatch, tmp_path, answers, choices):
     shown = []
 
     def run_popup(payload, **kwargs):
+        if kwargs.get("window") == "self_check":
+            # The one-click self-check is optional: closed here, so the scripted
+            # choices stay about the step itself.
+            return ""
         shown.append(payload["text"])
         return json.dumps({"action": choices.pop(0)}) if choices else ""
     monkeypatch.setattr(desktop, "run_popup", run_popup)
     played = []
     monkeypatch.setattr(desktop.sound, "play", played.append)
     app = desktop.DesktopApp.__new__(desktop.DesktopApp)
+    from cognitive_popups.study_goals import StudyGoals
+    import threading
+    app.study_goals = StudyGoals(records)
+    app.study_goals.accept('Понять материал')
+    app._study_goal_lock = threading.Lock()
     app.focus = Focus(tmp_path / "focus.json", records, None)
     app._focus_prompting = False
     app.focus_timer = None
@@ -111,13 +120,13 @@ def _app(desktop, monkeypatch, tmp_path, answers, choices):
     return app, records, asked, shown, played
 
 
-def test_the_step_starts_without_a_goal_and_an_empty_step_is_reading(desktop, monkeypatch, tmp_path):
+def test_the_step_uses_accepted_goal_and_an_empty_step_is_reading(desktop, monkeypatch, tmp_path):
     app, records, asked, _, _ = _app(desktop, monkeypatch, tmp_path, ["25 разберу VLOOKUP"], [])
     app.start_step()
     assert [prompt for prompt, _ in asked] == [desktop.STEP_PROMPT]   # no goal question up front
     state = app.focus.snapshot()
     assert state["goal"] == "разберу VLOOKUP" and state["deadline"] - state["started_at"] == 25 * 60
-    assert records.last_step()["goal_id"] is None
+    assert records.last_step()["goal_id"] == app.study_goals.current()["goal_id"]
     (tmp_path / "b").mkdir()
     app2, _, _, _, _ = _app(desktop, monkeypatch, tmp_path / "b", [""], [])
     app2.start_step()
@@ -127,7 +136,7 @@ def test_the_step_starts_without_a_goal_and_an_empty_step_is_reading(desktop, mo
 def test_step_end_marks_bridges_and_closes_the_session(desktop, monkeypatch, tmp_path):
     app, records, asked, shown, played = _app(
         desktop, monkeypatch, tmp_path,
-        ["разберу VLOOKUP", "3 = номер столбца", "XLOOKUP", "", "стажировка", "осталось: XLOOKUP"],
+        ["разберу VLOOKUP", "3 = номер столбца", "XLOOKUP", "", "осталось: XLOOKUP"],
         ["done", "next", "partly", "close", "partly"])
     app.start_step()
     first = app.focus.snapshot()["id"]
@@ -142,7 +151,7 @@ def test_step_end_marks_bridges_and_closes_the_session(desktop, monkeypatch, tmp
     assert records.step(second)["outcome"] == "partly"
     closure = records.closure(records.step(first)["session_key"])
     assert closure["outcome"] == "partly" and closure["remaining"] == "осталось: XLOOKUP"
-    assert any("Ради чего: стажировка" in text and "✓ разберу VLOOKUP" in text for text in shown)
+    assert any("Ради чего: Понять материал" in text and "✓ разберу VLOOKUP" in text for text in shown)
     assert played == ["step_done", "session_close"]
 
 
@@ -212,3 +221,39 @@ def test_window_hotkeys_run_off_the_main_loop_and_a_second_press_does_nothing(de
         threading.Event().wait(.05)
     release.set()
     assert calls.count("open") == 1 and "clarify" in calls
+
+
+def test_escape_on_the_step_window_starts_nothing(desktop, monkeypatch, tmp_path):
+    # 12.10 07:39: Esc on the step prompt still started a 15-minute «читаю».
+    app, records, _, _, _ = _app(desktop, monkeypatch, tmp_path, [None], [])
+    app.start_step()
+    assert app.focus.snapshot() is None or app.focus.snapshot()["status"] not in ("running",)
+    assert records.last_step() is None
+
+
+def test_an_early_end_can_cancel_the_step(desktop, monkeypatch, tmp_path):
+    app, records, _, _, _ = _app(desktop, monkeypatch, tmp_path, ["разберу X"], ["cancel"])
+    app.start_step()
+    block = app.focus.snapshot()["id"]
+    app.start_step()                # second Alt+I -> early end window -> "cancel"
+    assert app.focus.snapshot()["status"] == "cancelled"
+    assert records.step(block)["outcome"] == "cancelled"
+
+
+def test_self_check_is_one_optional_click(desktop, monkeypatch, tmp_path):
+    app, records, _, _, _ = _app(desktop, monkeypatch, tmp_path, ["разберу X", ""], ["done", "break"])
+    seen = []
+    original = desktop.run_popup
+
+    def run_popup(payload, **kwargs):
+        if kwargs.get("window") == "self_check":
+            seen.append([a["action"] for a in payload["actions"]])
+            return json.dumps({"action": "group"})
+        return original(payload, **kwargs)
+    monkeypatch.setattr(desktop, "run_popup", run_popup)
+    logged = []
+    monkeypatch.setattr(desktop, "emit", lambda event, **f: logged.append((f.get("window"), f.get("detail"))))
+    app.start_step()
+    app._step_end(app.focus.snapshot()["id"])
+    assert seen == [["simplify", "group", "relate", "recall", "none"]]
+    assert ("self_check", "group") in logged

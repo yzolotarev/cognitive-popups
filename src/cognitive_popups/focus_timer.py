@@ -4,16 +4,21 @@ from __future__ import annotations
 import math
 import time
 
+from . import theme
+
+#: How to end the step, always under the clock (note 126: «как остановиться?»).
+STOP_HINT = "Alt+I — закончить шаг"
+
 
 class FocusTimer:
-    WIDTH, HEIGHT = 200, 132
+    WIDTH, HEIGHT = 200, 148
 
     def __init__(self, state, on_expire, on_cancel, *, clock=time.time):
         import gi
         gi.require_version("Gtk", "3.0")
         gi.require_version("GdkPixbuf", "2.0")
         from gi.repository import Gtk, GLib, Gdk, Pango, GdkPixbuf
-        self.GLib, self.Gdk, self.clock = GLib, Gdk, clock
+        self.Gtk, self.GLib, self.Gdk, self.clock = Gtk, GLib, Gdk, clock
         self.GdkPixbuf = GdkPixbuf
         self.Pango = Pango
         self.expanded = False
@@ -23,6 +28,8 @@ class FocusTimer:
         self.far_edge = state.get("far_edge", "")
         self.expired, self.closed, self.source = False, False, None
         self.expiration_source = None
+        self.tone = "dark"
+        self.label_styles = []
         self.window = Gtk.Window(title="15 → 1")
         from .sand_surface import configure, enabled
         self.sand_mode = enabled()
@@ -54,12 +61,14 @@ class FocusTimer:
         self.labels = Gtk.Fixed()
         self.area.add_overlay(self.labels)
         self.area.set_overlay_pass_through(self.labels, True)
-        self.countdown = self._label(Gtk, Pango, "", 13, "#ebebeb")
-        self.goal_label = self._label(Gtk, Pango, self.goal, 10, "#b8b8b8")
+        self.countdown = self._styled(Gtk, Pango, "", theme.TITLE, "ink")
+        self.goal_label = self._styled(Gtk, Pango, self.goal, theme.TEXT, "ink_muted")
+        self.hint_label = self._styled(Gtk, Pango, STOP_HINT, theme.SMALL, "ink_muted")
         self.labels.put(self.countdown, 10, 37)
-        self.labels.put(self.goal_label, 10, 102)
+        self.labels.put(self.goal_label, 10, 96)
+        self.labels.put(self.hint_label, 10, 124)
         if self.far_edge:
-            self.edge_label = self._label(Gtk, Pango, "☆", 11, "#d6ad79")
+            self.edge_label = self._styled(Gtk, Pango, "☆", theme.SMALL, "accent")
             self.edge_label.set_tooltip_text(self.far_edge)
             self.labels.put(self.edge_label, self.WIDTH - 26, 8)
         self.window.add(self.area)
@@ -71,10 +80,40 @@ class FocusTimer:
         self.window.connect("enter-notify-event", lambda _w, _e: self._expand(True))
         self.window.connect("leave-notify-event", self._leave)
         self._place()
+        self._apply_tone(self._page_tone())
         self._layout_labels()
         self._refresh()
         self.window.show_all()
         self._schedule_expiration()
+
+    def _styled(self, Gtk, Pango, text, size, token):
+        label = self._label(Gtk, Pango, text, size, theme.palette(self.tone)[token])
+        self.label_styles.append((label, size, token))
+        return label
+
+    def _page_tone(self):
+        """Light plate over a light page, dark otherwise; never fails the timer."""
+        try:
+            from .sand_surface import LIGHT, palette
+            x, y = getattr(self, "position", (0, 0))
+            return "light" if palette(self.Gdk, x, y, self.width, self.height) is LIGHT else "dark"
+        except Exception:  # noqa: BLE001 - tone is a nicety
+            return "dark"
+
+    def _apply_tone(self, tone):
+        if tone == self.tone:
+            return
+        self.tone = tone
+        for label, size, token in self.label_styles:
+            provider = self.Gtk.CssProvider()
+            provider.load_from_data(self._label_css(size, theme.palette(tone)[token]))
+            # Above the label's own provider, so the new tone wins.
+            label.get_style_context().add_provider(provider, self.Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
+
+    @staticmethod
+    def _label_css(size, color):
+        return (f"label {{ background-color: transparent; color: {color}; "
+                f"{theme.css_font(size)} font-feature-settings: 'tnum'; }}").encode("utf-8")
 
     @staticmethod
     def _label(Gtk, Pango, text, size, color):
@@ -88,9 +127,7 @@ class FocusTimer:
         label.set_max_width_chars(1)
         label.set_xalign(.5)
         provider = Gtk.CssProvider()
-        provider.load_from_data(
-            f"label {{ background-color: transparent; color: {color}; "
-            f"font: {size}pt Sans; font-feature-settings: 'tnum'; }}".encode("utf-8"))
+        provider.load_from_data(FocusTimer._label_css(size, color))
         label.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         return label
 
@@ -100,7 +137,11 @@ class FocusTimer:
         self.countdown.set_size_request(max(1, self.width - 20), 28)
         self.goal_label.set_size_request(max(1, self.width - 20), self.goal_height)
         self.labels.move(self.countdown, 10, max(0, int(cy - 14)))
-        self.labels.move(self.goal_label, 10, max(0, base - 30))
+        self.labels.move(self.goal_label, 10, max(0, base - self.goal_height - 28))
+        hint = getattr(self, "hint_label", None)
+        if hint is not None:
+            hint.set_size_request(max(1, self.width - 20), 18)
+            self.labels.move(hint, 10, max(0, base - 24))
 
     def _leave(self, _widget, event):
         # Moving onto a child widget is not leaving the clock.
@@ -167,7 +208,8 @@ class FocusTimer:
         self.area.set_size_request(width, height)
         self._layout_labels()
         self.window.resize(width, height)
-        self.window.move(*self._peripheral_position(workarea, width, height))
+        self.position = self._peripheral_position(workarea, width, height)
+        self.window.move(*self.position)
 
     def _mapped(self, *_):
         if not self.closed:
@@ -214,14 +256,16 @@ class FocusTimer:
         return True
 
     @staticmethod
-    def _background_svg(width, height, remaining, duration, expired=False):
+    def _background_svg(width, height, remaining, duration, expired=False, tone="dark"):
         progress = min(1, max(0, remaining / max(1, duration)))
         salience = max(0, 1 - remaining / 60) if not expired else 0
         cx, cy = width / 2, min(51, height / 2)
         radius = max(1, min(39, width / 2 - 12, height / 2 - 12))
         circumference = 2 * math.pi * radius
         stroke = 2 + .5 * salience
-        shade = round(255 * (.70 + .18 * salience))
+        colours = theme.palette(tone)
+        # The ring brightens on dark paper and darkens on light as the end nears.
+        shade = round(255 * ((.70 + .18 * salience) if tone != "light" else (.45 - .18 * salience)))
         color = f"#{shade:02x}{shade:02x}{shade:02x}"
         ring = ""
         if not expired and progress > 0:
@@ -235,33 +279,34 @@ class FocusTimer:
             f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
             f'viewBox="0 0 {width} {height}">'
             f'<rect width="{width}" height="{height}" rx="{min(24, width / 2, height / 2)}" '
-            f'fill="#141414" fill-opacity="0.94"/>'
+            f'fill="{colours["paper"]}" fill-opacity="0.94"/>'
             f'<circle cx="{cx}" cy="{cy}" r="{radius}" fill="none" '
-            f'stroke="#3b3b3b" stroke-width="{stroke}"/>{ring}</svg>')
+            f'stroke="{colours["line"]}" stroke-width="{stroke}"/>{ring}</svg>')
 
     @staticmethod
-    def _sand_svg(width, height, remaining, duration, expired=False):
+    def _sand_svg(width, height, remaining, duration, expired=False, tone="dark"):
         """A static granular hourglass, refreshed once per second, no opaque plate."""
+        colours = theme.palette(tone)
         progress = min(1, max(0, remaining / max(1,duration)))
         cx, cy = min(width-20,30), min(51,height/2)
         parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">']
-        parts.append(f'<path d="M{cx-12} {cy-22} L{cx+12} {cy-22} L{cx} {cy} L{cx+12} {cy+22} L{cx-12} {cy+22} L{cx} {cy} Z" fill="none" stroke="#d6ad79" opacity=".5"/>')
+        parts.append(f'<path d="M{cx-12} {cy-22} L{cx+12} {cy-22} L{cx} {cy} L{cx+12} {cy+22} L{cx-12} {cy+22} L{cx} {cy} Z" fill="none" stroke="{colours["accent"]}" opacity=".5"/>')
         for i in range(100):
             upper = i < round(progress*100)
             n = i if upper else i-round(progress*100)
             layer = n//10
             x = cx + ((n%10)-4.5)*2*(1-layer/12)
             y = cy-19+layer*1.6 if upper else cy+19-layer*1.6
-            parts.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r=".65" fill="#d6ad79" data-chamber="{"upper" if upper else "lower"}"/>')
+            parts.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r=".65" fill="{colours["accent"]}" data-chamber="{"upper" if upper else "lower"}"/>')
         if not expired and progress>0:
-            parts.append(f'<circle cx="{cx}" cy="{cy+4}" r=".7" fill="#eee1c7"/>')
+            parts.append(f'<circle cx="{cx}" cy="{cy+4}" r=".7" fill="{colours["ink"]}"/>')
         return ''.join(parts)+'</svg>'
 
     def _refresh(self):
         remaining = max(0, math.ceil(self.state["deadline"] - self.clock()))
         duration = self.state["deadline"] - self.state.get("started_at", self.state["deadline"] - 900)
         renderer = self._sand_svg if getattr(self,"sand_mode",False) else self._background_svg
-        svg = renderer(self.width, self.height, remaining, duration, self.expired)
+        svg = renderer(self.width, self.height, remaining, duration, self.expired, getattr(self, "tone", "dark"))
         # Use the same system SVG loader as the orbital popup; no Python Cairo.
         loader = self.GdkPixbuf.PixbufLoader.new_with_type("svg")
         loader.write(self.GLib.Bytes.new(svg.encode("utf-8")).get_data())

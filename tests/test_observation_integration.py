@@ -230,7 +230,7 @@ def test_background_cache_keeps_generation_identity_and_new_prompt_misses(deskto
     assert not displays
     assert not rows("obs_presentations")
     origin = desktop.begin_interaction("hotkey", window="seed")
-    app.seed()
+    app._seed_material("Full selected source", "", False)
     assert len(calls) == 1
     fragment = app.service.session.fragments[-1]
     assert fragment.artifact_id == old_cues.artifact_id
@@ -245,7 +245,7 @@ def test_background_cache_keeps_generation_identity_and_new_prompt_misses(deskto
     assert original.prompt_hash == old_cues.prompt_hash
     assert original.prompt_hash != prompt_hash("A completely new system prompt")
     desktop.begin_interaction("hotkey", window="seed")
-    app.seed()
+    app._seed_material("Full selected source", "", False)
     assert len(calls) == 2
     assert app.service.session.fragments[-1].prompt_hash == prompt_hash("A completely new system prompt")
     requests = rows("obs_requests")

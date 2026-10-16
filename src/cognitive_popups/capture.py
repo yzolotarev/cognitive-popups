@@ -22,6 +22,7 @@ import uuid
 from threading import RLock
 from dataclasses import dataclass, field
 from pathlib import Path
+from . import paths
 
 # --- Настройки -----------------------------------------------------------
 
@@ -45,7 +46,7 @@ RESTORABLE_TYPES = ("text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "im
 SECRET_HINT = "x-kde-passwordManagerHint"
 
 SENTINEL_PREFIX = "cognitive-popups-sentinel-"
-STATE_DIR = Path(os.environ.get("COGNITIVE_STATE_DIR", "~/.local/state/cognitive-popups")).expanduser()
+STATE_DIR = paths.state_dir()
 PRIMARY_STAMP = STATE_DIR / "primary.stamp"
 CLIP_STAMP = STATE_DIR / "clipboard.stamp"
 CAPTURE_LOCK = RLock()
@@ -333,6 +334,23 @@ def _try_copy(res, address, timeout_ms, use_sentinel):
                     text = cur
                     break
                 time.sleep(0.015)
+            if not text and res.window_class.lower() == "firefox":
+                # A compositor Alt hotkey can leave Firefox's menu focused on
+                # Alt-up. Retry only after copy failed, and in the same window;
+                # Escape closes that menu while retaining the DOM selection.
+                escape = 'hl.dsp.send_shortcut({ mods = "", key = "Escape", window = ' + json.dumps("address:" + address) + ' })'
+                current = active_window()
+                if current.get("address") == address and current.get("title", "") == res.window_title:
+                    _run(["hyprctl", "dispatch", escape])
+                    retry_code, _ = _run(copy_commands(res.window_class, address)[0])
+                    deadline = time.monotonic() + timeout_ms / 1000
+                    while retry_code == 0 and time.monotonic() < deadline:
+                        cur = read_clipboard_text()
+                        if copy_changed(stamp_before, stamp_mtime(CLIP_STAMP), before, cur, use_sentinel):
+                            text = cur
+                            res.notes.append("Firefox Alt menu copy retry")
+                            break
+                        time.sleep(0.015)
             if not text:
                 res.notes.append("copy produced no fresh text")
     finally:

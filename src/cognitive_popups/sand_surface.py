@@ -1,14 +1,13 @@
 """Transparent owned GTK surfaces and source-aware sand colours, no bitmap assets."""
-import os
-from pathlib import Path
+from . import theme
 
 
 def enabled():
-    root = Path(os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-popups").expanduser()
-    return (root / "sand.enabled").exists()
+    from .motion import state_dir
+    return (state_dir() / "sand.enabled").exists()
 
 
-CARDS = {"light": (247, 243, 235), "dark": (26, 27, 31)}
+CARDS = {"light": theme.rgb255(theme.LIGHT["paper"]), "dark": theme.rgb255(theme.DARK["paper"])}
 
 
 def _pointer(Gdk):
@@ -89,24 +88,26 @@ def configure(window, Gtk, Gdk, *, force=False, card=False):
 
 
 def _css(colours, card):
+    amber = theme.DARK["accent"]
     if card:
         r, g, b = CARDS["light" if colours is LIGHT else "dark"]
         return ('* { background-color: transparent; background-image: none; box-shadow: none; } '
                 f'window {{ background-color: rgb({r},{g},{b}); border-radius: 12px; '
-                'border: 1px solid rgba(218,189,140,.28); } '
+                f'border: 1px solid {theme.css_rgba(amber, .28)}; }} '
                 f'label, textview, textview text, entry, button {{ color: {colours["text"]}; }} '
-                'button { border-color: rgba(218,189,140,.45); border-radius: 6px; } '
-                'entry, textview { border-color: rgba(218,189,140,.3); } '
-                'selection { background-color: rgba(218,189,140,.35); }')
+                f'button {{ border-color: {theme.css_rgba(amber, .45)}; border-radius: 6px; }} '
+                f'entry, textview {{ border-color: {theme.css_rgba(amber, .3)}; }} '
+                f'selection {{ background-color: {theme.css_rgba(amber, .35)}; }}')
     return ('* { background-color: transparent; background-image: none; box-shadow: none; } '
             f'label, textview, entry, button {{ color: {colours["text"]}; text-shadow: 0 1px 2px {colours["shadow"]}; }} '
-            'button { border-color: rgba(218,189,140,.45); border-radius: 2px; } '
-            'entry, textview { border-color: rgba(218,189,140,.3); } '
-            'selection { background-color: rgba(218,189,140,.35); }')
+            f'button {{ border-color: {theme.css_rgba(amber, .45)}; border-radius: 2px; }} '
+            f'entry, textview {{ border-color: {theme.css_rgba(amber, .3)}; }} '
+            f'selection {{ background-color: {theme.css_rgba(amber, .35)}; }}')
 
 
-LIGHT = {"text":"#3e3020", "grain":"#78603e", "shadow":"#ffffff"}
-DARK = {"text":"#eee1c7", "grain":"#d6ad79", "shadow":"#151515"}
+# Ink for text over the page, the grain colour and the legibility shadow.
+LIGHT = {"text": theme.LIGHT["ink"], "grain": theme.LIGHT["accent"], "shadow": theme.LIGHT["paper_raised"]}
+DARK = {"text": theme.DARK["ink"], "grain": theme.DARK["accent"], "shadow": theme.DARK["paper"]}
 
 
 def _ppm_brightness(data, box):
@@ -166,7 +167,7 @@ def palette(Gdk, x, y, width=8, height=8):
     try:
         brightness = _wayland_brightness(Gdk, x, y, width, height)
         if brightness is not None:
-            return LIGHT if brightness > 150 else DARK
+            return LIGHT if theme.is_light(brightness) else DARK
     except Exception:  # noqa: BLE001 - colour is a nicety, never a failure
         pass
     try:
@@ -178,7 +179,7 @@ def palette(Gdk, x, y, width=8, height=8):
         pixels, channels = image.get_pixels(), image.get_n_channels()
         brightness = sum(.2126*pixels[i]+.7152*pixels[i+1]+.0722*pixels[i+2]
                          for i in range(0,len(pixels),channels)) / (len(pixels)//channels)
-        if brightness > 150:
+        if theme.is_light(brightness):
             return LIGHT
     except (AttributeError, TypeError, ValueError):
         pass

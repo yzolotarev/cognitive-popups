@@ -142,9 +142,26 @@ _VERDICT_KEYS = {
 }
 
 
+#: A verdict word this close after one of these is denied, not claimed:
+#: "единственное решение, а не бесконечно много" names one verdict, not two.
+_NEGATIONS = frozenset({"не", "нет", "ни"})
+_NEGATION_WINDOW = 3
+
+
 def _mentions(text: str, keys: Sequence[str]) -> bool:
-    """Whole-word match, so "определена" is not read inside "неопределена"."""
-    return any(re.search(rf"\b{re.escape(key)}\b", text) for key in keys)
+    """Whole-word match that the reader asserts rather than denies.
+
+    Whole words, so "определена" is not read inside "неопределена"; a match with
+    «не», «нет» or «ни» (so also «а не») among the three words before it, in the
+    same clause, is a denial and does not count.
+    """
+    for key in keys:
+        for match in re.finditer(rf"\b{re.escape(key)}\b", text):
+            clause = re.split(r"[,.;:!?—]", text[:match.start()])[-1]
+            before = re.findall(r"\w+", clause)[-_NEGATION_WINDOW:]
+            if not _NEGATIONS.intersection(before):
+                return True
+    return False
 
 
 def analysis_note(analysis: dict[str, Any]) -> str:
@@ -282,7 +299,11 @@ def check_attempt(task: Any, attempt: str) -> str | None:
     ]
     states_correct = _mentions(normalized, correct_keys)
     states_wrong = _mentions(normalized, wrong_keys)
-    if states_correct and not states_wrong:
+    if states_correct and states_wrong:
+        # Both verdicts asserted: a keyword reading cannot tell which one is
+        # meant, so the model judges instead of a confident wrong mark.
+        return None
+    if states_correct:
         status = "correct"
         what = "названный вердикт совпадает с вычисленным по рангам."
     elif states_wrong:

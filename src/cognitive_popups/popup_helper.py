@@ -723,7 +723,8 @@ def connect_popup_keys(window, Gdk, handler):
 
 
 def show_input_popup(prompt_text, px=None, py=None, initial='', preserve_raw=False,
-                     quote='', quote_hint='', pin_text='', step_draft='', journey=None, required=False, reuse=''):
+                     quote='', quote_hint='', pin_text='', step_draft='', journey=None, required=False, reuse='',
+                     structured=False):
     try:
         import gi
         gi.require_version('Gtk', '3.0')
@@ -912,7 +913,7 @@ def show_input_popup(prompt_text, px=None, py=None, initial='', preserve_raw=Fal
             sys.stdout.write(json.dumps({'text': text, 'pin_edge': bool(self.pin and self.pin.get_active()),
                                         'target_steps': self.target_steps,
                                         'goal': self.goal_entry.get_text() if self.goal_entry else ''}, ensure_ascii=False)
-                             if pin_text or step_draft or journey is not None else text)
+                             if pin_text or step_draft or journey is not None or structured else text)
             sys.stdout.flush()
             Gtk.main_quit()
             return True
@@ -3572,6 +3573,7 @@ def _dispatch(payload, mode):
             journey=payload.get('journey'),
             required=payload.get('required') is True,
             reuse=str(payload.get('reuse', '') or ''),
+            structured=payload.get('structured') is True,
         )
 
     if mode == 'menu':

@@ -487,7 +487,13 @@ def universe_body(answer) -> str:
 
 def popup_input(prompt: str, title: str, initial: str = "", *, preserve_raw: bool = False,
                 quote: str = "", quote_hint: str = "", pin_text: str = "", on_pin=None,
-                step_draft: str = "", journey: dict | None = None) -> str:
+                step_draft: str = "", journey: dict | None = None, structured: bool = False) -> str | None:
+    """The reader's line; with `structured`, None means the window was cancelled.
+
+    A plain input returns "" both for an empty Enter and for Esc. Where the two
+    mean different things (Esc on the step window must not start a step), the
+    helper answers in JSON and an empty stdout is a cancel.
+    """
     payload: dict[str, object] = {"mode": "input", "prompt": prompt, "title": title}
     if quote:
         # The reader's own past thought, shown above the field (see universe.py).
@@ -504,8 +510,12 @@ def popup_input(prompt: str, title: str, initial: str = "", *, preserve_raw: boo
         payload.update(pin_text=pin_text, step_draft=step_draft)
     if journey is not None:
         payload["journey"] = journey
+    if structured:
+        payload["structured"] = True
     response = run_popup(payload, window="input", detail=title)
-    if (pin_text or step_draft or journey is not None) and response:
+    if structured and not response:
+        return None
+    if (pin_text or step_draft or journey is not None or structured) and response:
         try:
             data = json.loads(response)
             if journey is not None:
@@ -1235,7 +1245,12 @@ class DesktopApp:
                                   quote_hint=bridge.hint if bridge else "", pin_text=selected,
                                   on_pin=pin_edge,
                                   step_draft=rungs[-1]["text"] if rungs else "",
-                                  journey=journey if not RECORDS.session_steps(session_key) else None)
+                                  journey=journey if not RECORDS.session_steps(session_key) else None,
+                                  structured=True)
+                if raw is None:
+                    # Esc is "not now": no step, no timer (12.10: Esc started a 15-minute «читаю»).
+                    emit("action", window="step", detail="step cancelled")
+                    return
                 RECORDS.plan_journey(session_key, journey["target_steps"])
                 period = self.study_goals.current()
                 if journey.get("goal", "").strip():
@@ -1315,7 +1330,7 @@ class DesktopApp:
                 minutes = (state["deadline"] - state["started_at"]) / 60
                 options = [("Да", "done"), ("Частично", "partly"), ("Нет", "not")]
                 if early:
-                    options.append(("Продолжить шаг", "continue"))
+                    options += [("Продолжить шаг", "continue"), ("Отменить шаг", "cancel")]
                 if state["goal"] == steps.READING:
                     # Nothing was set to do, so nothing to mark: only what was taken away.
                     choice = "read"
@@ -1324,12 +1339,23 @@ class DesktopApp:
                                           "Шаг", options)
                 if early and choice in ("", "continue"):
                     return
+                if choice == "cancel":
+                    # "Как остановиться?" (note 126): a step can be dropped, not only marked.
+                    RECORDS.finish_step(block_id, "cancelled")
+                    self.focus.finish(block_id)
+                    GLib.idle_add(self._close_focus_timer, block_id)
+                    GLib.idle_add(self._refresh_initium_once)
+                    emit("action", window="step", detail="step cancelled early")
+                    return
                 if choice not in steps.OUTCOMES and choice != "read":
                     # Closed without a mark: the step stays open and the clock keeps
                     # showing "Время"; Alt+I opens this window again.
                     emit("action", window="step", detail="end window closed without a mark")
                     return
                 outcome = choice
+                check = self._choose(steps.SELF_CHECK_PROMPT, "Шаг", list(steps.SELF_CHECK),
+                                     window="self_check")
+                emit("result", window="self_check", detail=check or "skipped")
                 takeaway = popup_input(STEP_TAKEAWAY_PROMPT, "Шаг")
                 if not RECORDS.finish_step(block_id, outcome, takeaway):
                     return

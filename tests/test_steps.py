@@ -96,6 +96,10 @@ def _app(desktop, monkeypatch, tmp_path, answers, choices):
     shown = []
 
     def run_popup(payload, **kwargs):
+        if kwargs.get("window") == "self_check":
+            # The one-click self-check is optional: closed here, so the scripted
+            # choices stay about the step itself.
+            return ""
         shown.append(payload["text"])
         return json.dumps({"action": choices.pop(0)}) if choices else ""
     monkeypatch.setattr(desktop, "run_popup", run_popup)
@@ -217,3 +221,39 @@ def test_window_hotkeys_run_off_the_main_loop_and_a_second_press_does_nothing(de
         threading.Event().wait(.05)
     release.set()
     assert calls.count("open") == 1 and "clarify" in calls
+
+
+def test_escape_on_the_step_window_starts_nothing(desktop, monkeypatch, tmp_path):
+    # 12.10 07:39: Esc on the step prompt still started a 15-minute «читаю».
+    app, records, _, _, _ = _app(desktop, monkeypatch, tmp_path, [None], [])
+    app.start_step()
+    assert app.focus.snapshot() is None or app.focus.snapshot()["status"] not in ("running",)
+    assert records.last_step() is None
+
+
+def test_an_early_end_can_cancel_the_step(desktop, monkeypatch, tmp_path):
+    app, records, _, _, _ = _app(desktop, monkeypatch, tmp_path, ["разберу X"], ["cancel"])
+    app.start_step()
+    block = app.focus.snapshot()["id"]
+    app.start_step()                # second Alt+I -> early end window -> "cancel"
+    assert app.focus.snapshot()["status"] == "cancelled"
+    assert records.step(block)["outcome"] == "cancelled"
+
+
+def test_self_check_is_one_optional_click(desktop, monkeypatch, tmp_path):
+    app, records, _, _, _ = _app(desktop, monkeypatch, tmp_path, ["разберу X", ""], ["done", "break"])
+    seen = []
+    original = desktop.run_popup
+
+    def run_popup(payload, **kwargs):
+        if kwargs.get("window") == "self_check":
+            seen.append([a["action"] for a in payload["actions"]])
+            return json.dumps({"action": "group"})
+        return original(payload, **kwargs)
+    monkeypatch.setattr(desktop, "run_popup", run_popup)
+    logged = []
+    monkeypatch.setattr(desktop, "emit", lambda event, **f: logged.append((f.get("window"), f.get("detail"))))
+    app.start_step()
+    app._step_end(app.focus.snapshot()["id"])
+    assert seen == [["simplify", "group", "relate", "recall", "none"]]
+    assert ("self_check", "group") in logged

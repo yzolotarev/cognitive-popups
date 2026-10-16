@@ -31,6 +31,14 @@ READING = "читаю"
 OUTCOMES = {"done": "да", "partly": "частично", "not": "нет"}
 OUTCOME_MARK = {"done": "✓", "partly": "½", "not": "✗"}
 
+#: Sung's four questions of active learning: if one of them is a yes for most of
+#: the time spent, the time was active (Learning Drop, "Read this before learning
+#: anything else"). Asked once at a step's end, one click, never scored.
+SELF_CHECK_PROMPT = "Что было в этом шаге? Одно, главное. Можно закрыть."
+SELF_CHECK = (("Упрощал", "simplify"), ("Группировал", "group"),
+              ("Связывал с картиной", "relate"), ("Вспоминал без текста", "recall"),
+              ("Ничего из этого", "none"))
+
 _LEADING_MINUTES = re.compile(r"^\s*(\d{1,3})\s*(?:мин(?:ут[аы]?)?\.?|m(?:in)?)?\s*[:,.\-–]?\s+(.+)$",
                               re.IGNORECASE | re.DOTALL)
 

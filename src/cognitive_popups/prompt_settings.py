@@ -10,12 +10,13 @@ import threading
 from pathlib import Path
 from typing import Mapping
 
+from . import paths
 from . import prompts
 
 
 #: Prompts travel with the rest of the state, so `COGNITIVE_STATE_DIR` moves the
 #: whole app at once; `COGNITIVE_PROMPTS_PATH` overrides this file alone.
-STATE_ROOT = os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-popups"
+STATE_ROOT = str(paths.state_dir())
 DEFAULT_PATH = Path(
     os.environ.get("COGNITIVE_PROMPTS_PATH") or os.path.join(STATE_ROOT, "prompts.json")
 ).expanduser()

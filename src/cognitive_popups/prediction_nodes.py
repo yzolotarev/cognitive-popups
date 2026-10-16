@@ -18,6 +18,7 @@ import os
 import re
 from collections import Counter
 from pathlib import Path
+from . import paths
 
 OFF_FILE = "prediction-nodes.off"
 HISTORY_FILE = "nodes-history.json"
@@ -38,7 +39,7 @@ _WORD = re.compile(r"[A-Za-zА-Яа-яЁё]{3,}")
 
 
 def enabled(root: str | Path | None = None) -> bool:
-    base = Path(root or os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-popups").expanduser()
+    base = Path(root).expanduser() if root else paths.state_dir()
     return not (base / OFF_FILE).exists()
 
 

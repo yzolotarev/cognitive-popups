@@ -22,6 +22,7 @@ import uuid
 from threading import RLock
 from dataclasses import dataclass, field
 from pathlib import Path
+from . import paths
 
 # --- Настройки -----------------------------------------------------------
 
@@ -45,7 +46,7 @@ RESTORABLE_TYPES = ("text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "im
 SECRET_HINT = "x-kde-passwordManagerHint"
 
 SENTINEL_PREFIX = "cognitive-popups-sentinel-"
-STATE_DIR = Path(os.environ.get("COGNITIVE_STATE_DIR", "~/.local/state/cognitive-popups")).expanduser()
+STATE_DIR = paths.state_dir()
 PRIMARY_STAMP = STATE_DIR / "primary.stamp"
 CLIP_STAMP = STATE_DIR / "clipboard.stamp"
 CAPTURE_LOCK = RLock()

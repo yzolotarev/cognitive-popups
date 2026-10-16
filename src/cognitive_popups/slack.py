@@ -27,6 +27,7 @@ import sqlite3
 import time
 from pathlib import Path
 
+from . import paths
 from . import request_gate
 
 BUSY, TRICKLE, FREE = "busy", "trickle", "free"
@@ -50,8 +51,7 @@ MODEL_WINDOWS = {"seed", "seed_batch", "prediction", "clarify", "feynman", "exam
 
 
 def state_root(root: str | Path | None = None) -> Path:
-    return Path(root or os.environ.get("COGNITIVE_STATE_DIR")
-                or "~/.local/state/cognitive-popups").expanduser()
+    return Path(root).expanduser() if root else paths.state_dir()
 
 
 # ── signals written by the app ───────────────────────────────────────────────

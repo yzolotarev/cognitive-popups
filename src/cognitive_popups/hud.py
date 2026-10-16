@@ -591,8 +591,7 @@ FROZEN_FLAG = "hud.frozen"
 
 
 def panel_frozen() -> bool:
-    root = os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-popups"
-    return (Path(root).expanduser() / FROZEN_FLAG).exists()
+    return (state_dir() / FROZEN_FLAG).exists()
 
 
 def main(argv: list[str] | None = None) -> int:

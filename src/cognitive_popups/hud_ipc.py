@@ -23,6 +23,7 @@ import socket
 import sys
 import threading
 from pathlib import Path
+from . import paths
 
 #: Bumped when the request or response shape changes. A panel left over from an
 #: older checkout is refused instead of being answered with fields it will
@@ -55,7 +56,7 @@ def resolve_socket_path(path: str | Path | None = None) -> Path:
     override = os.environ.get(ENV_SOCKET)
     if override:
         return Path(override).expanduser()
-    root = os.environ.get("COGNITIVE_STATE_DIR") or DEFAULT_STATE_DIR
+    root = str(paths.state_dir())
     return Path(root).expanduser() / SOCKET_FILENAME
 
 

@@ -157,6 +157,11 @@ def test_dev_capture_gives_four_words_but_never_enters_study_buffer(desktop, mon
                                       source_hash="h"))
     app._commit_fragment = lambda fragment: None
     app.flash = SimpleNamespace(show_cues=lambda c, origin="": shown.append((c, origin)))
+    class ImmediateThread:
+        def __init__(self, target, **kw): self.target = target
+        def start(self): self.target()
+    monkeypatch.setattr(desktop, 'threading', SimpleNamespace(Thread=ImmediateThread))
+    app._split_idle_session = lambda: None
     app.seed()
     assert shown and shown[0][0] == cues
     assert "не в учебную историю" in shown[0][1]

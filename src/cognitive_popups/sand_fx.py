@@ -132,6 +132,14 @@ def scene_svg(scene, elapsed, width=900, height=520):
         radius = 5 if stage == 2 else 3
         if kind in ("err", "gap", "far") and stage == 2:
             parts.append(f'<circle cx="{x}" cy="{y}" r="12" fill="none" stroke="{color}" opacity=".6"/>')
+        if kind == 'initium' and stage == 2:
+            identity = scene.get('initium', {})
+            # The same tint and ray rotation as the compact live star.
+            for k in range(identity.get('rays',4)):
+                angle = identity.get('rotation',.37)+k*math.tau/identity.get('rays',4)
+                parts.append(f'<path d="M{x} {y} L{x+math.cos(angle)*19} {y+math.sin(angle)*19}" stroke="{color}" stroke-width=".7" opacity=".5"/>')
+            for r,a in ((24,.025),(16,.045),(10,.08)):
+                parts.append(f'<circle cx="{x}" cy="{y}" r="{r}" fill="{color}" opacity="{a}"/>')
         parts.append(f'<circle cx="{x}" cy="{y}" r="{radius}" fill="{color}"/>')
     title = "per aspera" if stage == 0 else "ветер" if stage == 1 else "ad astra"
     parts.append(f'<text x="32" y="42" fill="#e8d9bd" font-size="24">{title}</text>')

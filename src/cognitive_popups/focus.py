@@ -148,8 +148,14 @@ class Focus:
             self.state = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(self.state, dict) or not {"id", "status", "goal", "started_at", "deadline"} <= self.state.keys():
                 raise ValueError("invalid focus state")
-            # Only a still-running timer can safely resume without a model call.
-            if self.state["status"] in ACTIVE and (self.state["status"] != "running" or self.clock() >= self.state["deadline"]):
+            # Adopt an existing Alt+I timer from its ledger row, including old files
+            # that predate the marker; generated 15→1 blocks retain legacy recovery.
+            if not self.state.get("study_step") and hasattr(records, "step"):
+                row = records.step(self.state["id"])
+                if row and row.get("finished_epoch") is None:
+                    self._save({**self.state, "study_step": True})
+            # Only a still-running legacy timer can resume without a model call.
+            if not self.state.get("study_step") and self.state["status"] in ACTIVE and (self.state["status"] != "running" or self.clock() >= self.state["deadline"]):
                 self._save({**self.state, "status": "interrupted", "finished_at": self.clock()})
 
     def _save(self, state):
@@ -174,7 +180,7 @@ class Focus:
         with self.lock:
             return copy.deepcopy(self.state)
 
-    def start(self, goal: str, seconds: float = DURATION):
+    def start(self, goal: str, seconds: float = DURATION, *, study_step=False):
         """Start a block. `seconds` lets a step run 10, 15, 25 minutes or any length."""
         if not isinstance(goal, str) or not goal.strip():
             raise ValueError("a nonempty goal is required")
@@ -185,7 +191,7 @@ class Focus:
                 raise ValueError("a focus block is already active")
             now = self.clock()
             self._save({"id": uuid.uuid4().hex, "goal": goal, "status": "running",
-                        "started_at": now, "deadline": now + seconds})
+                        "started_at": now, "deadline": now + seconds, "study_step": study_step})
             return self.snapshot()
 
     def finish(self, block_id, status="cancelled"):

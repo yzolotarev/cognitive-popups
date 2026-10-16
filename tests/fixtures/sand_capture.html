@@ -1,0 +1,11 @@
+<!doctype html><meta charset="utf-8"><title>Sand kit owned browser loading</title>
+<p id="selection">Проверка выделения без ручного копирования</p>
+<script>
+window.onload = () => {
+  const range = document.createRange();
+  range.selectNodeContents(document.getElementById('selection'));
+  const selection = window.getSelection();
+  selection.removeAllRanges(); selection.addRange(range);
+  document.title = "Sand kit owned browser capture";
+};
+</script>

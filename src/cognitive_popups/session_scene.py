@@ -5,16 +5,33 @@ from datetime import datetime
 from .cutscene_model import DaySummary, Thought, LadderStep, build_scene
 
 
+def session_thoughts(rows, notes, sand, *, end=None):
+    """Only reader-authored words in the session's actual time interval."""
+    if not rows:
+        return []
+    start = min(r['started_epoch'] for r in rows)
+    end = end if end is not None else max(r.get('finished_epoch') or r['deadline_epoch'] for r in rows)
+    own = []
+    for n in notes:
+        stamp = datetime.fromisoformat(n.created_utc.replace('Z','+00:00')).timestamp() if n.created_utc else 0
+        if start <= stamp <= end and n.comment.strip():
+            own.append(dict(id=f'note:{n.id}', label=f'Мысль {len(own)+1}', text=n.comment, kind='own'))
+    with sand.db() as db:
+        guesses = db.execute("SELECT id,hypothesis,status FROM predictions WHERE created_epoch BETWEEN ? AND ? ORDER BY created_epoch", (start,end)).fetchall()
+    for r in guesses:
+        if r['hypothesis'].strip():
+            own.append(dict(id=f"guess:{r['id']}",label=f'Догадка {len(own)+1}',text=r['hypothesis'],
+                            kind='err' if r['status'] in ('contradicted','not_supported') else 'vague' if r['status']=='vague' else 'own'))
+    for i,r in enumerate(rows):
+        if r.get('takeaway'):
+            own.append(dict(id=f"step:{r['id']}",label=f'Шаг {i+1}',text=r['takeaway'],kind='own'))
+    return own
+
+
 def scene_for_session(session_key, rows, notes, sand, universe=None):
     start = min(r["started_epoch"] for r in rows)
     end = max(r.get("finished_epoch") or r["deadline_epoch"] for r in rows)
-    own = [Thought(f"Мысль {i + 1}", n.comment) for i, n in enumerate(notes)]
-    with sand.db() as db:
-        guesses = db.execute("SELECT id,hypothesis,status FROM predictions WHERE created_epoch BETWEEN ? AND ? ORDER BY created_epoch", (start, end)).fetchall()
-    own += [Thought(f"Догадка {i + 1}", r["hypothesis"],
-                    "err" if r["status"] in ("contradicted", "not_supported") else
-                    "vague" if r["status"] == "vague" else "own") for i, r in enumerate(guesses)]
-    own += [Thought(f"Шаг {i + 1}", r["takeaway"]) for i, r in enumerate(rows) if r.get("takeaway")]
+    own = [Thought(t['label'],t['text'],t['kind']) for t in session_thoughts(rows,notes,sand)]
     for pair in sand.versions(start, end):
         match = next((t for t in own if t.text == pair["original"]), None)
         if match:
@@ -58,6 +75,15 @@ def scene_for_session(session_key, rows, notes, sand, universe=None):
     scene["session_key"] = session_key
     scene["graph_links"] = links
     scene["guesses"] = edge_guesses
+    from .records import RecordStore
+    journey = RecordStore(sand.path).journey(session_key)
+    if journey:
+        identity = journey['identity']
+        scene['initium'] = identity
+        scene['tint'] = identity['tint']
+        scene['stars'].insert(0, dict(label='Initium · начало пути',kind='initium',x=.81,y=.45,
+                                    ignite=scene['timeline']['form'],rank=0,text='Звезда этой сессии. Не оценка понимания.',versions=[],notes=[]))
+        scene['edges'] = [(a+1,b+1,dashed) for a,b,dashed in scene['edges']]
     if edge and scene["stars"]:
         scene["stars"][-1]["text"] = ("Догадка согласуется с источником. Это не оценка освоения.\n" if day.far_edge_attached else "Далёкое ребро\n") + "\n\n".join(g["text"] for g in edge_guesses)
     return scene

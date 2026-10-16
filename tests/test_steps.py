@@ -102,6 +102,11 @@ def _app(desktop, monkeypatch, tmp_path, answers, choices):
     played = []
     monkeypatch.setattr(desktop.sound, "play", played.append)
     app = desktop.DesktopApp.__new__(desktop.DesktopApp)
+    from cognitive_popups.study_goals import StudyGoals
+    import threading
+    app.study_goals = StudyGoals(records)
+    app.study_goals.accept('Понять материал')
+    app._study_goal_lock = threading.Lock()
     app.focus = Focus(tmp_path / "focus.json", records, None)
     app._focus_prompting = False
     app.focus_timer = None
@@ -111,13 +116,13 @@ def _app(desktop, monkeypatch, tmp_path, answers, choices):
     return app, records, asked, shown, played
 
 
-def test_the_step_starts_without_a_goal_and_an_empty_step_is_reading(desktop, monkeypatch, tmp_path):
+def test_the_step_uses_accepted_goal_and_an_empty_step_is_reading(desktop, monkeypatch, tmp_path):
     app, records, asked, _, _ = _app(desktop, monkeypatch, tmp_path, ["25 разберу VLOOKUP"], [])
     app.start_step()
     assert [prompt for prompt, _ in asked] == [desktop.STEP_PROMPT]   # no goal question up front
     state = app.focus.snapshot()
     assert state["goal"] == "разберу VLOOKUP" and state["deadline"] - state["started_at"] == 25 * 60
-    assert records.last_step()["goal_id"] is None
+    assert records.last_step()["goal_id"] == app.study_goals.current()["goal_id"]
     (tmp_path / "b").mkdir()
     app2, _, _, _, _ = _app(desktop, monkeypatch, tmp_path / "b", [""], [])
     app2.start_step()
@@ -127,7 +132,7 @@ def test_the_step_starts_without_a_goal_and_an_empty_step_is_reading(desktop, mo
 def test_step_end_marks_bridges_and_closes_the_session(desktop, monkeypatch, tmp_path):
     app, records, asked, shown, played = _app(
         desktop, monkeypatch, tmp_path,
-        ["разберу VLOOKUP", "3 = номер столбца", "XLOOKUP", "", "стажировка", "осталось: XLOOKUP"],
+        ["разберу VLOOKUP", "3 = номер столбца", "XLOOKUP", "", "осталось: XLOOKUP"],
         ["done", "next", "partly", "close", "partly"])
     app.start_step()
     first = app.focus.snapshot()["id"]
@@ -142,7 +147,7 @@ def test_step_end_marks_bridges_and_closes_the_session(desktop, monkeypatch, tmp
     assert records.step(second)["outcome"] == "partly"
     closure = records.closure(records.step(first)["session_key"])
     assert closure["outcome"] == "partly" and closure["remaining"] == "осталось: XLOOKUP"
-    assert any("Ради чего: стажировка" in text and "✓ разберу VLOOKUP" in text for text in shown)
+    assert any("Ради чего: Понять материал" in text and "✓ разберу VLOOKUP" in text for text in shown)
     assert played == ["step_done", "session_close"]
 
 

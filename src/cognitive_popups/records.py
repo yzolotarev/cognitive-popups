@@ -37,7 +37,7 @@ STATE_ROOT = os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-
 DEFAULT_DB = os.path.join(STATE_ROOT, "records.sqlite3")
 ENV_DB = "COGNITIVE_RECORD_DB"
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 11
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -184,6 +184,13 @@ CREATE TABLE IF NOT EXISTS step_closures (
     closed_utc    TEXT NOT NULL,
     closed_epoch  REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS step_journeys (
+    session_key TEXT PRIMARY KEY,
+    identity TEXT NOT NULL,
+    target_steps INTEGER CHECK (target_steps IN (1,3,5) OR target_steps IS NULL),
+    created_epoch REAL NOT NULL,
+    finale TEXT NOT NULL DEFAULT 'open' CHECK (finale IN ('open','pending','playing','shown'))
+);
 CREATE TABLE IF NOT EXISTS intents (
     id            TEXT PRIMARY KEY,
     text          TEXT NOT NULL,
@@ -198,6 +205,11 @@ CREATE TABLE IF NOT EXISTS intents (
     updated_utc   TEXT,
     updated_epoch REAL,
     status        TEXT NOT NULL DEFAULT 'current'
+);
+CREATE TABLE IF NOT EXISTS study_goal_periods (
+    id TEXT PRIMARY KEY, goal_id TEXT NOT NULL REFERENCES intents(id),
+    step_session_key TEXT NOT NULL DEFAULT '',
+    accepted_epoch REAL NOT NULL, activity_epoch REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS records_sessions_epoch_idx ON sessions(created_epoch);
 CREATE INDEX IF NOT EXISTS records_fragments_session_idx ON fragments(session_id, position);
@@ -830,6 +842,7 @@ class RecordStore:
         material_origin: str = "",
         direction: str = "",
         created_utc: str | None = None,
+        study_period: tuple[str, str, float] | None = None,
     ) -> Intention:
         """Make a new current bookmark; the previous one becomes 'previous'.
 
@@ -875,6 +888,10 @@ class RecordStore:
                     _epoch(intention.created_at),
                 ),
             )
+            if study_period is not None:
+                period_id, step_key, epoch = study_period
+                conn.execute('INSERT INTO study_goal_periods VALUES (?, ?, ?, ?, ?)',
+                             (period_id, intention.id, step_key, epoch, epoch))
             conn.commit()
         except (sqlite3.Error, OSError) as exc:
             raise RecordError(f"cannot write intention to {self.path}: {exc}") from exc
@@ -1006,7 +1023,7 @@ class RecordStore:
         moment = finished_utc or now_iso()
         return self._write(
             "UPDATE steps SET outcome = ?, takeaway = ?, finished_utc = ?, finished_epoch = ?"
-            " WHERE id = ?",
+            " WHERE id = ? AND finished_epoch IS NULL",
             (outcome, " ".join((takeaway or "").split()) or None, moment, _epoch(moment), step_id),
             "step outcome") == 1
 
@@ -1038,6 +1055,40 @@ class RecordStore:
     def last_closure(self) -> dict[str, Any] | None:
         rows = self._read("SELECT * FROM step_closures ORDER BY closed_epoch DESC LIMIT 1")
         return rows[0] if rows else None
+
+    def ensure_journey(self, session_key: str) -> dict:
+        """Visual metadata on the existing step session, never a second ledger."""
+        from .initium import identity_for
+        import time
+        self._write("INSERT OR IGNORE INTO step_journeys (session_key,identity,created_epoch) VALUES (?,?,?)",
+                    (session_key, json.dumps(identity_for(session_key)), time.time()), "star identity")
+        return self.journey(session_key)
+
+    def journey(self, session_key: str) -> dict | None:
+        rows = self._read("SELECT j.*, (SELECT count(*) FROM steps s WHERE s.session_key=j.session_key AND s.finished_epoch IS NOT NULL) AS completed FROM step_journeys j WHERE j.session_key=?", (session_key,))
+        if not rows:
+            return None
+        row = rows[0]
+        row["identity"] = json.loads(row["identity"])
+        return row
+
+    def open_journey(self) -> dict | None:
+        rows = self._read("SELECT session_key FROM step_journeys WHERE finale='pending' OR (finale='open' AND session_key NOT IN (SELECT session_key FROM step_closures)) ORDER BY created_epoch DESC LIMIT 1")
+        return self.journey(rows[0]["session_key"]) if rows else None
+
+    def plan_journey(self, session_key: str, target: int | None) -> None:
+        if target not in (None, 1, 3, 5):
+            raise ValueError("choose 1, 3, 5 or free")
+        self._write("UPDATE step_journeys SET target_steps=? WHERE session_key=? AND finale='open'", (target, session_key), "journey length")
+
+    def claim_finale(self, session_key: str) -> bool:
+        # A persisted claim prevents repeated callbacks and restarts replaying a finale.
+        return self._write("UPDATE step_journeys SET finale='playing' WHERE session_key=? AND finale IN ('open','pending')", (session_key,), "finale claim") == 1
+
+    def finale_state(self, session_key: str, state: str) -> None:
+        if state not in ('pending', 'shown'):
+            raise ValueError("invalid finale state")
+        self._write("UPDATE step_journeys SET finale=? WHERE session_key=?", (state,session_key), "finale state")
 
     def intention_history(self, *, tail: int | None = None) -> list[Intention]:
         """Replaced bookmarks, newest first; the current one is not repeated."""

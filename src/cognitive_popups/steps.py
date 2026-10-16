@@ -6,7 +6,7 @@ deadline: work expands to the time it is given, so the time given is short.
 The step ends with the reader's own mark (done / partly / not) and one line of
 what they took away; that line opens the next step as a bridge.
 
-A study session is a run of steps. It starts with an optional one-line goal
+A step session is a run of steps. Its intention is stored by study_goals
 ("ради чего") and ends when the reader closes it, or silently after a long
 pause. Nothing here opens a window or calls a model: the desktop does the
 windows, this module only decides and remembers.
@@ -20,7 +20,8 @@ from dataclasses import dataclass
 from datetime import datetime
 
 DEFAULT_MINUTES = 15
-#: A pause longer than this starts a new study session (and asks for its goal).
+#: Technical step grouping only. Intention renewal uses study_goals.GAP_SECONDS
+#: (one hour of study inactivity); old steps keep their original goal_id.
 SESSION_GAP_SECONDS = 3 * 60 * 60
 #: Test hook: a step of this many seconds instead of minutes, so a live check
 #: does not have to wait a quarter of an hour.

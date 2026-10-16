@@ -75,6 +75,7 @@ class PopupObservation:
 
     def __init__(self, chain, payload):
         self.chain = chain
+        self.study_activity = payload.get("origin") != "dev" and "не в учебную историю" not in str(payload.get("origin", "")) and not payload.get("required")
         refs = payload.get("observation", {})
         self.instance = refs.get("window_instance_id") or uuid.uuid4().hex
         self.artifact = refs.get("artifact_id")
@@ -88,6 +89,10 @@ class PopupObservation:
                 self.artifact = self.store.record_artifact("rendered_payload", payload)
 
     def emit(self, event, **fields):
+        if self.study_activity and event in {"click", "submit", "cue_select", "term_reveal", "meaning_reveal", "layer_toggle", "evidence_reveal"}:
+            from cognitive_popups.study_goals import StudyGoals
+            from cognitive_popups.records import RecordStore
+            StudyGoals(RecordStore()).touch()
         with operation_scope(self.chain.context):
             if event == "window_close" and (self.closed or not self.opened):
                 return None
@@ -718,7 +723,7 @@ def connect_popup_keys(window, Gdk, handler):
 
 
 def show_input_popup(prompt_text, px=None, py=None, initial='', preserve_raw=False,
-                     quote='', quote_hint='', pin_text='', step_draft=''):
+                     quote='', quote_hint='', pin_text='', step_draft='', journey=None, required=False, reuse=''):
     try:
         import gi
         gi.require_version('Gtk', '3.0')
@@ -742,7 +747,7 @@ def show_input_popup(prompt_text, px=None, py=None, initial='', preserve_raw=Fal
             self.set_skip_pager_hint(True)
             self.set_keep_above(True)
             self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
-            self.set_title('Enter nucleus')
+            self.set_title('Что хочешь сейчас понять?' if required else 'Enter nucleus')
             self.set_border_width(0)
             connect_popup_keys(self, Gdk, self.on_key)
 
@@ -800,6 +805,38 @@ def show_input_popup(prompt_text, px=None, py=None, initial='', preserve_raw=Fal
                 self.entry.set_text(initial)
             box.pack_start(self.entry, False, False, 0)
 
+            if reuse:
+                again = Gtk.Button(label='Продолжить прежнюю цель')
+                again.set_tooltip_text(reuse)
+                again.connect('clicked', lambda *_: (self.entry.set_text(reuse), self.on_submit()))
+                box.pack_start(again, False, False, 0)
+
+            self.target_steps = journey.get('target_steps') if journey else None
+            self.goal_entry = None
+            if journey is not None:
+                path = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+                previous = None
+                plan_buttons = []
+                initial_target = self.target_steps
+                for caption, count in (('1 × 15',1),('3 × 15',3),('5 × 15',5),('∞',None)):
+                    button = Gtk.RadioButton.new_with_label_from_widget(previous, caption)
+                    previous = button
+                    button.set_mode(False)
+                    button.set_tooltip_text('Количество шагов, не целей. Длительность можно указать в строке.')
+                    plan_buttons.append((button,count))
+                    path.pack_start(button, False, False, 0)
+                for button,count in plan_buttons:
+                    button.connect('toggled', lambda b, n=count: self.set_plan(n) if b.get_active() else None)
+                next(b for b,n in plan_buttons if n == initial_target).set_active(True)
+                self.target_steps = initial_target
+                box.pack_start(path, False, False, 0)
+                goal = Gtk.Expander(label='Ради чего · необязательно')
+                self.goal_entry = Gtk.Entry()
+                self.goal_entry.set_placeholder_text('Собственная цель сессии')
+                goal.add(self.goal_entry)
+                if not journey.get("goal_confirmed"):
+                    box.pack_start(goal, False, False, 0)
+
             self.pin = None
             if pin_text:
                 self.pin = Gtk.ToggleButton(label='Закрепить выделение как далёкое ребро')
@@ -814,6 +851,14 @@ def show_input_popup(prompt_text, px=None, py=None, initial='', preserve_raw=Fal
             self.show_all()
             self.connect('size-allocate', lambda *_: self.move_to(self.px, self.py))
             GLib.idle_add(self._finalize_open)
+
+        def set_plan(self, count):
+            self.target_steps = count
+            from cognitive_popups.records import RecordStore
+            try:
+                RecordStore().plan_journey(journey['session_key'], count)
+            except Exception as exc:
+                _emit('error', window='input', detail=f'journey length: {exc}')
 
         @staticmethod
         def render_task(label, prompt):
@@ -858,11 +903,16 @@ def show_input_popup(prompt_text, px=None, py=None, initial='', preserve_raw=Fal
 
         def on_submit(self, *args):
             raw = self.entry.get_text()
+            if required and not raw.strip():
+                self.entry.grab_focus()
+                return True
             _submitted(raw, 'input')
             text = raw if preserve_raw else raw.strip()
             _emit('submit', window='input', detail=f'{len(text)} chars')
-            sys.stdout.write(json.dumps({'text': text, 'pin_edge': bool(self.pin and self.pin.get_active())}, ensure_ascii=False)
-                             if pin_text or step_draft else text)
+            sys.stdout.write(json.dumps({'text': text, 'pin_edge': bool(self.pin and self.pin.get_active()),
+                                        'target_steps': self.target_steps,
+                                        'goal': self.goal_entry.get_text() if self.goal_entry else ''}, ensure_ascii=False)
+                             if pin_text or step_draft or journey is not None else text)
             sys.stdout.flush()
             Gtk.main_quit()
             return True
@@ -3519,6 +3569,9 @@ def _dispatch(payload, mode):
             quote_hint=str(payload.get('quote_hint', '') or ''),
             pin_text=str(payload.get('pin_text', '') or ''),
             step_draft=str(payload.get('step_draft', '') or ''),
+            journey=payload.get('journey'),
+            required=payload.get('required') is True,
+            reuse=str(payload.get('reuse', '') or ''),
         )
 
     if mode == 'menu':

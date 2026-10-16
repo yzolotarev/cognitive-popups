@@ -208,7 +208,7 @@ def build_scene(day: DaySummary) -> Scene:
     edges = [(a, b, False) for a, b in links]
     deg = [sum(1 for e in links if i in e) for i in range(n)]
     central = max(range(n), key=lambda i: deg[i]) if n else 0
-    order = [central] + [i for i in range(n) if i != central]
+    order = ([central] + [i for i in range(n) if i != central]) if n else []
 
     if day.far_edge:
         fx, fy = 0.9, 0.1 + R.random() * 0.12

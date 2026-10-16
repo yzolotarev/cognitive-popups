@@ -1992,23 +1992,17 @@ class DesktopApp:
                     check = self.service.check_prediction(hypothesis, material)
                 if self._commit_prediction(check) is False:
                     raise RecordError("Гипотеза не записана в журнал")
-                recycled = None
-                recycle_error = ""
+                # The verdict no longer waits for "из твоих гипотез" (12.10: 12.8 s
+                # median, one 38 s): the batch is only offered, on the reader's click.
                 try:
-                    store = recycling.RecyclingStore(RECORDS.path)
-                    batch = store.pending(session_id, self.service.session.prediction_checks)
-                    if batch and material is not None:
-                        recycled = self.service.recycle_hypotheses([c.hypothesis for c in batch])
-                        store.save(session_id, batch, recycled, material)
-                except Exception as exc:  # the hypothesis has already been saved
-                    recycled = None
-                    recycle_error = str(exc)
-                    emit("error", window="recycling", detail=recycle_error)
+                    batch = recycling.RecyclingStore(RECORDS.path).pending(
+                        session_id, self.service.session.prediction_checks)
+                except Exception as exc:  # noqa: BLE001 - the hypothesis is saved already
+                    batch = []
+                    debug(f"recycling pending failed: {exc}")
+                self._recycle_offer = (session_id, batch, material) if batch and material is not None else None
                 if wait and not wait.finish():
                     idle_add(setattr, self, "_busy", False)
-                    return
-                if recycled or recycle_error:
-                    idle_add(self._recycling_done, check, recycled, recycle_error, hypothesis)
                     return
                 idle_add(self._prediction_done, check, None, hypothesis)
             except Exception as exc:  # noqa: BLE001
@@ -2018,18 +2012,32 @@ class DesktopApp:
 
         threading.Thread(target=bind_chain(worker), daemon=True).start()
 
-    def _recycling_done(self, check, result, error, hypothesis):
-        if not result:
-            self._prediction_done(check, None, hypothesis)
-            self.flash.show_text(
-                "Гипотеза сохранена. Абзац из твоих мыслей пока не собрался.\n\n" + error,
-                "Из твоих гипотез")
-            return False
-        self._busy = False
-        emit("result", window="recycling", detail="four hypotheses returned as a paragraph")
-        self.flash.show_text(result["text"], "Из твоих гипотез", expanded=True,
-                             note=recycling.PROVENANCE, cues=result["cues"])
-        return False
+    def _recycle(self, offer) -> None:
+        """«Мои 4 догадки»: the reader's own guesses verbatim, with their marks.
+
+        The paragraph sewn from them by the model kept the wrong ones and read as
+        settled (three of four were wrong on 12.10). Now the guesses come back as
+        written; a paragraph is added only from the ones that held, and the
+        grouping is left to the reader, on paper.
+        """
+        session_id, batch, material = offer
+        store = recycling.RecyclingStore(RECORDS.path)
+        card = recycling.verbatim_card(batch)
+        held = recycling.usable(batch)
+        result = {"text": "", "cues": []}
+        if len(held) >= 2:
+            try:
+                result = self.service.recycle_hypotheses([c.hypothesis for c in held])
+            except Exception as exc:  # noqa: BLE001 - the verbatim card is the answer
+                emit("error", window="recycling", detail=str(exc)[:200])
+        try:
+            store.save(session_id, batch, result, material)
+        except Exception as exc:  # noqa: BLE001
+            debug(f"recycling save failed: {exc}")
+        text = card + ("\n\nИз тех, что держатся:\n" + result["text"] if result.get("text") else "")
+        emit("result", window="recycling", detail=f"{len(batch)} guesses, {len(held)} held")
+        idle_add(lambda: self.flash.show_text(text, recycling.PROVENANCE, expanded=True,
+                                              note=recycling.GROUP_HINT) and False)
 
     def _prediction_done(self, check, error: str | None, hypothesis: str = ""):
         self._busy = False
@@ -2047,7 +2055,8 @@ class DesktopApp:
         if check.status == nodes.VAGUE_STATUS:
             self._ask_bolder(hypothesis)
             return False
-        if getattr(check, "mark", "") or getattr(check, "nodes", None) or check.display == "нечего добавить":
+        if getattr(check, "mark", "") or getattr(check, "nodes", None) or check.status == "question" \
+                or (check.display and nodes.enabled(STATE_DIR)):
             self._show_nodes(check)
             return False
         # Keep the result open with an optional, explicit continuation. A click on
@@ -2090,26 +2099,34 @@ class DesktopApp:
         return False
 
     def _show_nodes(self, check) -> None:
-        """The mark, then four nodes around the cursor; or the mark alone, or silence."""
+        """One window per guess that stays until closed: mark, what holds, where to look, nodes.
+
+        The sign used to flash for 1.5 s and the nodes came as clickable words
+        with nothing behind them (notes 31, 67, 75, 77-79).
+        """
         target = getattr(getattr(self, "_prediction_pack", None), "selection", "")
+        offer = getattr(self, "_recycle_offer", None)
+        self._recycle_offer = None
+
         def worker():
-            if check.mark:
-                self.flash.show_notice(nodes.MARK_SYMBOL.get(check.mark, ""))
-            if check.nodes:
-                time.sleep(1.4 if check.mark else 0)
-                cues = [{"simple": w, "term": w, "meaning": ""} for w in check.nodes]
-                if self.SAND_LADDER_BRIDGE and (STATE_DIR / "sand.enabled").exists():
-                    response = run_popup({"mode": "dual", "items": cues,
-                        "actions": [{"label": "Ступенька отсюда", "action": "ladder"}]}, window="prediction_result")
-                    try:
-                        if response and json.loads(response).get("action") == "ladder":
-                            idle_add(self.start_ladder, target, check)
-                    except (ValueError, AttributeError):
-                        pass
-                else:
-                    self.flash.show_cues(cues)
-            elif not check.mark:
-                self.flash.show_notice("нечего добавить")
+            actions = []
+            if offer:
+                actions.append({"label": "Мои 4 догадки", "action": "recycle"})
+            if self.SAND_LADDER_BRIDGE and (STATE_DIR / "sand.enabled").exists() and check.nodes:
+                actions.append({"label": "Ступенька отсюда", "action": "ladder"})
+            payload = {"mode": "text", "text": check.display or nodes.answer_text(
+                check.mark, "", check.evidence, list(check.nodes or [])), "title": "Моя гипотеза"}
+            if actions:
+                payload["actions"] = actions
+            response = run_popup(payload, window="prediction_result", detail=check.status)
+            try:
+                action = json.loads(response).get("action") if response else ""
+            except (ValueError, AttributeError):
+                action = ""
+            if action == "recycle" and offer:
+                self._recycle(offer)
+            elif action == "ladder":
+                idle_add(self.start_ladder, target, check)
         threading.Thread(target=bind_chain(worker), daemon=True).start()
 
     def _reframe_from_result(self, check, source_snapshot: str):

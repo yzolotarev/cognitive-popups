@@ -3654,6 +3654,42 @@ def _dispatch(payload, mode):
     return show_objects_popup(items, px, py)
 
 
+#: How often the helper looks for newly built windows to guard (milliseconds).
+COMPOSITOR_SWEEP_MS = 250
+
+
+def _guard_compositor_close(mode):
+    """End the helper when the compositor closes its window (Super+Q, killactive).
+
+    Every window quits on its own keys, but almost none listens for delete-event:
+    a window closed from outside left the process alive and invisible for up to
+    an hour, and its hotkey answered "already open" until a restart (notes 105, 110).
+    """
+    try:
+        import gi
+        gi.require_version('Gtk', '3.0')
+        from gi.repository import GLib, Gtk
+    except (ImportError, ValueError):
+        return
+    guarded = set()
+
+    def closed(*_args):
+        _emit('window_close', window=mode, detail='closed by compositor')
+        if Gtk.main_level():
+            Gtk.main_quit()
+        return False
+
+    def sweep():
+        for window in Gtk.Window.list_toplevels():
+            if id(window) in guarded or window.get_window_type() != Gtk.WindowType.TOPLEVEL:
+                continue
+            guarded.add(id(window))
+            window.connect('delete-event', closed)
+        return True
+
+    GLib.timeout_add(COMPOSITOR_SWEEP_MS, sweep)
+
+
 def main():
     global _PRESENTATION
     payload = orbital_demo_payload() if '--demo-orbital' in sys.argv[1:] else load_payload()
@@ -3667,6 +3703,7 @@ def main():
     from cognitive_popups.sand_surface import enabled as sand_enabled
     halo = None if sand_enabled() or mode == 'notice' or (mode == 'dual' and len(orbital_rows(payload.get('items', []))) == 4) \
         else _focus_halo(payload)
+    _guard_compositor_close(mode)
     try:
         return _dispatch(payload, mode)
     except Exception as exc:

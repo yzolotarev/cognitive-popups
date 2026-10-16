@@ -355,6 +355,77 @@ def cursor_position() -> tuple[int, int] | None:
         return None
 
 
+#: The hotkey action a worker thread is running, so the popup it opens can be
+#: found again when the same key is pressed while that window is still open.
+_POPUP_OWNER = threading.local()
+_LIVE_POPUPS: dict[str, subprocess.Popen] = {}
+_LIVE_LOCK = threading.Lock()
+
+#: A second press within this many seconds of raising a window that did not come
+#: up replaces it: the reader evidently cannot see it.
+RAISE_GRACE_S = 20.0
+
+
+def live_popup(name: str) -> subprocess.Popen | None:
+    with _LIVE_LOCK:
+        proc = _LIVE_POPUPS.get(name)
+    return proc if proc is not None and proc.poll() is None else None
+
+
+def mapped_window(pid: int) -> bool | None:
+    """Whether Hyprland shows a window of `pid`; None when it cannot be asked."""
+    try:
+        clients = json.loads(subprocess.run(["hyprctl", "clients", "-j"], capture_output=True,
+                                            text=True, timeout=1).stdout or "[]")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    return any(c.get("pid") == pid and c.get("mapped", True) for c in clients)
+
+
+def focus_pid(pid: int) -> None:
+    try:
+        subprocess.run(["hyprctl", "dispatch", "focuswindow", f"pid:{pid}"],
+                       capture_output=True, timeout=1)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def repeat_press(mapped: bool | None, raised_at: float | None, now: float) -> str:
+    """What a repeated hotkey does to its own still-open window.
+
+    'raise' brings a visible window forward; 'replace' kills one that is gone
+    (closed by the compositor, lost on another workspace) or that a raise did not
+    bring back, so the key never stays dead until a restart (notes 105, 110).
+    """
+    if mapped is False:
+        return "replace"
+    if raised_at is not None and now - raised_at <= RAISE_GRACE_S:
+        return "replace"
+    return "raise"
+
+
+def _spawn_popup(command: list[str], payload: str, env: dict[str, str]):
+    """Run the helper; a hotkey's own window is registered so a repeat press finds it."""
+    owner = getattr(_POPUP_OWNER, "name", None)
+    if not owner:
+        return subprocess.run(command, input=payload, capture_output=True, text=True,
+                              env=env, timeout=3600)
+    proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, env=env)
+    with _LIVE_LOCK:
+        _LIVE_POPUPS[owner] = proc
+    try:
+        stdout, stderr = proc.communicate(payload, timeout=3600)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+    finally:
+        with _LIVE_LOCK:
+            if _LIVE_POPUPS.get(owner) is proc:
+                del _LIVE_POPUPS[owner]
+    return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
+
+
 def run_popup(payload: dict[str, object], *, window: str, detail: str = "") -> str:
     """Open one popup and return its stdout; empty when the reader cancels."""
     command = popup_helper_command()
@@ -368,14 +439,7 @@ def run_popup(payload: dict[str, object], *, window: str, detail: str = "") -> s
         payload["x"], payload["y"] = position
     payload = prepare_popup(payload, window)
     try:
-        result = subprocess.run(
-            command,
-            input=json.dumps(payload, ensure_ascii=False),
-            capture_output=True,
-            text=True,
-            env=popup_env(),
-            timeout=3600,
-        )
+        result = _spawn_popup(command, json.dumps(payload, ensure_ascii=False), popup_env())
         if payload.get("mode") == "cutscene" and result.returncode:
             raise RuntimeError(f"cutscene failed: {result.stderr[-500:]}")
         if payload.get("mode") in {"input", "note"}:
@@ -3482,21 +3546,43 @@ class DesktopApp:
         These actions wait for the reader to close their window; on the main
         loop that held every other hotkey in the queue (07.10: Alt+C "flew away"
         until the note window was closed). The same key pressed while its own
-        window is still open does nothing.
+        window is still open brings that window forward; if it is gone or does
+        not come up, it is replaced by a fresh one (see `repeat_press`).
         """
         running = self.__dict__.setdefault("_windows_running", set())
+        raised = self.__dict__.setdefault("_windows_raised", {})
+        reopen = self.__dict__.setdefault("_windows_reopen", set())
         if name in running:
-            emit("action", window=name, detail="already open")
+            proc = live_popup(name)
+            if proc is None:
+                # Still waiting for the model: the window has not opened yet.
+                emit("action", window=name, detail="already open: waiting")
+                return
+            now = time.monotonic()
+            if repeat_press(mapped_window(proc.pid), raised.get(name), now) == "replace":
+                emit("action", window=name, detail="stale window replaced")
+                reopen.add(name)
+                proc.kill()
+                return
+            raised[name] = now
+            emit("action", window=name, detail="raised")
+            focus_pid(proc.pid)
             return
 
         def worker():
+            _POPUP_OWNER.name = name
             try:
                 action()
             except Exception as exc:  # noqa: BLE001 - one failed window must not kill the key
                 debug(f"{name} failed: {exc}\n{traceback.format_exc()}")
                 emit("error", window=name, detail=f"{type(exc).__name__}: {exc}"[:200])
             finally:
+                _POPUP_OWNER.name = None
+                raised.pop(name, None)
                 running.discard(name)
+                if name in reopen:
+                    reopen.discard(name)
+                    idle_add(lambda: self._off_main(name, action) and False)
 
         running.add(name)
         threading.Thread(target=bind_chain(worker), daemon=True).start()

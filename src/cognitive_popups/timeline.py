@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
+from .paths import db_path
+
 #: Outcomes that mean "the reader wanted something and did not get it".
 FRICTION = {
     "buffer is empty": "буфер пуст",
@@ -54,12 +56,7 @@ class Entry:
 
 
 def state_paths() -> dict[str, Path]:
-    root = Path(os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-popups").expanduser()
-    return {
-        "events": Path(os.environ.get("COGNITIVE_EVENT_DB") or root / "events.sqlite3").expanduser(),
-        "records": Path(os.environ.get("COGNITIVE_RECORD_DB") or root / "records.sqlite3").expanduser(),
-        "notes": Path(os.environ.get("COGNITIVE_NOTES_DB") or root / "notes.sqlite3").expanduser(),
-    }
+    return {name: db_path(f"{name}.sqlite3") for name in ("events", "records", "notes")}
 
 
 def local(ts: str) -> datetime:

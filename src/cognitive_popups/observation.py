@@ -21,6 +21,7 @@ import time
 import uuid
 
 from .operation_context import RUN_ID, OperationContext, current_operation
+from .paths import db_path
 
 SCHEMA_VERSION = 1
 DB_TIMEOUT = 0.25
@@ -124,9 +125,7 @@ class ObservationStore:
 
     @property
     def path(self):
-        return self._path or Path(os.environ.get("COGNITIVE_RECORD_DB") or
-            str(Path(os.environ.get("COGNITIVE_STATE_DIR") or
-                     "~/.local/state/cognitive-popups") / "records.sqlite3")).expanduser()
+        return self._path or db_path("records.sqlite3")
 
     @contextmanager
     def connect(self):

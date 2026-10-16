@@ -108,7 +108,8 @@ PREPARING_STATUSES = frozenset({"queued", "analyzing", "generating", "validating
 
 def state_path(state_dir: str | Path | None = None) -> Path:
     if state_dir is None:
-        state_dir = os.environ.get("COGNITIVE_STATE_DIR") or DEFAULT_STATE_DIR
+        from .paths import state_dir as _state_dir
+        state_dir = _state_dir()
     return Path(state_dir).expanduser() / STATE_FILENAME
 
 

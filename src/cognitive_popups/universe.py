@@ -33,6 +33,8 @@ from .client import PRIORITY_BACKGROUND, PRIORITY_MANUAL, GeminiWeb2API, Web2API
 
 import re as _re
 
+from .paths import state_dir
+
 WORD = _re.compile(r"[A-Za-zА-Яа-яЁё0-9]+")
 #: Present in the state directory = Alt+C answers without the universe.
 CLARIFY_OFF = "universe-clarify.off"
@@ -142,7 +144,7 @@ def now() -> str:
 
 
 def state_root() -> Path:
-    return Path(os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-popups").expanduser()
+    return state_dir()
 
 
 def norm(concept: object) -> str:

@@ -90,7 +90,25 @@ def run_one(function, params: dict, fixtures: dict) -> None:
         function(**{name: resolve(name) for name in inspect.signature(function).parameters})
 
 
+def isolate_environment() -> pathlib.Path:
+    """Point the app's state at a throwaway directory before anything imports it.
+
+    `conftest.py` does the same and more (per-test directories, module
+    constants); this is the floor that holds even if conftest failed to load.
+    """
+    root = pathlib.Path(tempfile.mkdtemp(prefix="cognitive-run-tests-"))
+    os.environ["COGNITIVE_STATE_DIR"] = str(root)
+    os.environ["XDG_STATE_HOME"] = str(root / "xdg-state")
+    for variable, filename in (("COGNITIVE_RECORD_DB", "records.sqlite3"),
+                               ("COGNITIVE_EVENT_DB", "events.sqlite3"),
+                               ("COGNITIVE_NOTES_DB", "notes.sqlite3"),
+                               ("COGNITIVE_UNIVERSE_DB", "universe.sqlite3")):
+        os.environ[variable] = str(root / filename)
+    return root
+
+
 def main(argv: list[str]) -> int:
+    isolate_environment()
     sys.modules["pytest"] = pytest_stub
     sys.path.insert(0, str(ROOT / "src"))
     sys.path.insert(0, str(TESTS))

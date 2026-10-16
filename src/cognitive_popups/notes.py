@@ -29,7 +29,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-STATE_ROOT = os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-popups"
+from .paths import state_dir
+
+#: Import-time snapshots kept for callers that read them; paths resolve per call.
+STATE_ROOT = str(state_dir())
 DEFAULT_DB = os.path.join(STATE_ROOT, "notes.sqlite3")
 ENV_DB = "COGNITIVE_NOTES_DB"
 
@@ -64,7 +67,7 @@ class NoteError(RuntimeError):
 
 
 def resolve_db_path(path: str | Path | None = None) -> Path:
-    raw = path or os.environ.get(ENV_DB) or DEFAULT_DB
+    raw = path or os.environ.get(ENV_DB) or state_dir() / "notes.sqlite3"
     return Path(raw).expanduser()
 
 

@@ -39,11 +39,12 @@ from typing import Any
 
 from .operation_context import RUN_ID, OperationContext, bind_operation
 from .observation import backup_database, report_failure, DB_TIMEOUT, disabled
+from .paths import state_dir
 
 #: One root for everything the app writes: `COGNITIVE_STATE_DIR` moves the whole
 #: state at once (the three databases, the pid file, the prompts), and the
 #: per-store variables below stay as finer overrides.
-STATE_ROOT = os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-popups"
+STATE_ROOT = str(state_dir())  # import-time snapshot; paths resolve per call
 DEFAULT_DB = os.path.join(STATE_ROOT, "events.sqlite3")
 
 ENV_DB = "COGNITIVE_EVENT_DB"
@@ -85,8 +86,7 @@ _TRUTHY = {"1", "true", "yes", "on"}
 
 
 def resolve_db_path(path: str | Path | None = None) -> Path:
-    raw = path or os.environ.get(ENV_DB) or os.path.join(
-        os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-popups", "events.sqlite3")
+    raw = path or os.environ.get(ENV_DB) or state_dir() / "events.sqlite3"
     return Path(raw).expanduser()
 
 

@@ -41,7 +41,9 @@ try:  # Linux only, like the rest of the app.
 except ImportError:  # pragma: no cover - non-Unix fallback
     fcntl = None  # type: ignore[assignment]
 
-STATE_ROOT = os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-popups"
+from .paths import state_dir
+
+STATE_ROOT = str(state_dir())  # import-time snapshot; `resolve_root` reads it per call
 ENV_ROOT = "COGNITIVE_REQUEST_GATE_DIR"
 ENV_DISABLE = "COGNITIVE_REQUEST_GATE"
 
@@ -64,7 +66,7 @@ def resolve_root(root: str | Path | None = None) -> Path:
     override = os.environ.get(ENV_ROOT)
     if override:
         return Path(override).expanduser()
-    return Path(STATE_ROOT).expanduser()
+    return state_dir()
 
 
 def _lock_path(root: Path) -> Path:

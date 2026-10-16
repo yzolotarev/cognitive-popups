@@ -32,8 +32,10 @@ from typing import Any
 
 from .models import FeynmanCheck, Fragment, Intention, PredictionCheck, now_iso
 from .notes import NoteStore, local_stamp, normalise_anchor
+from .paths import state_dir
 
-STATE_ROOT = os.environ.get("COGNITIVE_STATE_DIR") or "~/.local/state/cognitive-popups"
+#: Import-time snapshots kept for callers that read them; paths resolve per call.
+STATE_ROOT = str(state_dir())
 DEFAULT_DB = os.path.join(STATE_ROOT, "records.sqlite3")
 ENV_DB = "COGNITIVE_RECORD_DB"
 
@@ -284,7 +286,7 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
 
 
 def resolve_db_path(path: str | Path | None = None) -> Path:
-    raw = path or os.environ.get(ENV_DB) or DEFAULT_DB
+    raw = path or os.environ.get(ENV_DB) or state_dir() / "records.sqlite3"
     return Path(raw).expanduser()
 
 
@@ -1398,7 +1400,7 @@ def main(argv: list[str] | None = None) -> int:
         description="The durable reading ledger: sessions, 4-word fragments, hypotheses.",
     )
     parser.add_argument("--db", default=None, help=f"ledger path (default {DEFAULT_DB})")
-    parser.add_argument("--notes-db", default=None, help="notes path (default ~/.local/state/cognitive-popups/notes.sqlite3)")
+    parser.add_argument("--notes-db", default=None, help="notes path (default <state dir>/notes.sqlite3)")
     parser.add_argument("--today", action="store_true", help="today's local date (default when no date/session given)")
     parser.add_argument("--date", default=None, help="one local date, YYYY-MM-DD")
     parser.add_argument("--session", default=None, help="one session id, full detail")

@@ -2166,12 +2166,12 @@ class DesktopApp:
                 "Формулировка сохранена: окно откроется с ней же, достаточно отправить ещё раз.",
                 "Моя гипотеза",
             )
-            self._retry_prediction(hypothesis)
+            self._in_background(lambda: self._retry_prediction(hypothesis))
             return False
 
         emit("result", window="prediction", detail=check.status)
         if check.status == nodes.VAGUE_STATUS:
-            self._ask_bolder(hypothesis)
+            self._in_background(lambda: self._ask_bolder(hypothesis))
             return False
         if getattr(check, "mark", "") or getattr(check, "nodes", None) or check.status == "question" \
                 or (check.display and nodes.enabled(STATE_DIR)):
@@ -2328,6 +2328,11 @@ class DesktopApp:
             self.flash.show_text(step.text, "Ступенька", note=note)
         return False
 
+    @staticmethod
+    def _in_background(action) -> None:
+        """Run a follow-up that opens an input window without holding the main loop."""
+        threading.Thread(target=bind_chain(action), daemon=True).start()
+
     def _ask_bolder(self, hypothesis: str) -> None:
         """A guess nothing could refute: ask once for a bolder one (2026-10-09).
 
@@ -2445,6 +2450,11 @@ class DesktopApp:
 
     @queued_action
     def start_feynman(self) -> None:
+        carry = self.__dict__.pop("_idle_carry", None)
+        if not self.service.session.fragments and carry:
+            # A break closed the session a moment ago; the passage is still the one
+            # being read, so the check is about it rather than "buffer is empty".
+            self.service.session.fragments.extend(carry)
         if not self.service.session.fragments:
             emit("action", window="feynman", detail="buffer is empty")
             self.flash.show_notice("буфер пуст: сначала Alt+W или выдели текст")
@@ -2471,13 +2481,12 @@ class DesktopApp:
             emit("error", window="feynman", detail=str(error))
             self.flash.show_text(human_error(error), "Фейнман")
             return False
-        explanation = popup_input(question, "Feynman check")
-        if not explanation:
-            return False
-        self._busy = True
-        self._log_prompt("feynman", "feynman_check")
-
         def worker():
+            explanation = popup_input(question, "Фейнман")
+            if not explanation:
+                return
+            self._busy = True
+            self._log_prompt("feynman", "feynman_check")
             try:
                 check = self.service.check_feynman(question, explanation)
                 self._commit_feynman(check)
@@ -3269,6 +3278,7 @@ class DesktopApp:
         )
 
     def _commit_fragment(self, fragment) -> None:
+        self.__dict__.pop("_idle_carry", None)
         try:
             RECORDS.save_fragment(self.service.session, fragment)
         except RecordError as exc:
@@ -3342,6 +3352,7 @@ class DesktopApp:
         retired = self.service.mark_activity()
         if retired is None:
             return
+        self._idle_carry = list(retired.session.fragments[-3:])
         self._close_session(retired.session.id, "idle", closed_utc=retired.ended_utc)
         debug(
             f"idle split: {len(retired.session.fragments)} fragments, "

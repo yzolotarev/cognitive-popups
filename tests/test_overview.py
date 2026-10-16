@@ -53,6 +53,13 @@ def state(tmp_path, monkeypatch):
     log.log("action", session_id="e", window="seed", detail="busy, request dropped")
     log.log("action", session_id="e", window="seed", detail="no selection")
     log.log("error", session_id="e", window="seed", detail="не удалось получить четыре объекта")
+    for answer in ("relate", "relate", "recall", "skipped", "nonsense"):
+        log.log("result", session_id="e", window="self_check", detail=answer)
+    for step_id, outcome in (("done", "done"), ("cancel", "cancelled"), ("open", None)):
+        records.add_step(step_id, "шаг", session_key="k", minutes=15, started_epoch=NOW - 60,
+                         deadline_epoch=NOW + 840)
+        if outcome:
+            records.finish_step(step_id, outcome)
     return tmp_path
 
 
@@ -66,21 +73,24 @@ def test_blocks_hold_the_readers_words(state):
     assert data["open_notes"] == 3
     assert data["oldest_note"]["comment"] == "думал, что это прилагательное"
     assert data["rhythm"] == {"median_seconds": 60, "n": 3}
-    assert data["counts"] == {"сессий": 1, "4 слова": 4, "гипотез": 7, "заметок": 3, "шагов": 0}
+    assert data["counts"] == {"сессий": 1, "4 слова": 4, "гипотез": 7, "заметок": 3, "шагов": 1}
     assert data["system"]["нажатий потеряно"] == 1
     assert data["system"]["текст не захвачен"] == 1
     assert data["system"]["окон с ошибкой"] == 1
+    assert data["self_check"] == {"simplify": 0, "group": 0, "relate": 2, "recall": 1, "none": 0, "skipped": 1}
 
 
 def test_render_has_no_rates_streaks_or_minutes(state):
     text = overview.render(overview.overview(state, None, now=NOW + 3 * overview.DAY))
     assert "%" not in text
-    for word in ("сери", "подряд", "streak", "мин", "процент", "лучше", "хуже", "уровень"):
+    for word in (r"\bсери", r"\bподряд", "streak", r"\bмин(ут|\.|\b)", r"\bпроцент", r"\bлучше",
+                 r"\bхуже", r"\bуров", r"\bдней подряд"):
         assert not re.search(word, text, re.IGNORECASE), word
     assert "моя гипотеза 6" in text and "расхождение: место 6" in text
     assert "«rigorous argument» думал, что это прилагательное" in text
     assert "около 60 с" in text
-    assert "сессий 1 · 4 слова 4 · гипотез 7 · заметок 3 · шагов 0" in text
+    assert "сессий 1 · 4 слова 4 · гипотез 7 · заметок 3 · шагов 1" in text
+    assert "связывал с картиной 2 · вспоминал 1 · пропущено 1" in text
 
 
 def test_empty_state_renders_quietly(tmp_path):

@@ -9,8 +9,9 @@ What it shows, in this order:
 3. what comes back soon (spaced returns);
 4. open notes: how many, and the oldest one in your words;
 5. rhythm: how long usually passes from the four words to your hypothesis;
-6. one small line of counts;
-7. where the tool let you down: lost presses, model failures, refused captures.
+6. which self-check answers you gave after steps (simplify/group/relate/recall);
+7. one small line of counts (a cancelled step is not counted);
+8. where the tool let you down: lost presses, model failures, refused captures.
 
 What it never shows: percentages, streaks, minutes of study, week-on-week
 arrows, levels. A rate of confirmed guesses rewards safe guesses; the tests
@@ -39,6 +40,9 @@ DAY = 86400.0
 MISSED = ("contradicted", "not_supported", "partially_confirmed", "partially")
 MISSES_SHOWN = 5
 TERM_REPEATS = 3
+#: The step's self-check answers (Sung's four questions), as logged by desktop.
+SELF_CHECK = {"simplify": "упрощал", "group": "группировал", "relate": "связывал с картиной",
+              "recall": "вспоминал", "none": "ничего из этого", "skipped": "пропущено"}
 #: A hypothesis this long after the four words belongs to something else.
 RHYTHM_WINDOW_SECONDS = 1800.0
 
@@ -107,7 +111,10 @@ def overview(state_dir: str | Path | None = None, since_epoch: float | None = No
         "4 слова": _one(records, "SELECT count(*) FROM fragments WHERE created_epoch >= ?", (since,)),
         "гипотез": _one(records, "SELECT count(*) FROM predictions WHERE created_epoch >= ?", (since,)),
         "заметок": _one(notes, "SELECT count(*) FROM error_notes WHERE created_epoch >= ?", (since,)),
-        "шагов": _one(records, "SELECT count(*) FROM steps WHERE started_epoch >= ?", (since,)),
+        # A cancelled step was not done; it is not counted as one.
+        "шагов": _one(records, "SELECT count(*) FROM steps WHERE started_epoch >= ?"
+                              " AND finished_epoch IS NOT NULL AND coalesce(outcome, '') != 'cancelled'",
+                      (since,)),
     }
 
     system = {
@@ -123,8 +130,15 @@ def overview(state_dir: str | Path | None = None, since_epoch: float | None = No
                                   (since,)),
     }
 
+    self_check = Counter({key: 0 for key in SELF_CHECK})
+    for row in _rows(events, "SELECT detail FROM events WHERE ts_epoch >= ? AND event = 'result'"
+                             " AND window = 'self_check'", (since,)):
+        if row["detail"] in SELF_CHECK:
+            self_check[row["detail"]] += 1
+
     return {
         "since_epoch": since,
+        "self_check": dict(self_check),
         "misses": misses,
         "repeated_terms": terms,
         "repeated_anchors": anchors,
@@ -192,6 +206,10 @@ def render(data: dict[str, Any]) -> str:
     rhythm = data["rhythm"]
     lines += ["", "Сколько обычно проходит от 4 слов до твоей гипотезы"]
     lines.append(f"  около {rhythm['median_seconds']} с (по {rhythm['n']} случаям)" if rhythm else "  пока не видно")
+
+    used = [f"{SELF_CHECK[key]} {count}" for key, count in data.get("self_check", {}).items() if count]
+    if used:
+        lines += ["", "После шага ты отмечал", "  " + " · ".join(used)]
 
     lines += ["", "  " + " · ".join(f"{name} {value}" for name, value in data["counts"].items())]
 

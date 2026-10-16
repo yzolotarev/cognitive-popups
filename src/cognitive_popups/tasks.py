@@ -571,12 +571,15 @@ def generate_task(
     node: TaskNode | None = None,
     nodes: Sequence[TaskNode] = (),
     on_stage=None,
+    priority: str | None = None,
 ) -> GeneratedTask:
     """Generate one task, reporting progress through `on_stage` if given.
 
     `on_stage(name)` is how a caller that cannot show a window — the background
     preparation — reports which part of the work is running. The hotkey path
-    passes nothing and behaves exactly as before.
+    passes nothing and behaves exactly as before. `priority` reaches the model
+    client: the background preparation passes PRIORITY_BACKGROUND so it yields to
+    a person waiting; None keeps the client's default (a person asked).
     """
     notify = on_stage or (lambda _stage: None)
     ctx = current_operation() or OperationContext()
@@ -593,7 +596,7 @@ def generate_task(
         notify("generating")
         try:
             result = _generate_task(client, key, prompt, context, node=node, nodes=nodes,
-                                    on_stage=notify)
+                                    on_stage=notify, priority=priority)
         except BaseException as exc:
             artifact = observation.record_artifact("task_failed", {
                 "error_type": type(exc).__name__,
@@ -619,6 +622,7 @@ def _generate_task(
     node: TaskNode | None = None,
     nodes: Sequence[TaskNode] = (),
     on_stage=None,
+    priority: str | None = None,
 ) -> GeneratedTask:
     """Generate, validate, verify and repair once. An unverified task is never shown."""
     notify = on_stage or (lambda _stage: None)
@@ -635,7 +639,8 @@ def _generate_task(
                 + "\nВерни исправленный JSON полностью. Не добавляй текст вне JSON."
                 + f"\n<PREVIOUS_RESPONSE>\n{last.raw_response if last else ''}\n</PREVIOUS_RESPONSE>"
             )
-        raw = client.complete([{"role": "user", "content": request}], max_tokens=1400)
+        extra = {"priority": priority} if priority is not None else {}
+        raw = client.complete([{"role": "user", "content": request}], max_tokens=1400, **extra)
         parsed, errors = parse_generated_task(raw, key, context)
         verification = verify.VerificationResult("", "")
         if not errors:

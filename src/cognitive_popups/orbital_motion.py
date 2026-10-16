@@ -1,5 +1,11 @@
-"""Clock-independent, interruptible Orbital motion in logical pixels."""
+"""Clock-independent, interruptible Orbital motion in logical pixels.
+
+Under reduced motion (:func:`motion.reduced`) every tween has zero duration
+and lands on its target at once.
+"""
 from dataclasses import dataclass
+
+from . import motion
 from .orbital import Rect
 
 
@@ -15,7 +21,13 @@ class Tween:
     started: float
     duration: float
 
+    def __post_init__(self):
+        if motion.reduced():
+            self.duration = 0.0
+
     def value(self, now):
+        if self.duration <= 0:
+            return tuple(self.target)
         p = ease((now - self.started) / self.duration)
         return tuple(a + (b - a) * p for a, b in zip(self.start, self.target))
 
@@ -27,7 +39,7 @@ class Tween:
         self.target = tuple(target)
         self.started = now
         if duration is not None:
-            self.duration = duration
+            self.duration = 0.0 if motion.reduced() else duration
 
 
 def rect_values(rect):

@@ -17,8 +17,11 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 
-LIGHT_INK = (0xf2, 0xe6, 0xcf)
-DARK_INK = (0x2a, 0x20, 0x16)
+from . import theme
+
+#: Light ink for dark pages and dark ink for light ones: the theme's two inks.
+LIGHT_INK = theme.rgb255(theme.DARK["ink"])
+DARK_INK = theme.rgb255(theme.LIGHT["ink"])
 #: Green channel above this counts as a light background.
 LIGHT_BG = 140
 STEP = 4            # flood-fill grid of the selection search, in pixels

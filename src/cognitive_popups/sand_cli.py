@@ -4,8 +4,9 @@ import json
 import os
 import re
 import subprocess
-from pathlib import Path
+import sys
 
+from . import motion, theme
 from .sand_store import SandStore
 
 
@@ -27,7 +28,7 @@ def sky(scenes):
         edges.extend((a+offset, b+offset, dashed) for a,b,dashed in scene.get("edges", []))
     return {"name": "Небо сохранённых сессий", "form_name": f"{len(scenes)} созвездий",
             "stars": stars, "edges": edges, "timeline": {"lift": 0, "form": 0, "title": 0, "end": 0},
-            "modes": ["ionian"]*3, "root_midi": 50, "tint": "#e8d9bd"}
+            "modes": ["ionian"]*3, "root_midi": 50, "tint": theme.DARK["ink"]}
 
 
 def main(argv=None):
@@ -35,19 +36,28 @@ def main(argv=None):
     parser.add_argument("command", choices=("on", "off", "status", "reduced", "motion", "mute", "unmute", "grains", "text", "history", "replay", "sky"))
     parser.add_argument("session", nargs="?")
     args = parser.parse_args(argv)
-    root = Path(os.environ.get("COGNITIVE_STATE_DIR") or Path(__file__).resolve().parents[2] / "var")
+    root = motion.state_dir()
     root.mkdir(parents=True, exist_ok=True)
-    if args.command in ("on", "off", "reduced", "motion"):
-        marker = root / ("sand.enabled" if args.command in ("on", "off") else "sand.reduced")
-        if args.command in ("on", "reduced"):
-            marker.touch()
-        else:
-            marker.unlink(missing_ok=True)
-        print("Включено" if args.command in ("on", "reduced") else "Выключено")
+    if args.command in ("on", "off"):
+        marker = root / "sand.enabled"
+        marker.touch() if args.command == "on" else marker.unlink(missing_ok=True)
+        print("Включено" if args.command == "on" else "Выключено")
+        return 0
+    if args.command in ("reduced", "motion"):
+        # One flag for every animation; the legacy sand flag is cleared with it.
+        motion.set_reduced(args.command == "reduced")
+        if args.command == "motion":
+            (root / motion.LEGACY_FLAG).unlink(missing_ok=True)
+        print("Без анимации" if args.command == "reduced" else "Анимация включена")
         return 0
     if args.command in ("mute", "unmute"):
-        marker = root / "sand.silent"
-        marker.touch() if args.command == "mute" else marker.unlink(missing_ok=True)
+        # Sand sound is opt-in: only an explicit unmute turns it on.
+        if args.command == "mute":
+            (root / "sand.sound").unlink(missing_ok=True)
+            (root / "sand.silent").touch()
+        else:
+            (root / "sand.silent").unlink(missing_ok=True)
+            (root / "sand.sound").touch()
         print("Звук песка выключен" if args.command == "mute" else "Звук песка включён")
         return 0
     if args.command in ("grains", "text"):
@@ -56,8 +66,9 @@ def main(argv=None):
         print("Слова только из песка" if args.command == "grains" else "Слова проявляются текстом")
         return 0
     if args.command == "status":
-        print(json.dumps({"enabled": (root/"sand.enabled").exists(), "reduced_motion": (root/"sand.reduced").exists(),
-                          "sound": not (root/"sand.silent").exists(),
+        from .sand_audio import opted_in
+        print(json.dumps({"enabled": (root/"sand.enabled").exists(), "reduced_motion": motion.reduced(),
+                          "sound": opted_in(root),
                           "words": "sand" if (root/"sand.grains_only").exists() else "text"}, ensure_ascii=False))
         return 0
     store = SandStore(root / "records.sqlite3")
@@ -74,7 +85,7 @@ def main(argv=None):
         return 1
     scene = sky([json.loads(r["payload"]) for r in reversed(records)]) if args.command == "sky" else json.loads(selected["payload"])
     env = dict(os.environ, COGNITIVE_STATE_DIR=str(root), GDK_BACKEND="x11")
-    return subprocess.run(["/usr/bin/python", "-m", "cognitive_popups.popup_helper"],
+    return subprocess.run([sys.executable or "python3", "-m", "cognitive_popups.popup_helper"],
                           input=json.dumps({"mode": "cutscene", "scene": scene}, ensure_ascii=False), text=True, env=env).returncode
 
 

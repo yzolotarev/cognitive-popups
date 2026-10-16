@@ -2,6 +2,8 @@
 from dataclasses import dataclass
 import math
 
+from .theme import GRAPHITE
+
 
 @dataclass(frozen=True)
 class Rect:
@@ -133,7 +135,7 @@ def background_svg(orbit, active=None, focus='subtle'):
         parts.append(f'<image data-cue="{i}" x="{rect.x}" y="{rect.y}" '
                      f'width="{rect.width}" height="{rect.height}" preserveAspectRatio="none" '
                      f'opacity="{opacity}" href="{image_uri(i)}"/>')
-    parts.append(f'<circle cx="{cx}" cy="{cy}" r="2" fill="#dddddd"/>')
+    parts.append(f'<circle cx="{cx}" cy="{cy}" r="2" fill="{GRAPHITE}"/>')
     parts.append('</svg>')
     return ''.join(parts)
 

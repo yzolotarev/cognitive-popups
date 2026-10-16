@@ -3,7 +3,7 @@ import hashlib
 import math
 import random
 
-TINTS = ('#f3e0bd', '#cecbf6', '#b5d4f4', '#9fe1cb')
+from .theme import INITIUM_TINTS as TINTS
 BIRTH_SECONDS = 3.55
 
 
@@ -20,6 +20,11 @@ def progress(journey):
 
 def at_end(journey):
     return bool(journey and journey['target_steps'] and journey['completed'] >= journey['target_steps'])
+
+
+def birth_plays(birth, reduced):
+    """Under reduced motion the star appears at home at once: no birth flight."""
+    return bool(birth) and not reduced
 
 
 def smooth(t):

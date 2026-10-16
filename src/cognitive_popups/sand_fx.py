@@ -4,23 +4,27 @@ from __future__ import annotations
 import html
 import json
 import math
-import os
 import time
-from pathlib import Path
 
+from . import motion, theme
 from .sand_core import Sand, sample_mask
 
 FRAME_MS = 34  # below 30 fps, independent of the monitor's refresh rate
+#: After the final frame the scene stays this long, then closes by itself, so
+#: it never sits over the reader's page waiting for a key.
+HOLD_S = 6.0
+#: Pointer movement within this many seconds keeps the final frame open.
+HOVER_GRACE_S = 2.0
 
 
-def reduced_motion(Gtk):
-    settings = Gtk.Settings.get_default()
-    root = Path(os.environ.get("COGNITIVE_STATE_DIR", "var"))
-    return (root / "sand.reduced").exists() or os.environ.get("COGNITIVE_REDUCED_MOTION", "").lower() in {"1", "on", "yes", "true"} or bool(settings and not settings.get_property("gtk-enable-animations"))
+def reduced_motion(Gtk=None):
+    """Compatibility name: the one rule lives in :func:`motion.reduced`."""
+    return motion.reduced(Gtk)
 
 
 def svg_particles(sand, width=360, height=160):
-    dots = ''.join(f'<circle cx="{p.x:.1f}" cy="{p.y:.1f}" r="{p.size:.1f}" fill="{"#d6ad79" if p.mine else "#e8d9bd"}" opacity="{max(0,min(1,p.alpha)):.2f}"/>' for p in sand.particles)
+    ink = theme.DARK
+    dots = ''.join(f'<circle cx="{p.x:.1f}" cy="{p.y:.1f}" r="{p.size:.1f}" fill="{ink["accent"] if p.mine else ink["ink"]}" opacity="{max(0,min(1,p.alpha)):.2f}"/>' for p in sand.particles)
     return f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">{dots}</svg>'
 
 
@@ -57,7 +61,7 @@ def show_effect(payload):
     area = Gtk.DrawingArea()
     area.set_size_request(360, 160)
     window.add(area)
-    colours = {"mine": rgb("#d6ad79"), "dust": rgb("#e8d9bd")}
+    colours = {"mine": rgb(theme.DARK["accent"]), "dust": rgb(theme.DARK["ink"])}
 
     def paint(painter):
         painter.clear()
@@ -107,18 +111,19 @@ def show_effect(payload):
 
 def scene_svg(scene, elapsed, width=900, height=520):
     timeline = scene["timeline"]
+    tokens = theme.DARK
     stage = 0 if elapsed < timeline["lift"] else 1 if elapsed < timeline["form"] else 2
     parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">']
     stars = scene.get("stars", [])
     if scene.get("nebula"):
-        parts.append('<ellipse cx="450" cy="360" rx="180" ry="70" fill="#a88468" opacity=".07"/>')
+        parts.append(f'<ellipse cx="450" cy="360" rx="180" ry="70" fill="{tokens["accent"]}" opacity=".07"/>')
     if scene.get("comet") and stage == 1:
-        parts.append('<path d="M80 120 Q260 30 540 150" fill="none" stroke="#e8bd83" stroke-width="2" opacity=".5"/>')
+        parts.append(f'<path d="M80 120 Q260 30 540 150" fill="none" stroke="{tokens["accent"]}" stroke-width="2" opacity=".5"/>')
     for a, b, dashed in scene.get("edges", []):
         if stage == 2 and elapsed >= max(stars[a]["ignite"], stars[b]["ignite"]):
             p, q = stars[a], stars[b]
             dash = ' stroke-dasharray="4 6"' if dashed else ''
-            parts.append(f'<line x1="{p["x"]*width}" y1="{p["y"]*height}" x2="{q["x"]*width}" y2="{q["y"]*height}" stroke="#85775e" opacity=".6"{dash}/>')
+            parts.append(f'<line x1="{p["x"]*width}" y1="{p["y"]*height}" x2="{q["x"]*width}" y2="{q["y"]*height}" stroke="{tokens["ink_muted"]}" opacity=".45"{dash}/>')
     for i, star in enumerate(stars):
         if stage == 2 and elapsed < star["ignite"]:
             continue
@@ -128,7 +133,7 @@ def scene_svg(scene, elapsed, width=900, height=520):
             y = (1-t)*(height*.82 + math.sin(i*2)*15) + t*y
             x += math.sin(i+elapsed)*12*t*(1-t)
         kind = star["kind"]
-        color = "#e8bd83" if kind in ("err", "gap") else scene.get("tint", "#e8d9bd")
+        color = tokens["miss"] if kind in ("err", "gap") else scene.get("tint", tokens["ink"])
         radius = 5 if stage == 2 else 3
         if kind in ("err", "gap", "far") and stage == 2:
             parts.append(f'<circle cx="{x}" cy="{y}" r="12" fill="none" stroke="{color}" opacity=".6"/>')
@@ -142,9 +147,10 @@ def scene_svg(scene, elapsed, width=900, height=520):
                 parts.append(f'<circle cx="{x}" cy="{y}" r="{r}" fill="{color}" opacity="{a}"/>')
         parts.append(f'<circle cx="{x}" cy="{y}" r="{radius}" fill="{color}"/>')
     title = "per aspera" if stage == 0 else "ветер" if stage == 1 else "ad astra"
-    parts.append(f'<text x="32" y="42" fill="#e8d9bd" font-size="24">{title}</text>')
+    font = f'font-family="{html.escape(theme.FONT_FAMILY)}"'
+    parts.append(f'<text x="32" y="42" fill="{tokens["ink"]}" {font} font-size="24">{title}</text>')
     if elapsed >= timeline["title"]:
-        parts.append(f'<text x="32" y="{height-38}" fill="#e8d9bd" font-size="20">{html.escape(scene.get("name", ""))} · {html.escape(scene.get("form_name", ""))}</text>')
+        parts.append(f'<text x="32" y="{height-38}" fill="{tokens["ink"]}" {font} font-size="20">{html.escape(scene.get("name", ""))} · {html.escape(scene.get("form_name", ""))}</text>')
     parts.append('</svg>')
     return ''.join(parts)
 
@@ -155,9 +161,11 @@ def show_scene(payload):
     from gi.repository import Gtk, Gdk, GLib, GdkPixbuf
     from .popup_helper import _emit
     from . import sound
+    from .cutscene_model import fit_timeline, playhead
     scene = payload.get("scene") or {}
     if not scene.get("timeline"):
         return 0
+    scene = fit_timeline(scene)
     window = Gtk.Window(title="per aspera ad astra")
     from .sand_surface import configure
     configure(window, Gtk, Gdk, force=True)
@@ -172,13 +180,14 @@ def show_scene(payload):
     overlay = Gtk.Overlay()
     image = Gtk.Image()
     overlay.add(image)
-    tip = Gtk.Label(label="Любая клавиша: к финалу. Ещё одна: закрыть.")
+    tip = Gtk.Label(label="Любая клавиша или клик: к финалу. Ещё раз: закрыть.")
     tip.set_halign(Gtk.Align.CENTER)
     tip.set_valign(Gtk.Align.END)
     overlay.add_overlay(tip)
     window.add(overlay)
-    state = {"started": time.monotonic(), "final": reduced_motion(Gtk), "source": None, "notes": set(), "closed": False, "audio": [], "acts": set()}
-    duration = scene["timeline"]["end"]
+    state = {"started": time.monotonic(), "final": motion.reduced(Gtk), "source": None, "notes": set(),
+             "closed": False, "audio": [], "acts": set(), "final_at": None, "moved": 0.0, "hold": None}
+    duration = playhead(scene["timeline"]["end"], end=scene["timeline"]["end"])
 
     def stop_audio():
         for process in state["audio"]:
@@ -191,17 +200,35 @@ def show_scene(payload):
             state["audio"].append(process)
 
     def close(*_):
+        if state["closed"]:
+            return True
         stop_audio()
         state["closed"] = True
-        if state["source"]:
-            GLib.source_remove(state["source"])
-            state["source"] = None
+        for name in ("source", "hold"):
+            if state[name]:
+                GLib.source_remove(state[name])
+                state[name] = None
         window.destroy()
         Gtk.main_quit()
         return True
 
+    def hold():
+        # Close by itself once the final frame has been seen and the pointer
+        # is not resting on a star: the scene never waits on the reader.
+        now = time.monotonic()
+        if now - state["final_at"] >= HOLD_S and now - state["moved"] >= HOVER_GRACE_S:
+            state["hold"] = None
+            close()
+            return False
+        return True
+
+    def reached_final():
+        if state["final_at"] is None:
+            state["final_at"] = time.monotonic()
+            state["hold"] = GLib.timeout_add(500, hold)
+
     def tick():
-        elapsed = duration if state["final"] else time.monotonic()-state["started"]
+        elapsed = playhead(time.monotonic()-state["started"], end=duration, skipped=state["final"])
         image.set_from_pixbuf(raster(GdkPixbuf, scene_svg(scene, elapsed, width, height)))
         if not state["final"]:
             from .cutscene_model import note_midi
@@ -222,6 +249,7 @@ def show_scene(payload):
         if elapsed >= duration:
             state["final"] = True
             state["source"] = None
+            reached_final()
             return False
         return True
 
@@ -237,6 +265,7 @@ def show_scene(payload):
         return True
 
     def hover(_, event):
+        state["moved"] = time.monotonic()
         if not state["final"]:
             return False
         stars = scene.get("stars", [])
@@ -244,12 +273,13 @@ def show_scene(payload):
         if nearest and math.hypot(nearest["x"]*width-event.x, nearest["y"]*height-event.y) < 24:
             tip.set_text(nearest["label"] + "\n" + nearest.get("text", "") + "\n" + "\n".join(nearest.get("versions", [])))
         else:
-            tip.set_text("Любая клавиша: закрыть")
+            tip.set_text("Клавиша или клик: закрыть")
         return False
 
-    window.add_events(Gdk.EventMask.POINTER_MOTION_MASK)
+    window.add_events(Gdk.EventMask.POINTER_MOTION_MASK | Gdk.EventMask.BUTTON_PRESS_MASK)
     window.connect("motion-notify-event", hover)
     window.connect("key-press-event", skip)
+    window.connect("button-press-event", skip)
     window.connect("delete-event", close)
     window.show_all()
     window.present()

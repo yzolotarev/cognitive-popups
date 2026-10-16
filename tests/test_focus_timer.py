@@ -3,7 +3,8 @@ import sys
 from types import SimpleNamespace
 from xml.etree import ElementTree
 
-from cognitive_popups.focus_timer import FocusTimer
+from cognitive_popups import theme
+from cognitive_popups.focus_timer import STOP_HINT, FocusTimer
 
 
 def timer_fixture():
@@ -72,13 +73,17 @@ def test_constructor_preserves_goal_and_passive_transparent_window(monkeypatch):
     assert actual.goal == goal
     assert not any(name == "foreign" for name, _ in calls)
     assert not any(name == "connect" and args[0] == "draw" for name, args in calls)
-    assert len(created_labels) == 2
+    assert len(created_labels) == 3
     assert actual.goal_label is created_labels[1]
+    # How to stop is always written under the clock (note 126).
+    assert actual.hint_label is created_labels[2]
+    assert ("set_text", (STOP_HINT,)) in calls
+    assert "Alt+I" in STOP_HINT
     assert ("set_text", (goal,)) in calls
-    assert calls.count(("set_single_line_mode", (True,))) == 2
-    assert calls.count(("set_use_markup", (False,))) == 2
-    assert calls.count(("set_ellipsize", ("end",))) == 2
-    assert calls.count(("set_max_width_chars", (1,))) == 2
+    assert calls.count(("set_single_line_mode", (True,))) == 3
+    assert calls.count(("set_use_markup", (False,))) == 3
+    assert calls.count(("set_ellipsize", ("end",))) == 3
+    assert calls.count(("set_max_width_chars", (1,))) == 3
     assert ("set_accept_focus", (False,)) in calls
     assert ("set_focus_on_map", (False,)) in calls
     assert ("set_keep_above", (True,)) in calls
@@ -177,19 +182,19 @@ def test_position_without_display_or_monitors_is_safe():
         FocusTimer._place(timer)
 
 
-def test_svg_grayscale_rounded_surface_track_and_gentle_salience():
+def test_svg_theme_surface_track_and_gentle_salience():
     early = ElementTree.fromstring(FocusTimer._background_svg(200, 132, 800, 900))
     late = ElementTree.fromstring(FocusTimer._background_svg(200, 132, 10, 900))
     assert early.attrib["viewBox"] == "0 0 200 132"
     assert early[0].attrib["rx"] == "24"
+    assert early[0].attrib["fill"] == theme.DARK["paper"]
     assert early[0].attrib["fill-opacity"] == "0.94"
-    assert early[1].attrib["stroke"] == "#3b3b3b"
+    assert early[1].attrib["stroke"] == theme.DARK["line"]
     assert float(early[2].attrib["stroke-width"]) < float(late[2].attrib["stroke-width"]) <= 2.5
     assert int(early[2].attrib["stroke"][1:3], 16) < int(late[2].attrib["stroke"][1:3], 16) < 230
     for svg in (early, late):
-        for node in svg:
-            color = node.attrib.get("stroke", node.attrib.get("fill"))
-            assert color[1:3] == color[3:5] == color[5:7]
+        ring = svg[2].attrib["stroke"]
+        assert ring[1:3] == ring[3:5] == ring[5:7]  # a neutral ring, no hue
         assert not any("animate" in node.tag or "text" in node.tag for node in svg)
     expired = ElementTree.fromstring(FocusTimer._background_svg(200, 132, 0, 900, True))
     assert len(expired) == 2  # Only the surface and track remain.
@@ -253,3 +258,22 @@ def test_tick_refreshes_only_while_mapped():
     timer.expired = True
     assert timer._tick() is False
     assert events == ["refresh"]
+
+
+def test_light_page_gets_the_light_plate_and_a_darker_ring():
+    dark = ElementTree.fromstring(FocusTimer._background_svg(200, 148, 10, 900))
+    light = ElementTree.fromstring(FocusTimer._background_svg(200, 148, 10, 900, tone="light"))
+    assert light[0].attrib["fill"] == theme.LIGHT["paper"]
+    assert light[1].attrib["stroke"] == theme.LIGHT["line"]
+    assert int(light[2].attrib["stroke"][1:3], 16) < int(dark[2].attrib["stroke"][1:3], 16)
+    sand = FocusTimer._sand_svg(200, 148, 10, 900, tone="light")
+    assert theme.LIGHT["accent"] in sand and theme.DARK["accent"] not in sand
+
+
+def test_timer_text_reads_on_its_plate_in_both_tones():
+    for tone in ("dark", "light"):
+        colours = theme.palette(tone)
+        for token in ("ink", "ink_muted", "accent"):
+            assert theme.contrast(colours[token], colours["paper"]) >= 4.5
+    css = FocusTimer._label_css(theme.SMALL, theme.DARK["ink_muted"]).decode()
+    assert "Noto Sans" in css and f"{theme.SMALL}px" in css

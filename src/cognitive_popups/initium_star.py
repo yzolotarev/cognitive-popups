@@ -7,7 +7,8 @@ import math
 import threading
 import time
 
-from .initium import Birth, BIRTH_SECONDS, progress, smooth
+from . import motion, theme
+from .initium import Birth, BIRTH_SECONDS, birth_plays, progress, smooth
 from .sand_canvas import connect_draw, rgb
 
 
@@ -18,13 +19,12 @@ class InitiumStar:
         import gi
         gi.require_version('Gtk','3.0')
         from gi.repository import Gtk,Gdk,GLib,Pango
-        from .sand_fx import reduced_motion
         self.Gtk,self.Gdk,self.GLib = Gtk,Gdk,GLib
         self.journey=journey
         self.identity=journey['identity']
         self.closed=False
-        self.reduced=reduced_motion(Gtk)
-        self.birthing=birth and not self.reduced
+        self.reduced=motion.reduced(Gtk)
+        self.birthing=birth_plays(birth,self.reduced)
         self.started=self.last=time.monotonic()
         self.pulse_at=-100.; self.hover=False; self.mouse=None
         self.new_at={}; self.thoughts=[]; self.frames=0; self.first_frame=None
@@ -61,7 +61,7 @@ class InitiumStar:
         self.area.set_size_request(self.width,self.height)
         self.window.move(a.x,a.y) if self.birthing else self.window.move(*self.home)
         self.layout=self.area.create_pango_layout(progress(journey))
-        self.layout.set_font_description(Pango.FontDescription('Sans 9'))
+        self.layout.set_font_description(Pango.FontDescription.from_string(theme.pango(theme.SMALL)))
         self.draw_handle=connect_draw(self.area,self.paint)
         self.window.connect('map',self._mapped)
         self.window.connect('delete-event',lambda *_: (self.close(),True)[1])
@@ -252,7 +252,7 @@ class InitiumStar:
         pulse=0 if self.reduced else max(0,1-(now-self.pulse_at)/.75)
         glow=1+.25*math.sin(pulse*math.pi)
         self.halo(p,x,y,74*scale,tint,.65*glow)
-        self.halo(p,x,y,22*scale,rgb('#fff9ec'),.8*glow)
+        self.halo(p,x,y,22*scale,rgb(theme.DARK['ink']),.8*glow)
         c,cr=p.c,p.cr
         for k in range(self.identity['rays']):
             angle=self.identity['rotation']+k*math.tau/self.identity['rays']
@@ -272,7 +272,7 @@ class InitiumStar:
             for grain in self.model.particles:
                 alpha=(.25 if t<grain['delay'] else .55)*fade
                 buckets[min(7,int(alpha*8))].append((grain['x'],grain['y'],grain['size']))
-            p.grains(buckets,rgb('#e2d2b0'),8)
+            p.grains(buckets,rgb(theme.DARK['ink']),8)
         target=self.journey['target_steps'] or 0
         for i in range(target):
             ang=math.pi*.55+i*math.pi*1.1/max(1,target-1)
@@ -290,8 +290,9 @@ class InitiumStar:
             c.cairo_arc(cr,px,py,1.2,0,math.tau); c.cairo_fill(cr)
         if not self.birthing:
             w,h=self.layout.get_pixel_size()
-            p.plate(62-w/2-5,87,w+10,h+6,5,rgb('#16151c'),.65)
-            p.text(self.layout,62-w/2,90,rgb('#e2d2b0'),.8)
+            # Opaque enough to hold ink at full contrast over any page.
+            p.plate(62-w/2-5,87,w+10,h+6,5,rgb(theme.DARK['paper']),.85)
+            p.text(self.layout,62-w/2,90,rgb(theme.DARK['ink']),1)
 
     def close(self):
         if self.closed: return

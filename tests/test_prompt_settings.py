@@ -83,3 +83,19 @@ def test_defaults_are_read_from_the_prompt_source(tmp_path):
 
     source.write_text('QUESTION_SYSTEM = "вопрос"\n', encoding="utf-8")
     assert built_in_defaults(source) == {"feynman_question": "вопрос"}
+
+
+def test_an_override_saved_against_an_older_built_in_is_stale(tmp_path):
+    # 19.09: four_words was saved; 09.10 the built-in was rewritten; every request
+    # after that still went out with the old text.
+    import json
+    from cognitive_popups.prompt_settings import PromptSettings
+    path = tmp_path / "prompts.json"
+    path.write_text(json.dumps({"four_words": "старый промпт"}, ensure_ascii=False), encoding="utf-8")
+    settings = PromptSettings(path)
+    assert settings.stale_keys() == ["four_words"]
+    assert settings.get("four_words") == settings.default("four_words")
+    assert settings.saved("four_words") == "старый промпт" and not settings.is_custom("four_words")
+    settings.set("four_words", "старый промпт")      # re-saved on purpose: applied
+    assert PromptSettings(path).get("four_words") == "старый промпт"
+    assert PromptSettings(path).stale_keys() == []

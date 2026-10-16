@@ -1,23 +1,25 @@
 [Unit]
 Description=Cognitive Popups desktop layer
-Requires=gemini-web2api.service
+# The model bridge is wanted, not required: without it notes, steps and the
+# buffer still work, and a renamed or missing bridge unit must not stop them.
+Wants=gemini-web2api.service
 After=graphical-session.target gemini-web2api.service
+PartOf=graphical-session.target
 
 [Service]
 Type=simple
 # Rendered by scripts/install-user.sh; rerun it after moving the checkout.
 WorkingDirectory=@COGNITIVE_PROJECT@
-Environment="PYTHONPATH=@COGNITIVE_PROJECT@/src"
 Environment="COGNITIVE_PROJECT=@COGNITIVE_PROJECT@"
-# Everything the app writes (databases, prompts, pid) lives in the checkout.
-Environment="COGNITIVE_STATE_DIR=@COGNITIVE_PROJECT@/var"
+# Everything the app writes (databases, prompts, pid) lives in the XDG state
+# directory (%S = ~/.local/state), never in the checkout.
+Environment="COGNITIVE_STATE_DIR=%S/cognitive-popups"
 Environment=GDK_BACKEND=x11
-Environment=DISPLAY=:0
-Environment=WAYLAND_DISPLAY=wayland-1
 Environment=XDG_RUNTIME_DIR=%t
-ExecStart=/usr/bin/python3 -m cognitive_popups
+# The wrapper sets PYTHONPATH and falls back for DISPLAY / WAYLAND_DISPLAY.
+ExecStart="@COGNITIVE_PROJECT@/scripts/cognitive-service.sh" -m cognitive_popups
 Restart=on-failure
 RestartSec=3
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target default.target

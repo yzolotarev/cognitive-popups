@@ -11,3 +11,6 @@ graphify-out/
 # local credentials never belong in this repository
 .config/cognitive-tools.env
 cookie.json*
+
+# user state from older installs (now in ~/.local/state/cognitive-popups)
+var/

@@ -1,5 +1,6 @@
 [Unit]
 Description=Cognitive Popups: grow the reader's universe every 5 minutes, only in free attention
+# Off by default: systemctl --user enable --now cognitive-universe.timer
 
 [Timer]
 OnBootSec=3min

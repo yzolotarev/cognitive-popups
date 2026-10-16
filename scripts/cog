@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# One entry point for the terminal, with the same state directory as the service.
+#
+#   cog doctor [--json]           self-check: Python/GTK, clipboard, service, binds, model, DBs
+#   cog maintain [--dry-run]      telemetry retention, old backups, VACUUM
+#   cog stats [--days N|--all]    overview: your misses, repeated stumbles, returns
+#   cog notes [--repeats|...]     your error notes
+#   cog tail [N]                  last N interaction events
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
+PROJECT="${COGNITIVE_PROJECT:-$(cd -- "$SCRIPT_DIR/.." && pwd)}"
+export PYTHONPATH="$PROJECT/src${PYTHONPATH:+:$PYTHONPATH}"
+export COGNITIVE_PROJECT="$PROJECT"
+export COGNITIVE_STATE_DIR="${COGNITIVE_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/cognitive-popups}"
+
+COMMAND="${1:-}"
+[[ $# -gt 0 ]] && shift
+case "$COMMAND" in
+  doctor)   exec python3 -m cognitive_popups.doctor "$@" ;;
+  maintain) exec python3 -m cognitive_popups.maintain "$@" ;;
+  stats)    exec python3 -m cognitive_popups.overview "$@" ;;
+  notes)    exec python3 -m cognitive_popups.notes "$@" ;;
+  tail)     exec python3 -m cognitive_popups.event_log --tail "${1:-40}" ;;
+  *)
+    echo "usage: cog {doctor|maintain|stats|notes|tail} [options]" >&2
+    echo "state: $COGNITIVE_STATE_DIR" >&2
+    exit 2 ;;
+esac

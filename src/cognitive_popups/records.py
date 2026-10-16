@@ -215,7 +215,7 @@ CREATE TABLE IF NOT EXISTS study_goal_periods (
 );
 CREATE TABLE IF NOT EXISTS returns (
     prediction_id TEXT PRIMARY KEY,
-    due_epoch     REAL NOT NULL,
+    due_epoch     REAL,
     step          INTEGER NOT NULL DEFAULT 0,
     shown_epoch   REAL,
     answer        TEXT,

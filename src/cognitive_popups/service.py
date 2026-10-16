@@ -53,8 +53,13 @@ def observed_operation(kind):
                 arguments = dict(signature(method).bind(self, *args, **kwargs).arguments)
                 arguments.pop("self")
                 source = observation.record_artifact(kind + "_input", {
-                    "arguments": arguments, "buffer": self.session.to_dict(),
-                    "buffer_context": self.session.buffer_context(),
+                    # Ids and hashes only: the text is already in the ledger, and
+                    # copying the whole buffer into every input grew records fast.
+                    "arguments": arguments, "buffer": {
+                        "session_id": self.session.id,
+                        "fragments": [{"id": f.id, "source_hash": getattr(f, "source_hash", None)}
+                                      for f in self.session.fragments],
+                    },
                 })
                 store = getattr(self.client, "observation_store", None)
                 requests = store.request_ids_for_operation if store is not None else observation.request_ids_for_operation
@@ -467,7 +472,7 @@ class CognitiveService:
             raise ValueError("source text must not be empty")
         system_prompt, language = self._language_prompt("four_words", text)
         if perspective:
-            system_prompt += "\\n\\nРАКУРС ЭТОГО ПРОХОДА: " + perspective + ". Выбери четыре опоры именно с этого ракурса, не повторяя набор предыдущего прохода, если текст позволяет."
+            system_prompt += "\n\nРАКУРС ЭТОГО ПРОХОДА: " + perspective + ". Выбери четыре опоры именно с этого ракурса, не повторяя набор предыдущего прохода, если текст позволяет."
         model = self._model_name()
         cache_key = self._cue_cache_key(source_text, system_prompt, language)
         problems: list[str] = []
@@ -1165,10 +1170,12 @@ class CognitiveService:
         stopped rather than with the returning press: a session closed only when
         the reader comes back would look hours longer than it was.
 
-        `now` (monotonic seconds) and `at_utc` are injectable for tests, the same
-        way the ledger lets a caller pass `created_utc`.
+        `now` (wall-clock seconds) and `at_utc` are injectable for tests, the same
+        way the ledger lets a caller pass `created_utc`. Wall clock, because a
+        monotonic clock stands still while the laptop sleeps and a night's
+        suspend then never counted as a pause.
         """
-        moment = time.monotonic() if now is None else now
+        moment = time.time() if now is None else now
         stamp = at_utc or now_iso()
         retired: SessionSplit | None = None
         if self._last_activity is not None and moment - self._last_activity > IDLE_SESSION_SECONDS:

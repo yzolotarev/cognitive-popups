@@ -21,15 +21,37 @@ PRIORITY_MANUAL = "foreground"
 PRIORITY_BACKGROUND = "background"
 
 
+#: The one model configuration. Every entry point builds its client through
+#: `client_from_env`, so changing the model is one variable, not four files.
+DEFAULT_URL = "http://127.0.0.1:8081/v1/chat/completions"
+DEFAULT_MODEL = "gemini-flash-lite"
+DEFAULT_TIMEOUT = 60.0
+ENV_URL = "COGNITIVE_API_URL"
+ENV_MODEL = "COGNITIVE_MODEL"
+ENV_KEY = "COGNITIVE_API_KEY"
+ENV_TIMEOUT = "COGNITIVE_TIMEOUT"
+
+
 class Web2APIError(RuntimeError):
-    pass
+    """A failed model call. `kind` says which way it failed (see `errors.py`):
+    transport, timeout, model_not_found, http, empty, invalid, json or None."""
+
+    def __init__(self, message: str = "", *, kind: str | None = None, http_status: int | None = None,
+                 url: str = "", model: str = ""):
+        super().__init__(message)
+        self.kind = kind
+        self.http_status = http_status
+        self.url = url
+        self.model = model
 
 
 class GeminiWeb2API:
-    def __init__(self, url: str = "http://127.0.0.1:8081/v1/chat/completions", model: str = "gemini-flash-lite", timeout: float = 60.0, *, observation_store: ObservationStore | None = None):
+    def __init__(self, url: str = DEFAULT_URL, model: str = DEFAULT_MODEL, timeout: float = DEFAULT_TIMEOUT, *,
+                 api_key: str = "", observation_store: ObservationStore | None = None):
         self.url = url
         self.model = model
         self.timeout = timeout
+        self.api_key = api_key
         self._metrics = threading.local()
         self.observation_store = observation_store if observation_store is not None else ObservationStore()
 
@@ -52,9 +74,13 @@ class GeminiWeb2API:
                 data = json.loads(response.read().decode("utf-8"))
         except Exception as exc:
             elapsed = int((time.monotonic() - started) * 1000)
-            raise Web2APIError(f"bridge health-check failed ({elapsed}ms, {url}): {exc}") from exc
+            kind = "timeout" if isinstance(exc, TimeoutError) or isinstance(
+                getattr(exc, "reason", None), TimeoutError) else "transport"
+            raise Web2APIError(f"bridge health-check failed ({elapsed}ms, {url}): {exc}", kind=kind,
+                               url=self.url, model=self.model) from exc
         if not isinstance(data, dict) or data.get("status") != "ok":
-            raise Web2APIError(f"bridge health-check returned invalid status: {data!r}")
+            raise Web2APIError(f"bridge health-check returned invalid status: {data!r}", kind="invalid",
+                               url=self.url, model=self.model)
         data["latency_ms"] = int((time.monotonic() - started) * 1000)
         return data
 
@@ -84,8 +110,10 @@ class GeminiWeb2API:
         queued_at = time.monotonic()
         network_at = network_end = None
         try:
-            req = request.Request(self.url, data=payload,
-                headers={"Content-Type": "application/json", "X-Request-ID": request_id}, method="POST")
+            headers = {"Content-Type": "application/json", "X-Request-ID": request_id}
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            req = request.Request(self.url, data=payload, headers=headers, method="POST")
             # One request of ours reaches the bridge at a time, and a request the
             # reader made goes before background work that has not started yet
             # (see request_gate). An in-flight background call is not interrupted:
@@ -126,10 +154,11 @@ class GeminiWeb2API:
                     raise ValueError("content must be a string")
                 content = candidate
             except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
-                raise Web2APIError("invalid chat completion response") from exc
+                raise Web2APIError("invalid chat completion response", kind="invalid",
+                                   url=self.url, model=self.model) from exc
             if not content.strip():
                 status = "empty_response"
-                raise Web2APIError("empty model response")
+                raise Web2APIError("empty model response", kind="empty", url=self.url, model=self.model)
             status = "ok"
             return content.strip()
         except BaseException as exc:
@@ -139,9 +168,15 @@ class GeminiWeb2API:
                 raise
             if isinstance(exc, Web2APIError):
                 raise
+            if status == "bridge_error" and http_status is not None and 400 <= http_status < 500:
+                raise Web2APIError(model_not_found_text(self.model, self.url, http_status, raw),
+                                   kind="model_not_found", http_status=http_status,
+                                   url=self.url, model=self.model) from exc
             reason = timeout_reason if status == "timeout" else (
                 "cannot reach the bridge" if status == "transport_error" else "bridge call failed")
-            raise Web2APIError(f"{reason} ({time.monotonic() - started[2]:.0f}s, {self.url}): {exc}") from exc
+            kind = {"timeout": "timeout", "transport_error": "transport", "bridge_error": "http"}.get(status)
+            raise Web2APIError(f"{reason} ({time.monotonic() - started[2]:.0f}s, {self.url}): {exc}",
+                               kind=kind, http_status=http_status, url=self.url, model=self.model) from exc
         finally:
             finished = timestamp()
             store.finish_request(request_id, status, raw_response=raw, response_text=content,
@@ -152,6 +187,39 @@ class GeminiWeb2API:
                 "network_ms": round((network_end - network_at) * 1000, 1) if network_end is not None else None,
                 "observation_failures": failure_counts()}
             store.record_annotation("request_timing", self.last_metrics)
+
+
+def model_not_found_text(model: str, url: str, http_status: int, body: bytes | None = None) -> str:
+    """The 4xx message: which model, where, and the one variable to change."""
+    detail = ""
+    if body:
+        try:
+            detail = " ".join(body.decode("utf-8", "replace").split())[:160]
+        except Exception:  # noqa: BLE001 - the body is a courtesy, not required
+            detail = ""
+    tail = f" Ответ: {detail}" if detail else ""
+    return (f"модель «{model}» не найдена на {url} (HTTP {http_status}) — "
+            f"поменяй {ENV_MODEL} (или {ENV_URL}) в окружении сервиса.{tail}")
+
+
+def client_from_env(**overrides: Any) -> GeminiWeb2API:
+    """The client every entry point uses: COGNITIVE_API_URL, COGNITIVE_MODEL,
+    COGNITIVE_API_KEY (sent as `Authorization: Bearer`), COGNITIVE_TIMEOUT.
+
+    Keyword overrides win over the environment (a test or a CLI flag).
+    """
+    try:
+        timeout = float(os.environ.get(ENV_TIMEOUT) or DEFAULT_TIMEOUT)
+    except ValueError:
+        timeout = DEFAULT_TIMEOUT
+    settings: dict[str, Any] = {
+        "url": os.environ.get(ENV_URL) or DEFAULT_URL,
+        "model": os.environ.get(ENV_MODEL) or DEFAULT_MODEL,
+        "timeout": timeout,
+        "api_key": os.environ.get(ENV_KEY, ""),
+    }
+    settings.update({key: value for key, value in overrides.items() if value is not None})
+    return GeminiWeb2API(**settings)
 
 
 #: Every escape the JSON format itself defines. A backslash followed by anything
@@ -213,11 +281,11 @@ def _decode_object(candidate: str) -> Any:
         return json.loads(candidate)
     except json.JSONDecodeError as exc:
         if "escape" not in exc.msg:
-            raise Web2APIError("model returned malformed JSON") from exc
+            raise Web2APIError("model returned malformed JSON", kind="json") from exc
         try:
             return json.loads(_escape_invalid_backslashes(candidate))
         except json.JSONDecodeError as retry_exc:
-            raise Web2APIError("model returned malformed JSON") from retry_exc
+            raise Web2APIError("model returned malformed JSON", kind="json") from retry_exc
 
 
 def parse_json_object(raw: str) -> dict[str, Any]:
@@ -229,8 +297,8 @@ def parse_json_object(raw: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if not match:
-            raise Web2APIError("model did not return a JSON object") from None
+            raise Web2APIError("model did not return a JSON object", kind="json") from None
         value = _decode_object(match.group(0))
     if not isinstance(value, dict):
-        raise Web2APIError("model JSON result is not an object")
+        raise Web2APIError("model JSON result is not an object", kind="json")
     return value

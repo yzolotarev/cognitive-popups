@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .client import PRIORITY_BACKGROUND, PRIORITY_MANUAL, GeminiWeb2API, Web2APIError, parse_json_object
+from .client import client_from_env as _client_from_env
 
 import re as _re
 
@@ -544,11 +545,9 @@ class Universe:
 
 
 def client_from_env() -> GeminiWeb2API:
-    return GeminiWeb2API(
-        url=os.environ.get("COGNITIVE_API_URL", "http://127.0.0.1:8081/v1/chat/completions"),
-        model=os.environ.get("COGNITIVE_MODEL", "gemini-flash-lite"),
-        timeout=120.0,
-    )
+    """The shared model config; background naming may wait longer than a window."""
+    timeout = 120.0 if not os.environ.get("COGNITIVE_TIMEOUT") else None
+    return _client_from_env(timeout=timeout)
 
 
 def main(argv: list[str] | None = None) -> int:

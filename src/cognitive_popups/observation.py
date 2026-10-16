@@ -166,6 +166,24 @@ CREATE TABLE IF NOT EXISTS obs_presentations (
 """
 
 
+_source_hashes: dict[str, str] | None = None
+
+
+def source_hashes() -> dict[str, str]:
+    """Hashes of the installed Python sources, computed once per process.
+
+    Hashing every file on every request cost a directory scan per call and,
+    while editing, a new obs_configs row per save. The running code is what
+    was imported, so the first hash is the honest one anyway. Never scans the
+    environment or secrets.
+    """
+    global _source_hashes
+    if _source_hashes is None:
+        _source_hashes = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                          for p in sorted(Path(__file__).parent.glob("*.py"))}
+    return _source_hashes
+
+
 class ObservationStore:
     def __init__(self, path=None, *, enabled=True):
         self._path = Path(path).expanduser() if path is not None else None
@@ -224,9 +242,7 @@ class ObservationStore:
             return None
         try:
             stamp = started or timestamp()
-            # Hash actual installed Python sources; never scan environment/secrets.
-            sources = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
-                       for p in sorted(Path(__file__).parent.glob("*.py"))}
+            sources = source_hashes()
             config = {"sources": sources, "parameters": parameters,
                       "system_messages": [m for m in messages if m.get("role") in ("system", "developer")]}
             config_id = digest(config)

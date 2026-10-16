@@ -139,3 +139,12 @@ def test_looks_like_node_words():
     assert records.looks_like_node_words("one two three four · b") == []
     assert records.looks_like_node_words("a ·  · b") == []
     assert json.dumps(records.looks_like_node_words("x · y"))
+
+
+def test_notes_never_lower_their_schema(tmp_path):
+    from cognitive_popups import notes
+    path = tmp_path / "notes.sqlite3"
+    with sqlite3.connect(path) as conn:
+        conn.execute(f"PRAGMA user_version={notes.SCHEMA_VERSION + 5}")
+    notes.NoteStore(path).add("слово", anchor="a")
+    assert _version(path) == notes.SCHEMA_VERSION + 5

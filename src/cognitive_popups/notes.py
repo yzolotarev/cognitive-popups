@@ -117,7 +117,9 @@ class NoteStore:
             conn.execute("PRAGMA synchronous=NORMAL")
             if not self._schema_ready:
                 conn.executescript(_SCHEMA)
-                conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                # Never lower it: a newer checkout's file keeps its version.
+                current = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+                conn.execute(f"PRAGMA user_version={max(current, SCHEMA_VERSION)}")
                 # Self-migrate: session_id arrived after the ledger landed, so a
                 # database created earlier lacks the column until this runs.
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(error_notes)")}

@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """Run the test suite without pytest.
 
-The suite is plain functions with asserts and no pytest features, so this runner
-is enough where pytest is not installed. `python3 -m pytest` works just as well
-when it is; a test that needs a fixture is skipped here rather than failed.
+The test files import pytest, so this runner installs `pytest_stub.py` in its
+place: the slice of pytest the suite uses (fixtures, parametrize, raises,
+approx, skip, fail, tmp_path, monkeypatch, capsys). `python3 -m pytest` runs
+the same suite when pytest is installed.
 
     python3 scripts/run-tests.py            # everything
     python3 scripts/run-tests.py test_notes # one module
 """
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import inspect
+import itertools
 import os
 import pathlib
 import sys
@@ -21,22 +24,14 @@ import traceback
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 TESTS = ROOT / "tests"
 
-# The only fixtures the suite uses. Anything else is skipped rather than failed,
-# so an unmet fixture is visible instead of silently passing.
-FIXTURES = ("tmp_path",)
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import pytest_stub  # noqa: E402
+
+BUILTINS = ("tmp_path", "monkeypatch", "capsys")
 
 
-def build_kwargs(function) -> dict | None:
-    kwargs: dict[str, object] = {}
-    for name in inspect.signature(function).parameters:
-        if name not in FIXTURES:
-            return None
-        kwargs[name] = pathlib.Path(tempfile.mkdtemp())
-    return kwargs
-
-
-def load(path: pathlib.Path):
-    spec = importlib.util.spec_from_file_location(path.stem, path)
+def load(path: pathlib.Path, name: str | None = None):
+    spec = importlib.util.spec_from_file_location(name or path.stem, path)
     if spec is None or spec.loader is None:  # pragma: no cover - defensive
         raise SystemExit(f"cannot load {path}")
     module = importlib.util.module_from_spec(spec)
@@ -44,39 +39,94 @@ def load(path: pathlib.Path):
     return module
 
 
+def fixtures_of(module) -> dict:
+    return {name: value for name, value in vars(module).items() if hasattr(value, "_fixture")}
+
+
+def cases(function):
+    """One keyword set per parametrize combination; a single empty set if none."""
+    groups = getattr(function, "_parametrize", [])
+    for combination in itertools.product(*groups):
+        params: dict = {}
+        for row in combination:
+            params.update(row)
+        label = "-".join(repr(value)[:30] for value in params.values())
+        yield (f"[{label}]" if params else ""), params
+
+
+def run_one(function, params: dict, fixtures: dict) -> None:
+    """Resolve fixtures the way pytest does for function scope, run, tear down."""
+    values: dict = dict(params)
+    stack = contextlib.ExitStack()
+
+    def resolve(name: str):
+        if name in values:
+            return values[name]
+        if name == "tmp_path":
+            values[name] = pathlib.Path(tempfile.mkdtemp())
+        elif name == "monkeypatch":
+            patch = pytest_stub.MonkeyPatch()
+            stack.callback(patch.undo)
+            values[name] = patch
+        elif name == "capsys":
+            capture = pytest_stub.CaptureFixture()
+            stack.callback(capture.close)
+            values[name] = capture
+        elif name in fixtures:
+            factory = fixtures[name]
+            result = factory(**{arg: resolve(arg) for arg in inspect.signature(factory).parameters})
+            if inspect.isgenerator(result):
+                stack.callback(next, result, None)
+                result = next(result)
+            values[name] = result
+        else:
+            raise LookupError(f"fixture {name!r} not found")
+        return values[name]
+
+    with stack:
+        for name, factory in fixtures.items():
+            if factory._fixture.autouse:
+                resolve(name)
+        function(**{name: resolve(name) for name in inspect.signature(function).parameters})
+
+
 def main(argv: list[str]) -> int:
+    sys.modules["pytest"] = pytest_stub
     sys.path.insert(0, str(ROOT / "src"))
     sys.path.insert(0, str(TESTS))
+    shared = fixtures_of(load(TESTS / "conftest.py", "conftest"))
     selected = set(argv) or None
     failures: list[str] = []
-    ran = 0
+    passed = skipped = 0
     for path in sorted(TESTS.glob("test_*.py")):
         if selected and path.stem not in selected:
             continue
         module = load(path)
+        fixtures = {**shared, **fixtures_of(module)}
         for name in sorted(vars(module)):
-            if not name.startswith("test_") or not callable(getattr(module, name)):
-                continue
             function = getattr(module, name)
-            kwargs = build_kwargs(function)
-            if kwargs is None:
-                print(f"SKIP {path.stem}.{name} (needs a fixture: run under pytest)")
+            if not name.startswith("test_") or not callable(function) or hasattr(function, "_fixture"):
                 continue
-            saved = dict(os.environ)
-            ran += 1
-            try:
-                function(**kwargs)
-                print(f"PASS {path.stem}.{name}")
-            except Exception:
-                failures.append(f"{path.stem}.{name}")
-                print(f"FAIL {path.stem}.{name}")
-                traceback.print_exc()
-            finally:
-                os.environ.clear()
-                os.environ.update(saved)
-    summary = f"{ran - len(failures)}/{ran} passed"
+            for label, params in cases(function):
+                test = f"{path.stem}.{name}{label}"
+                saved = dict(os.environ)
+                try:
+                    run_one(function, params, fixtures)
+                    passed += 1
+                    print(f"PASS {test}")
+                except pytest_stub.Skipped as reason:
+                    skipped += 1
+                    print(f"SKIP {test} ({reason})")
+                except (Exception, pytest_stub.Failed):
+                    failures.append(test)
+                    print(f"FAIL {test}")
+                    traceback.print_exc()
+                finally:
+                    os.environ.clear()
+                    os.environ.update(saved)
+    summary = f"{passed} passed, {skipped} skipped, {len(failures)} failed"
     if failures:
-        summary += f", failures: {', '.join(failures)}"
+        summary += f": {', '.join(failures)}"
     print()
     print(summary)
     return 1 if failures else 0

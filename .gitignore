@@ -1,13 +1,1 @@
-secrets/
-.restore-backup/
-*.gguf
-
-# generated files and local caches
-__pycache__/
-*.py[cod]
-.pytest_cache/
-graphify-out/
-
-# local credentials never belong in this repository
-.config/cognitive-tools.env
-cookie.json*
+/target/

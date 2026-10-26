@@ -1,0 +1,37 @@
+export component ProbeWindow inherits Window {
+    in-out property <string> body: "Проверка: наценка ≠ маржа";
+    width: 420px;
+    height: 150px;
+    title: "slint-probe";
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+
+    Rectangle {
+        border-radius: 14px;
+        background: #17171ee8;
+        border-width: 1px;
+        border-color: #ffffff22;
+        drop-shadow-blur: 18px;
+        drop-shadow-color: #00000055;
+        drop-shadow-offset-y: 6px;
+
+        VerticalLayout {
+            padding: 18px;
+            spacing: 6px;
+            Text {
+                text: "Slint probe";
+                color: #9aa0b4;
+                font-size: 11px;
+                letter-spacing: 1px;
+            }
+            Text {
+                text: root.body;
+                color: #f2f2f7;
+                font-size: 17px;
+                wrap: word-wrap;
+                vertical-stretch: 1;
+            }
+        }
+    }
+}

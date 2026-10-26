@@ -1,0 +1,3 @@
+# Пробы не входят в workspace и CI.
+target/
+Cargo.lock

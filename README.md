@@ -5,9 +5,10 @@ you work in a browser, a PDF, an editor or an external trainer. The product cont
 the [versioned specification](docs/spec/cognitive_exoskeleton_v0_2_full_spec.md);
 decisions in it are not replaced by this README.
 
-Current state: **P0, requirements baseline**. The repository contains a buildable Rust
-scaffold and the traceability artefacts, not a working desktop application. No GUI
-framework has been selected. Legacy Python code remains in Git history.
+Current state: **P2 in progress**. P0 delivered the versioned specification and the
+traceability baseline; the first P2 slice provides the typed event journal with
+provenance and idempotent writes. There is still no working desktop application and no
+GUI framework has been selected. Legacy Python code remains in Git history.
 
 ## Requirements baseline (P0)
 

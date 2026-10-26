@@ -1,8 +1,27 @@
 # Cognitive Exoskeleton
 
-New Rust implementation for Windows and Linux. This repository currently contains
-only a buildable command-line scaffold, not a working desktop application.
-No GUI framework has been selected. Legacy Python code remains in Git history.
+Cross-platform desktop application for supporting your own thinking and learning while
+you work in a browser, a PDF, an editor or an external trainer. The product contract is
+the [versioned specification](docs/spec/cognitive_exoskeleton_v0_2_full_spec.md);
+decisions in it are not replaced by this README.
+
+Current state: **P0, requirements baseline**. The repository contains a buildable Rust
+scaffold and the traceability artefacts, not a working desktop application. No GUI
+framework has been selected. Legacy Python code remains in Git history.
+
+## Requirements baseline (P0)
+
+| Artefact | Purpose |
+|---|---|
+| [`docs/spec/…v0_2_full_spec.md`](docs/spec/cognitive_exoskeleton_v0_2_full_spec.md) | Product specification, version 0.2 (27.10.2026) |
+| [`docs/requirements/registry.md`](docs/requirements/registry.md) | Every requirement ID, status, stage, implementation and evidence |
+| [`docs/decisions/open-decisions.md`](docs/decisions/open-decisions.md) | OD-01…OD-13 cards: options, consequences, blocked requirements |
+| [`docs/requirements/legacy-inventory.md`](docs/requirements/legacy-inventory.md) | Evidence-based KEEP/CHANGE/DROP input for historical features |
+| [`docs/quality/acceptance-scenarios.md`](docs/quality/acceptance-scenarios.md) | End-to-end scenarios E2E-01…12 and evidence format |
+| [`docs/spikes/platform-matrix.md`](docs/spikes/platform-matrix.md) | Proposed supported environments, platform probes S1–S8 |
+
+`tests/traceability.rs` fails CI when a requirement ID from the specification is missing
+from the registry, appears twice, or changes status without the specification changing.
 
 ## Development
 
@@ -31,10 +50,10 @@ on Linux (`chmod +x cognitive-exoskeleton`).
 
 CI uses no LLM keys, personal data or repository secrets. Hosted runners do not
 validate desktop interactions, global hotkeys, selection capture, Wayland/X11
-compatibility or Windows permissions. Product invariant tests will be added with
-the corresponding implementations; the initial test only checks scaffold identity.
+compatibility or Windows permissions. Those rows close only through the protocol in
+`docs/spikes/platform-matrix.md`, not through a green CI run.
 
-Repository administrators should require these checks in a `main` branch rule:
+Repository administrators must require these checks in the `main` branch rule:
 
 - `Rust formatting`
 - `Build and test (Linux)`

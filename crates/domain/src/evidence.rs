@@ -27,7 +27,10 @@ pub enum EvidenceError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Criterion {
     /// Suitable only for exact-answer questions with a single known result.
-    ExactText { expected: String, case_sensitive: bool },
+    ExactText {
+        expected: String,
+        case_sensitive: bool,
+    },
     /// Strict decimal integer; parsing failures are incorrect submissions.
     Integer { expected: i64 },
 }
@@ -116,12 +119,24 @@ pub struct VerifiedReview {
 }
 
 impl VerifiedReview {
-    pub fn attempt_id(&self) -> &str { &self.attempt_id }
-    pub fn task_id(&self) -> &str { &self.task_id }
-    pub fn unit(&self) -> &UnitId { &self.unit }
-    pub fn criterion_version(&self) -> &str { &self.criterion_version }
-    pub fn graded_at(&self) -> OffsetDateTime { self.graded_at }
-    pub fn grade(&self) -> Grade { self.grade }
+    pub fn attempt_id(&self) -> &str {
+        &self.attempt_id
+    }
+    pub fn task_id(&self) -> &str {
+        &self.task_id
+    }
+    pub fn unit(&self) -> &UnitId {
+        &self.unit
+    }
+    pub fn criterion_version(&self) -> &str {
+        &self.criterion_version
+    }
+    pub fn graded_at(&self) -> OffsetDateTime {
+        self.graded_at
+    }
+    pub fn grade(&self) -> Grade {
+        self.grade
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,7 +147,10 @@ pub struct VerificationBatch {
 
 fn matches_criterion(answer: &str, criterion: &Criterion) -> bool {
     match criterion {
-        Criterion::ExactText { expected, case_sensitive } => {
+        Criterion::ExactText {
+            expected,
+            case_sensitive,
+        } => {
             if *case_sensitive {
                 answer.trim() == expected.trim()
             } else {
@@ -150,15 +168,25 @@ pub fn verify(
     definition: &TaskDefinition,
     attempt: &TaskAttempt,
 ) -> Result<VerificationBatch, EvidenceError> {
-    if definition.id.trim().is_empty() { return Err(EvidenceError::Empty("task ID")); }
-    if attempt.id.trim().is_empty() { return Err(EvidenceError::Empty("attempt ID")); }
-    if definition.id != attempt.task_id { return Err(EvidenceError::TaskMismatch); }
-    if definition.targets.is_empty() { return Err(EvidenceError::NoTargets); }
+    if definition.id.trim().is_empty() {
+        return Err(EvidenceError::Empty("task ID"));
+    }
+    if attempt.id.trim().is_empty() {
+        return Err(EvidenceError::Empty("attempt ID"));
+    }
+    if definition.id != attempt.task_id {
+        return Err(EvidenceError::TaskMismatch);
+    }
+    if definition.targets.is_empty() {
+        return Err(EvidenceError::NoTargets);
+    }
 
     let mut target_ids = HashSet::new();
     for target in &definition.targets {
         if !target_ids.insert(target.unit.as_str()) {
-            return Err(EvidenceError::DuplicateTarget(target.unit.as_str().to_owned()));
+            return Err(EvidenceError::DuplicateTarget(
+                target.unit.as_str().to_owned(),
+            ));
         }
         if target.criterion_version.trim().is_empty() {
             return Err(EvidenceError::Empty("criterion version"));
@@ -186,18 +214,25 @@ pub fn verify(
     for target in &definition.targets {
         let submission = by_unit.get(target.unit.as_str()).copied();
         let status = match submission {
-            None | Some(ComponentSubmission { answer: Answer::NotAttempted, .. }) => {
-                ComponentStatus::NotAttempted
-            }
-            Some(ComponentSubmission { answer: Answer::Blocked, .. }) => ComponentStatus::Blocked,
-            Some(ComponentSubmission { answer: Answer::Submitted(text), assisted }) => {
-                match (matches_criterion(text, &target.criterion), *assisted) {
-                    (true, true) => ComponentStatus::AssistedCorrect,
-                    (false, true) => ComponentStatus::AssistedIncorrect,
-                    (true, false) => ComponentStatus::Correct,
-                    (false, false) => ComponentStatus::Incorrect,
-                }
-            }
+            None
+            | Some(ComponentSubmission {
+                answer: Answer::NotAttempted,
+                ..
+            }) => ComponentStatus::NotAttempted,
+            Some(ComponentSubmission {
+                answer: Answer::Blocked,
+                ..
+            }) => ComponentStatus::Blocked,
+            Some(ComponentSubmission {
+                answer: Answer::Submitted(text),
+                assisted,
+                ..
+            }) => match (matches_criterion(text, &target.criterion), *assisted) {
+                (true, true) => ComponentStatus::AssistedCorrect,
+                (false, true) => ComponentStatus::AssistedIncorrect,
+                (true, false) => ComponentStatus::Correct,
+                (false, false) => ComponentStatus::Incorrect,
+            },
         };
         let grade = match status {
             ComponentStatus::Correct => Some(Grade::Good),
@@ -228,47 +263,83 @@ mod tests {
     use super::*;
     use time::macros::datetime;
 
-    fn unit(s: &str) -> UnitId { UnitId::new(s).unwrap() }
+    fn unit(s: &str) -> UnitId {
+        UnitId::new(s).unwrap()
+    }
     fn definition() -> TaskDefinition {
         TaskDefinition {
             id: "t".into(),
             targets: vec![
-                TargetCriterion { unit: unit("base"), criterion_version: "v1".into(),
-                    criterion: Criterion::Integer { expected: 20 } },
-                TargetCriterion { unit: unit("margin"), criterion_version: "v1".into(),
-                    criterion: Criterion::ExactText { expected: "25%".into(), case_sensitive: false } },
+                TargetCriterion {
+                    unit: unit("base"),
+                    criterion_version: "v1".into(),
+                    criterion: Criterion::Integer { expected: 20 },
+                },
+                TargetCriterion {
+                    unit: unit("margin"),
+                    criterion_version: "v1".into(),
+                    criterion: Criterion::ExactText {
+                        expected: "25%".into(),
+                        case_sensitive: false,
+                    },
+                },
             ],
         }
     }
     fn attempt(components: Vec<ComponentSubmission>) -> TaskAttempt {
-        TaskAttempt { id: "attempt-1".into(), task_id: "t".into(),
-            answered_at: datetime!(2026-10-27 12:00 UTC), components }
+        TaskAttempt {
+            id: "attempt-1".into(),
+            task_id: "t".into(),
+            answered_at: datetime!(2026-10-27 12:00 UTC),
+            components,
+        }
     }
     fn submitted(name: &str, value: &str, assisted: bool) -> ComponentSubmission {
-        ComponentSubmission { unit: unit(name), answer: Answer::Submitted(value.into()), assisted }
+        ComponentSubmission {
+            unit: unit(name),
+            answer: Answer::Submitted(value.into()),
+            assisted,
+        }
     }
     #[test]
     fn partial_success_only_grades_attempted_component() {
-        let result = verify(&definition(), &attempt(vec![submitted("base", "20", false)])).unwrap();
+        let result = verify(
+            &definition(),
+            &attempt(vec![submitted("base", "20", false)]),
+        )
+        .unwrap();
         assert_eq!(result.reviews.len(), 1);
         assert_eq!(result.reviews[0].grade(), Grade::Good);
         assert_eq!(result.outcomes[1].status, ComponentStatus::NotAttempted);
     }
     #[test]
     fn independent_failure_only_grades_that_component_again() {
-        let result = verify(&definition(), &attempt(vec![
-            submitted("base", "21", false),
-            ComponentSubmission { unit: unit("margin"), answer: Answer::Blocked, assisted: false },
-        ])).unwrap();
+        let result = verify(
+            &definition(),
+            &attempt(vec![
+                submitted("base", "21", false),
+                ComponentSubmission {
+                    unit: unit("margin"),
+                    answer: Answer::Blocked,
+                    assisted: false,
+                },
+            ]),
+        )
+        .unwrap();
         assert_eq!(result.reviews.len(), 1);
         assert_eq!(result.reviews[0].grade(), Grade::Again);
         assert_eq!(result.outcomes[1].status, ComponentStatus::Blocked);
     }
     #[test]
     fn assisted_answers_create_no_review_even_if_correct() {
-        let result = verify(&definition(), &attempt(vec![
-            submitted("base", "20", true), submitted("margin", "wrong", true),
-        ])).unwrap();
+        let result = verify(
+            &definition(),
+            &attempt(vec![
+                submitted("base", "20", true),
+                submitted("margin", "wrong", true),
+            ]),
+        )
+        .unwrap();
         assert!(result.reviews.is_empty());
         assert_eq!(result.outcomes[0].status, ComponentStatus::AssistedCorrect);
     }
@@ -280,11 +351,20 @@ mod tests {
     #[test]
     fn unknown_targets_and_duplicates_are_rejected() {
         assert!(matches!(
-            verify(&definition(), &attempt(vec![submitted("unknown", "20", false)])),
+            verify(
+                &definition(),
+                &attempt(vec![submitted("unknown", "20", false)])
+            ),
             Err(EvidenceError::UnknownTarget(_))
         ));
         assert!(matches!(
-            verify(&definition(), &attempt(vec![submitted("base", "20", false), submitted("base", "20", false)])),
+            verify(
+                &definition(),
+                &attempt(vec![
+                    submitted("base", "20", false),
+                    submitted("base", "20", false)
+                ])
+            ),
             Err(EvidenceError::DuplicateSubmission(_))
         ));
     }
@@ -292,7 +372,11 @@ mod tests {
     fn model_feedback_is_not_an_input_type() {
         // A review is issued from a deterministic checked submission; neither
         // self-assessment nor an LLM's claimed verdict can be passed to verify.
-        let result = verify(&definition(), &attempt(vec![submitted("base", "not a number", false)])).unwrap();
+        let result = verify(
+            &definition(),
+            &attempt(vec![submitted("base", "not a number", false)]),
+        )
+        .unwrap();
         assert_eq!(result.reviews[0].grade(), Grade::Again);
     }
 }

@@ -25,6 +25,10 @@ Legacy Python code remains in Git history and is not imported into the new runti
 | [`docs/requirements/legacy-inventory.md`](docs/requirements/legacy-inventory.md) | Evidence-based KEEP/CHANGE/DROP input for historical features |
 | [`docs/quality/acceptance-scenarios.md`](docs/quality/acceptance-scenarios.md) | End-to-end scenarios E2E-01…12 and evidence format |
 | [`docs/spikes/platform-matrix.md`](docs/spikes/platform-matrix.md) | Proposed supported environments, platform probes S1–S8 |
+| [`docs/decisions/full-product-contract.md`](docs/decisions/full-product-contract.md) | The FULL PRODUCT SKILL adopted as the main contract, with its SHA-256 |
+| [`docs/decisions/mrt-protocol-v1.md`](docs/decisions/mrt-protocol-v1.md) | Approved MRT protocol v1: consent, limits, outcome window, reporting |
+| [`docs/decisions/rewrite-map.md`](docs/decisions/rewrite-map.md) | Old behaviour → new scenario → acceptance, and what was deliberately not transferred |
+| [`docs/quality/desktop-evidence-2026-10-27.md`](docs/quality/desktop-evidence-2026-10-27.md) | What was actually verified on a real Linux desktop, and what was not |
 
 `tests/traceability.rs` fails CI when a requirement ID from the specification is missing
 from the registry, appears twice, or changes status without the specification changing.

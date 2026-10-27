@@ -50,7 +50,7 @@ pub fn validate_weights(
     for name in preferences.keys() {
         if !V1_MECHANISMS.contains(&name.as_str()) {
             return Err(Error::Invalid(
-                "unknown mechanism name in preferences; allowed: four_words, explain, example, exercise",
+                "неизвестное имя механики в предпочтениях; допустимы: four_words, explain, example, exercise",
             ));
         }
     }

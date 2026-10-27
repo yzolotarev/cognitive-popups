@@ -26,6 +26,10 @@ This is evidence for specific claims only. It is not full v1 acceptance.
 | Focus comes back after an explicit window | with kitty active, `note --manual-source` took focus; `Escape` closed it and `kitty` was active again |
 | All eight hub sections render | `Занятие`, `Предметы`, `Контекст`, `Память`, `Проверка`, `История`, `Опыт`, `Настройки` were each opened and screenshotted; `context`/`memory`/`settings` also via their CLI entry points |
 | Empty states explain themselves | history and MRT report show a short explanation instead of a blank box |
+| Pointer switching between sections | a real left click on the `Настройки` and `Предметы` buttons changed the shown section |
+| Pointer editing and saving a subject | clicking the name and goal fields, typing, then clicking `Сохранить предмет` wrote `subject` revision 1 (`Математика для работы` / `Считать маржу без ошибок`) and showed the zero-weights status |
+| Weight validation in the GUI | entering `{"four_words":1,"flashcards":2}` and saving left revision 1 unchanged and showed “неизвестное имя механики…” |
+| Note saved end to end | `note --manual-source`, typed text, `Ctrl+Enter` appended a `user_text` journal event and the process exited |
 
 ## Fixed during this check
 
@@ -45,15 +49,17 @@ This is evidence for specific claims only. It is not full v1 acceptance.
 
 ## Not verified
 
-- **Pointer clicks.** The test environment's `ydotool` daemon did not deliver
-  button events (no `wl_pointer.button` in `WAYLAND_DEBUG`). Pointer *motion*
-  was received by the window, so this is a test-tool limitation, not an observed
-  application failure; nevertheless no pointer interaction is claimed.
-- Global hotkey binding and focus return to the previous application.
+- Global hotkey binding (the compositor already binds Alt+E/W/T/I on this
+  machine, so the exact combinations were deliberately not remapped).
 - Real selection capture from a browser, PDF viewer or editor.
 - Live provider request with a real API key.
 - Windows desktop behavior.
 - Any visual/aesthetic sign-off.
+
+Left clicks are injected with `ydotool click 0xC0`; `0x00` produced no button
+event in this build. A tiled window may be re-laid out between two clicks (for
+example when a popup closes), so the geometry was re-read from
+`hyprctl -j clients` before each click, or the window was pinned by floating it.
 
 Screenshots were taken with `grim` during the session and are not committed
 (binary, session-specific). The behaviours above are described so they can be

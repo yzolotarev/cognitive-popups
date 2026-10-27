@@ -124,8 +124,8 @@ attempt; asking for a hint is recorded as assistance.
 
 - The exact-answer check is not a semantic grader and cannot prove mastery.
 - Model output is never treated as a user attempt or as a FSRS review.
-- Windows desktop behavior, global hotkeys, real selection capture and focus
-  return are not yet verified on a real desktop.
-- The graphical interface was rendered and navigated with the keyboard; a
-  pointer-click automation tool in the test environment did not deliver button
-  events, so pointer interaction is not yet recorded as verified evidence.
+- Windows desktop behavior, global hotkeys and real selection capture from a
+  browser or PDF are not yet verified.
+- On Linux/Hyprland the windows were driven by pointer and keyboard, focus came
+  back to the previous window after closing, and notes and subjects were saved
+  to the workspace; that evidence is Linux-specific and does not cover Windows.

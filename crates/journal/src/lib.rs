@@ -12,7 +12,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-pub const SCHEMA_VERSION: i64 = 1;
+mod reviews;
+
+pub const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum JournalError {
@@ -30,6 +32,8 @@ pub enum JournalError {
     UnsupportedSchema { found: i64, supported: i64 },
     #[error("event {id} is corrupt: {reason}")]
     Corrupt { id: String, reason: String },
+    #[error("conflicting verified review for attempt {attempt_id}, unit {unit_id}")]
+    ConflictingReview { attempt_id: String, unit_id: String },
     #[error("cannot prepare storage directory: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -81,7 +85,7 @@ impl Journal {
                 supported: SCHEMA_VERSION,
             });
         }
-        if version < SCHEMA_VERSION {
+        if version < 1 {
             self.connection.execute_batch(
                 "
                 BEGIN IMMEDIATE;
@@ -99,6 +103,26 @@ impl Journal {
                 CREATE INDEX IF NOT EXISTS events_by_operation
                     ON events (operation_id, sequence);
                 PRAGMA user_version = 1;
+                COMMIT;
+                ",
+            )?;
+        }
+        if version < 2 {
+            self.connection.execute_batch(
+                "
+                BEGIN IMMEDIATE;
+                CREATE TABLE IF NOT EXISTS verified_reviews (
+                    attempt_id       TEXT NOT NULL,
+                    task_id          TEXT NOT NULL,
+                    unit_id          TEXT NOT NULL,
+                    criterion_version TEXT NOT NULL,
+                    graded_at        TEXT NOT NULL,
+                    grade            TEXT NOT NULL CHECK (grade IN (\'again\', \'good\')),
+                    verifier         TEXT NOT NULL CHECK (verifier = \'deterministic_v1\'),
+                    PRIMARY KEY (attempt_id, unit_id)
+                );
+                CREATE INDEX IF NOT EXISTS verified_reviews_unit ON verified_reviews (unit_id, graded_at);
+                PRAGMA user_version = 2;
                 COMMIT;
                 ",
             )?;
@@ -353,17 +377,8 @@ mod tests {
         let stored = journal.read_operation(&operation()).unwrap();
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].event.author(), Author::User);
-        // The journal has no review table in schema 1: an assessment cannot
-        // silently become a graded review.
-        let tables: Vec<String> = journal
-            .connection
-            .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
-            .unwrap()
-            .query_map([], |row| row.get(0))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        assert!(!tables.iter().any(|table| table.contains("review")));
+        // A self-assessment is not an objectively graded task attempt.
+        assert_eq!(journal.review_count().unwrap(), 0);
     }
 
     #[test]

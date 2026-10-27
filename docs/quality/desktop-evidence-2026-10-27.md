@@ -30,6 +30,8 @@ This is evidence for specific claims only. It is not full v1 acceptance.
 | Pointer editing and saving a subject | clicking the name and goal fields, typing, then clicking `Сохранить предмет` wrote `subject` revision 1 (`Математика для работы` / `Считать маржу без ошибок`) and showed the zero-weights status |
 | Weight validation in the GUI | entering `{"four_words":1,"flashcards":2}` and saving left revision 1 unchanged and showed “неизвестное имя механики…” |
 | Note saved end to end | `note --manual-source`, typed text, `Ctrl+Enter` appended a `user_text` journal event and the process exited |
+| Alt+I session end to end | “Свой план”, objective and success criteria typed, `Сохранить план`, `Начать / продолжить`, `Пауза`, `Начать / продолжить`, `Завершить работу`; the workspace row moved `Paused → Active → Paused → Active → Completed` and `reviews` stayed 0 |
+| Interrupted session recovery | after killing the hub with an `Active` session, the restart showed `пауза` in both the header and the selector, kept the plan and did not mark the session completed |
 
 ## Fixed during this check
 
@@ -46,6 +48,13 @@ This is evidence for specific claims only. It is not full v1 acceptance.
    clipped; it now has a minimum height and a shorter prompt.
 5. A label still said “вне активного Alt+I” and the settings text pointed at a
    tab named “Эксперимент”; both now use the shipped wording (“занятия”, «Опыт»).
+6. Session, self-assessment and observation statuses were printed as Rust enum
+   values (`Paused`, `Mastered`, `[Correct]`); they are now Russian words.
+7. The session selector kept the status it had when the list was loaded, so it
+   could say “пауза” while the header said “идёт”; the list is refreshed after
+   every save/action. An empty objective no longer leaves a dangling “·”.
+8. On restart the selector showed the pre-recovery `идёт` while the header
+   showed `пауза`; the lists are rebuilt after draft recovery so both agree.
 
 ## Not verified
 

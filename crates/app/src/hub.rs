@@ -1,6 +1,6 @@
 use domain::{NewEvent, OperationId, SourceKind, SourceSnapshot};
 use services::{
-    assessment::{Answer, Component, Task},
+    assessment::{Answer, Component, Observed, Task},
     learning::{
         MemoryUnit, PLAN_PROMPT, Plan, SelfAssessment, Session, SessionStatus, Step, Subject,
     },
@@ -14,6 +14,46 @@ use time::OffsetDateTime;
 use ui::HubWindow;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+fn session_status_ru(status: SessionStatus) -> &'static str {
+    match status {
+        SessionStatus::Paused => "пауза",
+        SessionStatus::Active => "идёт",
+        SessionStatus::Completed => "завершено",
+    }
+}
+
+fn self_assessment_ru(value: Option<SelfAssessment>) -> &'static str {
+    match value {
+        Some(SelfAssessment::Mastered) => "освоено",
+        Some(SelfAssessment::Struggling) => "тяжело",
+        Some(SelfAssessment::NotRelevant) => "не относится к цели",
+        None => "не отмечена",
+    }
+}
+
+fn observed_ru(value: Observed) -> &'static str {
+    match value {
+        Observed::Correct => "верно",
+        Observed::Incorrect => "неверно",
+        Observed::Assisted => "с помощью",
+        Observed::Unknown => "не знаю",
+        Observed::Blocked => "блокирующий пробел",
+        Observed::Skipped => "пропущено",
+        Observed::UnconfirmedTarget => "цель не подтверждена",
+    }
+}
+
+fn observed_list_ru(values: &[Observed]) -> String {
+    if values.is_empty() {
+        return "нет".into();
+    }
+    values
+        .iter()
+        .map(|value| observed_ru(*value))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct OwnNote {
@@ -413,7 +453,7 @@ impl Controller {
                 .collect()
         };
         let attempt = self.store.submit(task_id, answers, now())?;
-        ui.set_check_status(format!("Наблюдение: {:?}. FSRS применён к {} компонентам. Это сверка точного ответа по заранее выбранной связи, не универсальное доказательство освоения.",attempt.outcomes,attempt.reviews_applied.len()).into());
+        ui.set_check_status(format!("Наблюдение: {}. FSRS применён к {} компонентам. Это сверка точного ответа по заранее выбранной связи, не универсальное доказательство освоения.",observed_list_ru(&attempt.outcomes),attempt.reviews_applied.len()).into());
         self.store.observe_mrt(task_id, now())?;
         if !existed {
             let in_session = self
@@ -533,11 +573,21 @@ impl Controller {
                 .join(" / ")
         })));
         ui.set_subject_names(strings(self.subjects.iter().map(|r| r.value.name.clone())));
-        ui.set_session_names(strings(
+        ui.set_session_names(strings(self.sessions.iter().map(|r| {
+            let objective = r.value.plan.objective.trim();
+            if objective.is_empty() {
+                session_status_ru(r.value.status).to_string()
+            } else {
+                format!("{} · {objective}", session_status_ru(r.value.status))
+            }
+        })));
+        if let Some(index) = self.session.as_ref().and_then(|current| {
             self.sessions
                 .iter()
-                .map(|r| format!("{:?} · {}", r.value.status, r.value.plan.objective)),
-        ));
+                .position(|record| record.id == current.id)
+        }) {
+            ui.set_session_index(index as i32);
+        }
         ui.set_unit_names(strings(
             self.units
                 .iter()
@@ -979,6 +1029,9 @@ impl Controller {
             .store
             .save("session", &record.id, record.revision, &value, now())?;
         record.value = value;
+        // The selector label carries the status and the objective, so it has to
+        // be rebuilt after every save instead of waiting for the next restart.
+        self.refresh(ui)?;
         ui.set_status("План и собственные результаты сохранены. Это не FSRS-оценка.".into());
         Ok(())
     }
@@ -1002,6 +1055,7 @@ impl Controller {
             .store
             .save("session", &record.id, record.revision, &value, now())?;
         record.value = value;
+        self.refresh(ui)?;
         self.tick(ui);
         Ok(())
     }
@@ -1021,8 +1075,8 @@ impl Controller {
             );
             ui.set_session_state(
                 format!(
-                    "{:?}{}",
-                    record.value.status,
+                    "{}{}",
+                    session_status_ru(record.value.status),
                     if elapsed >= 900 {
                         " · ориентир времени истёк; завершение только вручную"
                     } else {
@@ -1061,7 +1115,7 @@ impl Controller {
             .clone();
         ui.set_unit_description(record.value.description.clone().into());
         let schedule = self.store.schedule(&record.id)?;
-        ui.set_unit_state(format!("Самооценка: {:?}. Группа: {} участников. FSRS: {}",record.value.self_assessment,record.value.members.len(),
+        ui.set_unit_state(format!("Самооценка: {}. Группа: {} участников. FSRS: {}",self_assessment_ru(record.value.self_assessment),record.value.members.len(),
             schedule.map_or_else(||"не включён".into(),|s|format!("due UTC unix={}, last_review={:?}, stability={:?}, difficulty={:?}, snoozed_until={:?}",s.due,s.last_review,s.stability,s.difficulty,s.snoozed_until))).into());
         self.unit = Some(record);
         Ok(())
@@ -1084,8 +1138,8 @@ impl Controller {
         record.value = value;
         ui.set_unit_state(
             format!(
-                "Самооценка: {:?}. Review не создавался.",
-                record.value.self_assessment
+                "Самооценка: {}. Review не создавался.",
+                self_assessment_ru(record.value.self_assessment)
             )
             .into(),
         );
@@ -1101,6 +1155,9 @@ pub fn run(action: &str) -> Result<()> {
     controller.borrow_mut().refresh(&ui)?;
     controller.borrow().select_provider(&ui, 0)?;
     controller.borrow_mut().restore_draft(&ui)?;
+    // Restoring a draft can recover an interrupted session from Active to
+    // Paused; rebuild the lists so the selector and the status agree.
+    controller.borrow_mut().refresh(&ui)?;
     let consent = controller.borrow().store.mrt_consent()?;
     ui.set_mrt_enabled(consent.enabled);
     ui.set_mrt_outside(consent.outside_session);
@@ -1283,6 +1340,7 @@ pub fn run(action: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slint::Model;
 
     fn setup() -> (tempfile::TempDir, Controller, HubWindow) {
         i_slint_backend_testing::init_no_event_loop();
@@ -1324,6 +1382,24 @@ mod tests {
         assert_eq!(ui.get_own_text(), "  незавершённая заметка  ");
         assert!(restored.session.as_ref().unwrap().value.plan.steps[0].worked);
         assert_eq!(restored.store.review_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn gui_session_status_is_localised_and_the_selector_follows_the_current_session() {
+        let (_dir, mut controller, ui) = setup();
+        controller.new_session(&ui).unwrap();
+        ui.set_objective("Различать маржу и наценку".into());
+        ui.set_criteria("Объяснить разницу своими словами".into());
+        controller.save_session(&ui).unwrap();
+        controller.session_action(&ui, "resume").unwrap();
+        assert_eq!(ui.get_session_state(), "идёт");
+        let active = ui.get_session_names().row_data(0).unwrap();
+        assert!(active.contains("идёт"), "{active}");
+        controller.session_action(&ui, "complete").unwrap();
+        assert_eq!(ui.get_session_state(), "завершено");
+        let completed = ui.get_session_names().row_data(0).unwrap();
+        assert!(completed.contains("завершено"), "{completed}");
+        assert_eq!(controller.store.review_count().unwrap(), 0);
     }
 
     #[test]

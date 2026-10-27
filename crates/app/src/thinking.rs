@@ -1,6 +1,6 @@
 //! Alt+T and prediction: a real source → task/hypothesis → own attempt →
 //! model feedback flow. Open responses deliberately have no route to FSRS.
-use domain::{NewEvent, OperationId, SourceSnapshot};
+use domain::{NewEvent, OperationId, SourceKind, SourceSnapshot};
 use services::{provider::Provider, store::Store};
 use slint::ComponentHandle;
 use std::{cell::RefCell, rc::Rc};
@@ -230,7 +230,19 @@ pub fn run(task_mode: bool) -> std::result::Result<(), Box<dyn std::error::Error
         .into(),
     );
     ui.set_source(captured.snapshot.text.clone().into());
-    ui.set_disclosure(format!("Источник: {:?}. По явной кнопке → {} / {}. Clipboard fallback требует проверки давности и содержания.",captured.snapshot.kind,provider.endpoint,provider.model).into());
+    let source_kind = match captured.snapshot.kind {
+        SourceKind::Selection => "выделение",
+        SourceKind::Clipboard => "буфер обмена (давность и принадлежность окну не подтверждены)",
+        SourceKind::Manual => "ввод вручную",
+        SourceKind::None => "не захвачен",
+    };
+    ui.set_disclosure(
+        format!(
+            "Источник: {source_kind}. Запрос только по явной кнопке → {} / {}.",
+            provider.endpoint, provider.model
+        )
+        .into(),
+    );
     if !task_mode {
         ui.set_assignment("Какой результат вы ожидаете и почему? Сначала запишите свою гипотезу, затем сверяйтесь.".into());
         ui.set_criterion("Исходная гипотеза фиксируется до ответа модели. Модельная сверка не является объективной оценкой знания.".into());

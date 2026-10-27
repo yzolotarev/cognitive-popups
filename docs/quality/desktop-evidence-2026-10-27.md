@@ -6,6 +6,9 @@ release build of `implementation/full-v1`.
 
 This is evidence for specific claims only. It is not full v1 acceptance.
 
+Real model requests on every LLM surface are recorded separately in
+`llm-e2e-2026-10-27.md`.
+
 ## Verified on the real desktop
 
 | Claim | Observation |

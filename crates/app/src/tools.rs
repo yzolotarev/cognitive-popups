@@ -79,11 +79,7 @@ pub fn four_words() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_disclosure(
         format!(
             "{} · по кнопке этот фрагмент → {} / {}. Ничего не отправлено автоматически.",
-            if captured.snapshot.kind == SourceKind::Selection {
-                "Выделение"
-            } else {
-                "Clipboard fallback: давность и источник не подтверждены; проверьте текст"
-            },
+            crate::text::provenance(captured.snapshot.kind),
             provider.endpoint,
             provider.model
         )
@@ -100,7 +96,9 @@ pub fn four_words() -> Result<(), Box<dyn std::error::Error>> {
             let result=(||->Result<FourWords,Box<dyn std::error::Error+Send+Sync>>{
                 let response=provider.complete(FOUR_WORDS_PROMPT,&source)?;
                 journal::Journal::open(path)?.append(&[NewEvent::ai_response(operation,OffsetDateTime::now_utc(),uuid::Uuid::new_v4().to_string(),provider.endpoint,provider.model,response.clone())?])?;
-                Ok(FourWords::parse(&response)?)
+                FourWords::parse(&response).map_err(|_| -> Box<dyn std::error::Error+Send+Sync>{
+                    "Ответ модели не соответствует формату четырёх опор. Сырой ответ сохранён в журнале с авторством ai; текст и заметка не изменены.".into()
+                })
             })();
             let _=weak.upgrade_in_event_loop(move |ui|{
                 ui.set_busy(false);

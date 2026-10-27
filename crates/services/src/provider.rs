@@ -78,7 +78,8 @@ impl Provider {
     }
 
     pub fn save_key(&self, key: &str) -> Result<(), ProviderError> {
-        if key.trim().is_empty() {
+        let key = key.trim();
+        if key.is_empty() {
             return Err(ProviderError::MissingKey);
         }
         self.credential()?
@@ -112,6 +113,12 @@ impl Provider {
         context: &str,
     ) -> Result<String, ProviderError> {
         let url = self.validate()?;
+        // A key pasted with a trailing newline would otherwise fail inside the
+        // HTTP builder and be reported as an unreachable provider.
+        let key = key.trim();
+        if key.is_empty() || key.chars().any(char::is_whitespace) {
+            return Err(ProviderError::InvalidKey);
+        }
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(60))
             .connect_timeout(Duration::from_secs(10))
@@ -164,20 +171,22 @@ impl Provider {
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
     #[error(
-        "Set a model and an HTTPS chat-completions endpoint (HTTP is allowed only on loopback)."
+        "Укажите модель и HTTPS-адрес chat-completions (открытый HTTP разрешён только на loopback)."
     )]
     Configuration,
-    #[error("No API key in the system credential store. Open settings to add one.")]
+    #[error("В системном хранилище нет ключа API. Откройте настройки и добавьте ключ.")]
     MissingKey,
+    #[error("В сохранённом ключе есть пробел или перевод строки. Сохраните ключ без них.")]
+    InvalidKey,
     #[error(
-        "System credential store unavailable or locked. Unlock it; no plaintext fallback is used."
+        "Системное хранилище ключей недоступно или заблокировано. Разблокируйте его; открытый текст приложение не хранит."
     )]
     CredentialStore,
-    #[error("Provider request failed or timed out. Your saved input is unchanged.")]
+    #[error("Запрос к провайдеру не удался или истёк по времени. Сохранённый ввод не изменён.")]
     Transport,
-    #[error("Provider returned HTTP {0}. Response body is omitted for privacy.")]
+    #[error("Провайдер вернул HTTP {0}. Тело ответа скрыто для приватности.")]
     Status(u16),
-    #[error("Provider returned an empty, malformed or oversized response.")]
+    #[error("Провайдер вернул пустой, повреждённый или слишком большой ответ.")]
     InvalidResponse,
 }
 
@@ -186,6 +195,19 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::net::TcpListener;
+
+    #[test]
+    fn key_with_an_embedded_line_break_is_rejected_before_any_networking() {
+        let provider = Provider {
+            endpoint: "https://provider.example/v1/chat/completions".into(),
+            model: "model".into(),
+            credential_slot: "test".into(),
+        };
+        let error = provider
+            .complete_with_key("key\nwith-break", "system", "context")
+            .unwrap_err();
+        assert!(matches!(error, ProviderError::InvalidKey));
+    }
 
     #[test]
     fn endpoint_rejects_credentials_queries_and_insecure_remote_hosts() {

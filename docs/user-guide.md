@@ -38,7 +38,7 @@ The historical application is never launched or modified by this runtime.
 | Alt+W | `cognitive-popups four-words` | Four Words: four layered semantic anchors |
 | Alt+T | `cognitive-popups task` | exercise → your own attempt → feedback |
 | Ctrl+Alt+P | `cognitive-popups prediction` | your hypothesis **before** comparison |
-| Alt+I | `cognitive-popups session` | subject, goal, plan and session (opens the control panel on that page) |
+| Alt+I | `cognitive-popups session` | own session window: timer, subject, goal, plan, start/pause |
 
 `cognitive-popups note` is the shortcut-free version of the comment window.
 `--manual-source` reads the material from stdin instead of capturing a
@@ -67,6 +67,12 @@ SQLite or diagnostics. A blank key keeps the existing key for that exact
 endpoint; changing the endpoint does not reuse another endpoint's key.
 Redirects are rejected and failed requests are not retried silently.
 
+A request is cut off after 60 seconds and the window keeps your input; press the
+button again to retry. Use a flash-class model: slow reasoning models regularly
+exceed the limit, and a popup that waits two minutes is not a popup. The
+provider route (endpoint and model) is printed in each window before you press
+anything, so you always know where the fragment would go.
+
 Network requests happen only after an explicit button. Context sends the
 visible material and your thought. Planning sends the selected subject,
 material, that subject's previous plans/self-reports and code-check evidence.
@@ -83,13 +89,19 @@ auto-deletion policy has been introduced.
    `0` excludes a mechanism, and a zero sum means "choose explicitly" — no
    mechanism is substituted silently. Automatic reweighting by lessons is not
    enabled without the outstanding policy decision.
-2. **Контекст**: capture a fragment explicitly or paste/type material.
-   Clipboard fallback is labelled unverified/stale-possible; confirm the
-   displayed text yourself. Your thought and AI output have separate fields and
-   authors.
-3. **Занятие**: generate a draft or write your own plan; edit objective,
-   purpose, prerequisites, criteria and steps. `[x]` marks work, not mastery.
-   Start/pause/resume explicitly. Passing 15 minutes does not complete a lesson.
+2. **Контекст**: capture a fragment explicitly or paste/type material. The
+   label states the real provenance: a selection, a manual fragment, or the
+   clipboard (whose age and window are unverified). Your thought and AI output
+   have separate fields and authors.
+3. **Занятие (Alt+I, отдельное окно)**: the window opens with the timer, the
+   session picker and the plan underneath it. Generate a draft with the model
+   (it opens immediately under the timer as a draft) or write your own plan;
+   edit objective, purpose, prerequisites, criteria and steps. `[x]` marks
+   work, not mastery. Start/pause/resume only by an explicit button. Passing
+   15 minutes does not complete a lesson and closing the window pauses nothing
+   silently — the stored state stays, and an Active session is recovered to
+   paused on the next open. In the task window the success criterion stays
+   hidden until your own answer is frozen, so it cannot hand you the solution.
 4. Own results stay verbatim. Drafts checkpoint locally while the event loop
    runs; explicit Save confirms durable storage. After a crash, recover a
    paused session instead of inventing elapsed time.

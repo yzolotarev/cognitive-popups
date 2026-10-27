@@ -1,9 +1,7 @@
 use domain::{NewEvent, OperationId, SourceKind, SourceSnapshot};
 use services::{
     assessment::{Answer, Component, Observed, Task},
-    learning::{
-        MemoryUnit, PLAN_PROMPT, Plan, SelfAssessment, Session, SessionStatus, Step, Subject,
-    },
+    learning::{MemoryUnit, SelfAssessment, Session, SessionStatus, Subject},
     mechanism::validate_weights,
     provider::Provider,
     store::{Record, Store},
@@ -14,14 +12,6 @@ use time::OffsetDateTime;
 use ui::HubWindow;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
-
-fn session_status_ru(status: SessionStatus) -> &'static str {
-    match status {
-        SessionStatus::Paused => "пауза",
-        SessionStatus::Active => "идёт",
-        SessionStatus::Completed => "завершено",
-    }
-}
 
 fn self_assessment_ru(value: Option<SelfAssessment>) -> &'static str {
     match value {
@@ -65,18 +55,11 @@ struct OwnNote {
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Draft {
     subject_id: Option<String>,
-    session_id: Option<String>,
-    /// Older drafts predate this field, so a missing value must not fail them.
+    /// Older drafts predate these fields, so missing values must not fail them.
     #[serde(default)]
     unit_id: Option<String>,
     material: String,
     own_text: String,
-    objective: String,
-    purpose: String,
-    prerequisites: String,
-    criteria: String,
-    steps: String,
-    results: String,
 }
 
 struct Controller {
@@ -84,11 +67,9 @@ struct Controller {
     workspace_path: std::path::PathBuf,
     journal_path: std::path::PathBuf,
     subjects: Vec<Record<Subject>>,
-    sessions: Vec<Record<Session>>,
     units: Vec<Record<MemoryUnit>>,
     history: Vec<Record<OwnNote>>,
     subject: Option<Record<Subject>>,
-    session: Option<Record<Session>>,
     unit: Option<Record<MemoryUnit>>,
     draft_revision: i64,
     last_draft: Option<Draft>,
@@ -227,11 +208,9 @@ impl Controller {
             workspace_path,
             journal_path: directory.join("journal.sqlite3"),
             subjects: vec![],
-            sessions: vec![],
             units: vec![],
             history: vec![],
             subject: None,
-            session: None,
             unit: None,
             draft_revision: 0,
             last_draft: None,
@@ -261,51 +240,6 @@ impl Controller {
 
     fn experiment_report(&mut self, ui: &HubWindow) -> Result<()> {
         ui.set_mrt_report(serde_json::to_string_pretty(&self.store.mrt_report(now())?)?.into());
-        Ok(())
-    }
-    fn new_session(&mut self, ui: &HubWindow) -> Result<()> {
-        let subject = self
-            .subject
-            .clone()
-            .ok_or("Выберите предмет с личной целью")?;
-        if self.session.is_some() {
-            self.session_action(ui, "pause")?;
-        }
-        let value = Session {
-            subject_id: subject.id.clone(),
-            plan: Plan {
-                objective: String::new(),
-                purpose: subject.value.goal.clone(),
-                prerequisites: "Подготовка неизвестна; уточнить перед началом".into(),
-                success_criteria: String::new(),
-                steps: vec![],
-                gaps: vec![],
-            },
-            status: SessionStatus::Paused,
-            elapsed_seconds: 0,
-            active_since: None,
-            own_results: String::new(),
-            material: ui.get_material().to_string(),
-        };
-        ui.set_objective("".into());
-        ui.set_purpose(value.plan.purpose.clone().into());
-        ui.set_prerequisites(value.plan.prerequisites.clone().into());
-        ui.set_criteria("".into());
-        ui.set_steps("".into());
-        ui.set_results("".into());
-        ui.set_gaps("".into());
-        let session_id = id();
-        let revision = self.store.save("session", &session_id, 0, &value, now())?;
-        self.session = Some(Record {
-            id: session_id,
-            revision,
-            value,
-        });
-        self.refresh(ui)?;
-        self.tick(ui);
-        ui.set_status(
-            "Собственный план: заполните цель и критерии, затем сохраните. ИИ не требуется.".into(),
-        );
         Ok(())
     }
     fn selected_due(&self, ui: &HubWindow) -> Result<i64> {
@@ -459,10 +393,13 @@ impl Controller {
         ui.set_check_status(format!("Наблюдение: {}. FSRS применён к {} компонентам. Это сверка точного ответа по заранее выбранной связи, не универсальное доказательство освоения.",observed_list_ru(&attempt.outcomes),attempt.reviews_applied.len()).into());
         self.store.observe_mrt(task_id, now())?;
         if !existed {
+            // The session window is a separate process, so the only truthful
+            // source for "inside a session" is the stored state it keeps.
             let in_session = self
-                .session
-                .as_ref()
-                .is_some_and(|r| r.value.status == SessionStatus::Active);
+                .store
+                .list::<Session>("session")?
+                .iter()
+                .any(|record| record.value.status == SessionStatus::Active);
             if let Some(decision) =
                 self.store
                     .consider_mrt(task_id, in_session, ui.get_busy(), attempt.at)?
@@ -499,16 +436,9 @@ impl Controller {
     fn draft(&self, ui: &HubWindow) -> Draft {
         Draft {
             subject_id: self.subject.as_ref().map(|r| r.id.clone()),
-            session_id: self.session.as_ref().map(|r| r.id.clone()),
             unit_id: self.unit.as_ref().map(|r| r.id.clone()),
             material: ui.get_material().to_string(),
             own_text: ui.get_own_text().to_string(),
-            objective: ui.get_objective().to_string(),
-            purpose: ui.get_purpose().to_string(),
-            prerequisites: ui.get_prerequisites().to_string(),
-            criteria: ui.get_criteria().to_string(),
-            steps: ui.get_steps().to_string(),
-            results: ui.get_results().to_string(),
         }
     }
 
@@ -540,14 +470,6 @@ impl Controller {
                 ui.set_subject_index(index as i32);
             }
             if let Some(index) = self
-                .sessions
-                .iter()
-                .position(|r| Some(&r.id) == draft.session_id.as_ref())
-            {
-                self.select_session(ui, index as i32)?;
-                ui.set_session_index(index as i32);
-            }
-            if let Some(index) = self
                 .units
                 .iter()
                 .position(|r| Some(&r.id) == draft.unit_id.as_ref())
@@ -557,12 +479,6 @@ impl Controller {
             }
             ui.set_material(draft.material.clone().into());
             ui.set_own_text(draft.own_text.clone().into());
-            ui.set_objective(draft.objective.clone().into());
-            ui.set_purpose(draft.purpose.clone().into());
-            ui.set_prerequisites(draft.prerequisites.clone().into());
-            ui.set_criteria(draft.criteria.clone().into());
-            ui.set_steps(draft.steps.clone().into());
-            ui.set_results(draft.results.clone().into());
             self.last_draft = Some(draft);
             ui.set_status(
                 "Восстановлен локальный черновик. Прерванное занятие не объявлено завершённым."
@@ -573,7 +489,6 @@ impl Controller {
     }
     fn refresh(&mut self, ui: &HubWindow) -> Result<()> {
         self.subjects = self.store.list("subject")?;
-        self.sessions = self.store.list("session")?;
         self.units = self.store.list("unit")?;
         self.history = self.store.list("own_note")?;
         self.tasks = self.store.tasks()?;
@@ -585,21 +500,6 @@ impl Controller {
                 .join(" / ")
         })));
         ui.set_subject_names(strings(self.subjects.iter().map(|r| r.value.name.clone())));
-        ui.set_session_names(strings(self.sessions.iter().map(|r| {
-            let objective = r.value.plan.objective.trim();
-            if objective.is_empty() {
-                session_status_ru(r.value.status).to_string()
-            } else {
-                format!("{} · {objective}", session_status_ru(r.value.status))
-            }
-        })));
-        if let Some(index) = self.session.as_ref().and_then(|current| {
-            self.sessions
-                .iter()
-                .position(|record| record.id == current.id)
-        }) {
-            ui.set_session_index(index as i32);
-        }
         ui.set_unit_names(strings(
             self.units
                 .iter()
@@ -744,7 +644,7 @@ impl Controller {
                     Ok(captured)=>{
                         let selection=captured.snapshot.kind==SourceKind::Selection;
                         ui.set_source_kind(if selection{1}else{2});ui.set_material(captured.snapshot.text.into());ui.set_own_text("".into());ui.set_ai_text("".into());
-                        ui.set_source_label(if selection{"Выделение (проверьте перед отправкой)"}else{"Clipboard fallback: давность и принадлежность окну не подтверждены. Проверьте текст."}.into());
+                        ui.set_source_label(crate::text::provenance(captured.snapshot.kind).into());
                         ui.set_status("Фрагмент сохранён до отображения. Внешнему провайдеру ничего не отправлялось.".into());
                     },
                     Err(error)=>ui.set_status(error.to_string().into()),
@@ -848,14 +748,16 @@ impl Controller {
                                     ui.set_cues(super::tools::cue_model(words));
                                     ui.set_ai_text("".into());
                                 }
-                                Err(error) => {
-                                    ui.set_status(error.to_string().into());
+                                Err(_) => {
+                                    ui.set_status(
+                                        "Ответ модели не соответствует формату четырёх опор. Сырой ответ сохранён в журнале с авторством ai; ввод не изменён.".into(),
+                                    );
                                     return;
                                 }
                             }
                         } else {
                             ui.set_cues(Default::default());
-                            ui.set_ai_text(text.into());
+                            ui.set_ai_text(crate::text::plain(&text).into());
                         }
                         ui.set_status(
                             "Ответ ИИ сохранён отдельно. Ваш исходный ввод не изменён.".into(),
@@ -866,238 +768,6 @@ impl Controller {
             });
         });
         Ok(())
-    }
-
-    fn generate_plan(&mut self, ui: &HubWindow) -> Result<()> {
-        let subject = self
-            .subject
-            .clone()
-            .ok_or("Сначала выберите и сохраните предмет с личной целью")?;
-        let provider = self.provider("plan")?;
-        provider.validate()?;
-        let sessions: Vec<_> = self
-            .sessions
-            .iter()
-            .filter(|r| r.value.subject_id == subject.id)
-            .map(|r| &r.value)
-            .collect();
-        let units: Vec<_> = self
-            .units
-            .iter()
-            .filter(|r| r.value.subject_id == subject.id)
-            .map(|r| &r.value)
-            .collect();
-        let unit_ids: Vec<_> = self
-            .units
-            .iter()
-            .filter(|r| r.value.subject_id == subject.id)
-            .map(|r| r.id.clone())
-            .collect();
-        let evidence = self.store.evidence_for_units(&unit_ids)?;
-        let material = ui.get_material().to_string();
-        let context = serde_json::to_string(
-            &serde_json::json!({"subject":subject.value,"material":material,"past_sessions":sessions,"memory_units_self_reports_not_verified":units,"code_checked_evidence_limited_to_exact_target":evidence}),
-        )?;
-        let path = self.workspace_path.clone();
-        let journal_path = self.journal_path.clone();
-        let operation = OperationId::new(id())?;
-        // Persist the exact planning request before provider failure can occur.
-        self.store
-            .save("planning_request", operation.as_str(), 0, &context, now())?;
-        let weak = ui.as_weak();
-        ui.set_busy(true);
-        ui.set_status("Генерируется черновик плана. Текущий план не перезаписывается.".into());
-        std::thread::spawn(move || {
-            let result = (|| -> Result<()> {
-                let text = provider.complete(PLAN_PROMPT, &context)?;
-                Store::open(&path)?.record_model_response(
-                    &journal_path,
-                    operation,
-                    &provider.endpoint,
-                    &provider.model,
-                    &text,
-                )?;
-                let plan: Plan = serde_json::from_str(&text).map_err(
-                    |_| "Ответ модели не соответствует JSON плана; текущие данные сохранены",
-                )?;
-                let mut session = Session::new(subject.id, plan, material)?;
-                // Generated checkmarks cannot stand in for the user's work.
-                for step in &mut session.plan.steps {
-                    step.worked = false;
-                }
-                Store::open(path)?.save("session", &id(), 0, &session, now())?;
-                Ok(())
-            })();
-            let _ = weak.upgrade_in_event_loop(move |ui| {
-                ui.set_busy(false);
-                match result {
-                    Ok(()) => { ui.invoke_refresh(); ui.set_status("Черновик сохранён в списке занятий. Откройте, отредактируйте и явно начните его.".into()); }
-                    Err(error) => ui.set_status(error.to_string().into()),
-                }
-            });
-        });
-        Ok(())
-    }
-
-    fn select_session(&mut self, ui: &HubWindow, index: i32) -> Result<()> {
-        let selected = self
-            .sessions
-            .get(index as usize)
-            .ok_or("Выберите занятие")?
-            .clone();
-        if self
-            .session
-            .as_ref()
-            .is_some_and(|record| record.id == selected.id)
-        {
-            return Ok(());
-        }
-        if self.session.is_some() {
-            self.session_action(ui, "pause")?;
-        }
-        let mut record = self
-            .store
-            .get::<Session>("session", &selected.id)?
-            .ok_or("Занятие не найдено")?;
-        if record.value.status == SessionStatus::Active {
-            record.value.recover();
-            record.revision =
-                self.store
-                    .save("session", &record.id, record.revision, &record.value, now())?;
-        }
-        ui.set_objective(record.value.plan.objective.clone().into());
-        ui.set_purpose(record.value.plan.purpose.clone().into());
-        ui.set_prerequisites(record.value.plan.prerequisites.clone().into());
-        ui.set_criteria(record.value.plan.success_criteria.clone().into());
-        ui.set_steps(
-            record
-                .value
-                .plan
-                .steps
-                .iter()
-                .map(|s| format!("[{}] {}", if s.worked { "x" } else { " " }, s.text))
-                .collect::<Vec<_>>()
-                .join("\n")
-                .into(),
-        );
-        ui.set_gaps(
-            record
-                .value
-                .plan
-                .gaps
-                .iter()
-                .map(|g| {
-                    format!(
-                        "{}: {} (основание: {})",
-                        if g.blocking {
-                            "Отдельная работа?"
-                        } else {
-                            "Релевантный пробел?"
-                        },
-                        g.description,
-                        g.basis
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-                .into(),
-        );
-        ui.set_results(record.value.own_results.clone().into());
-        self.session = Some(record);
-        self.tick(ui);
-        Ok(())
-    }
-
-    fn save_session(&mut self, ui: &HubWindow) -> Result<()> {
-        let record = self.session.as_mut().ok_or("Выберите занятие из списка")?;
-        let mut value = record.value.clone();
-        value.plan.objective = ui.get_objective().to_string();
-        value.plan.purpose = ui.get_purpose().to_string();
-        value.plan.prerequisites = ui.get_prerequisites().to_string();
-        value.plan.success_criteria = ui.get_criteria().to_string();
-        value.plan.steps = ui
-            .get_steps()
-            .lines()
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| Step {
-                text: s
-                    .strip_prefix("[x] ")
-                    .or_else(|| s.strip_prefix("[ ] "))
-                    .unwrap_or(s)
-                    .to_owned(),
-                worked: s.starts_with("[x] "),
-            })
-            .collect();
-        value.own_results = ui.get_results().to_string();
-        // Incomplete edits are durable drafts too. Only starting/completing a
-        // plan requires all accepted planning fields to be present.
-        // Checkpoint running time, preserving Active but not counting downtime
-        // if the process later crashes and the session is recovered.
-        if value.status == SessionStatus::Active {
-            value.pause(now());
-            value.resume(now())?;
-        }
-        record.revision = self
-            .store
-            .save("session", &record.id, record.revision, &value, now())?;
-        record.value = value;
-        // The selector label carries the status and the objective, so it has to
-        // be rebuilt after every save instead of waiting for the next restart.
-        self.refresh(ui)?;
-        ui.set_status("План и собственные результаты сохранены. Это не FSRS-оценка.".into());
-        Ok(())
-    }
-
-    fn session_action(&mut self, ui: &HubWindow, action: &str) -> Result<()> {
-        self.save_session(ui)?;
-        let record = self.session.as_mut().ok_or("Выберите занятие")?;
-        let mut value = record.value.clone();
-        match action {
-            "resume" => {
-                value.plan.validate()?;
-                value.resume(now())?;
-            }
-            "complete" => {
-                value.plan.validate()?;
-                value.complete(now());
-            }
-            _ => value.pause(now()),
-        }
-        record.revision = self
-            .store
-            .save("session", &record.id, record.revision, &value, now())?;
-        record.value = value;
-        self.refresh(ui)?;
-        self.tick(ui);
-        Ok(())
-    }
-
-    fn tick(&self, ui: &HubWindow) {
-        if let Some(record) = &self.session {
-            let elapsed = record.value.elapsed(now());
-            let remaining = (900 - elapsed).max(0);
-            ui.set_timer(
-                format!(
-                    "{:02}:{:02} · прошло {} мин",
-                    remaining / 60,
-                    remaining % 60,
-                    elapsed / 60
-                )
-                .into(),
-            );
-            ui.set_session_state(
-                format!(
-                    "{}{}",
-                    session_status_ru(record.value.status),
-                    if elapsed >= 900 {
-                        " · ориентир времени истёк; завершение только вручную"
-                    } else {
-                        ""
-                    }
-                )
-                .into(),
-            );
-        }
     }
 
     fn save_unit(&mut self, ui: &HubWindow) -> Result<()> {
@@ -1181,10 +851,9 @@ pub fn run(action: &str) -> Result<()> {
     ui.set_mrt_enabled(consent.enabled);
     ui.set_mrt_outside(consent.outside_session);
     ui.set_page(match action {
-        "subjects" => 1,
-        "context" => 2,
-        "memory" => 3,
-        "settings" => 7,
+        "context" => 1,
+        "memory" => 2,
+        "settings" => 6,
         _ => 0,
     });
     if action == "context"
@@ -1246,10 +915,6 @@ pub fn run(action: &str) -> Result<()> {
     }
     wire!(on_save_provider, save_provider);
     wire!(on_select_provider, select_provider, arg);
-    wire!(on_generate_plan, generate_plan);
-    wire!(on_new_session, new_session);
-    wire!(on_save_session, save_session);
-    wire!(on_select_session, select_session, arg);
     wire!(on_save_unit, save_unit);
     wire!(on_select_unit, select_unit, arg);
     wire!(on_assess_unit, assess_unit, arg);
@@ -1279,17 +944,6 @@ pub fn run(action: &str) -> Result<()> {
         ui.on_submit_task(move |kind| {
             if let Some(ui) = weak.upgrade()
                 && let Err(error) = state.borrow_mut().submit_task(&ui, &kind)
-            {
-                ui.set_status(error.to_string().into());
-            }
-        });
-    }
-    {
-        let state = controller.clone();
-        let weak = ui.as_weak();
-        ui.on_session_action(move |action| {
-            if let Some(ui) = weak.upgrade()
-                && let Err(error) = state.borrow_mut().session_action(&ui, &action)
             {
                 ui.set_status(error.to_string().into());
             }
@@ -1339,27 +993,21 @@ pub fn run(action: &str) -> Result<()> {
         slint::TimerMode::Repeated,
         std::time::Duration::from_secs(1),
         move || {
-            if let Some(ui) = weak.upgrade() {
-                state.borrow().tick(&ui);
-                if let Err(error) = state.borrow_mut().checkpoint(&ui) {
-                    ui.set_status(format!("Черновик не сохранён: {error}").into());
-                }
+            if let Some(ui) = weak.upgrade()
+                && let Err(error) = state.borrow_mut().checkpoint(&ui)
+            {
+                ui.set_status(format!("Черновик не сохранён: {error}").into());
             }
         },
     );
     ui.run()?;
     controller.borrow_mut().checkpoint(&ui)?;
-    // A normal close checkpoints the selected lesson without pretending it ended.
-    if controller.borrow().session.is_some() {
-        controller.borrow_mut().session_action(&ui, "pause")?;
-    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slint::Model;
 
     fn setup() -> (tempfile::TempDir, Controller, HubWindow) {
         i_slint_backend_testing::init_no_event_loop();
@@ -1371,76 +1019,6 @@ mod tests {
         ui.set_personal_goal("Проверять цены в работе".into());
         controller.save_subject(&ui).unwrap();
         (dir, controller, ui)
-    }
-
-    #[test]
-    fn gui_session_and_draft_recover_without_completion_or_reviews() {
-        let (dir, mut controller, ui) = setup();
-        controller.new_session(&ui).unwrap();
-        // An incomplete plan may be saved/paused, but not started.
-        controller.save_session(&ui).unwrap();
-        assert!(controller.session_action(&ui, "resume").is_err());
-        ui.set_objective("Различать маржу и наценку".into());
-        ui.set_criteria("Самостоятельно выбрать знаменатель".into());
-        ui.set_steps("[x] Прочитать исходник\n[ ] Проверить пример".into());
-        ui.set_results("  Моя мысль\nбез исправлений  ".into());
-        controller.session_action(&ui, "resume").unwrap();
-        ui.set_own_text("  незавершённая заметка  ".into());
-        controller.checkpoint(&ui).unwrap();
-        let session_id = controller.session.as_ref().unwrap().id.clone();
-        drop(controller);
-        let mut restored = Controller::open(dir.path()).unwrap();
-        restored.refresh(&ui).unwrap();
-        restored.restore_draft(&ui).unwrap();
-        assert_eq!(restored.session.as_ref().unwrap().id, session_id);
-        assert_eq!(
-            restored.session.as_ref().unwrap().value.status,
-            SessionStatus::Paused
-        );
-        assert_eq!(ui.get_results(), "  Моя мысль\nбез исправлений  ");
-        assert_eq!(ui.get_own_text(), "  незавершённая заметка  ");
-        assert!(restored.session.as_ref().unwrap().value.plan.steps[0].worked);
-        assert_eq!(restored.store.review_count().unwrap(), 0);
-    }
-
-    #[test]
-    fn gui_selected_memory_unit_survives_restart_and_unblocks_the_check() {
-        let (dir, mut controller, ui) = setup();
-        ui.set_unit_description("Маржа считается от себестоимости".into());
-        controller.save_unit(&ui).unwrap();
-        let unit_id = controller.unit.as_ref().expect("unit selected").id.clone();
-        controller.checkpoint(&ui).unwrap();
-        drop(controller);
-
-        let mut restored = Controller::open(dir.path()).unwrap();
-        restored.refresh(&ui).unwrap();
-        restored.restore_draft(&ui).unwrap();
-        assert_eq!(
-            restored.unit.as_ref().map(|record| record.id.clone()),
-            Some(unit_id)
-        );
-        ui.set_check_question("От какой цены считается маржа?".into());
-        ui.set_check_expected("себестоимость".into());
-        restored.create_task(&ui).unwrap();
-        assert_eq!(restored.tasks.len(), 1);
-    }
-
-    #[test]
-    fn gui_session_status_is_localised_and_the_selector_follows_the_current_session() {
-        let (_dir, mut controller, ui) = setup();
-        controller.new_session(&ui).unwrap();
-        ui.set_objective("Различать маржу и наценку".into());
-        ui.set_criteria("Объяснить разницу своими словами".into());
-        controller.save_session(&ui).unwrap();
-        controller.session_action(&ui, "resume").unwrap();
-        assert_eq!(ui.get_session_state(), "идёт");
-        let active = ui.get_session_names().row_data(0).unwrap();
-        assert!(active.contains("идёт"), "{active}");
-        controller.session_action(&ui, "complete").unwrap();
-        assert_eq!(ui.get_session_state(), "завершено");
-        let completed = ui.get_session_names().row_data(0).unwrap();
-        assert!(completed.contains("завершено"), "{completed}");
-        assert_eq!(controller.store.review_count().unwrap(), 0);
     }
 
     #[test]

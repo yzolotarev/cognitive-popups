@@ -12,6 +12,8 @@ use domain::{NewEvent, OperationId, SourceKind};
 use time::OffsetDateTime;
 
 mod hub;
+mod session;
+mod text;
 mod thinking;
 mod tools;
 
@@ -19,8 +21,8 @@ const USAGE: &str = "\
 Cognitive Popups
 
 Usage:
-  cognitive-popups hub            control panel: subjects, sessions, context, memory, experiment, settings
-  cognitive-popups session        control panel opened on the session page
+  cognitive-popups hub            control panel: subjects, context, memory, check, history, experiment, settings
+  cognitive-popups session        independent session window: timer, plan, start/pause (Alt+I)
   cognitive-popups note           capture the selection and open the note window
   cognitive-popups comment        own comment (Alt+E)
   cognitive-popups task           exercise → own attempt → feedback (Alt+T)
@@ -68,7 +70,14 @@ fn main() -> ExitCode {
             println!("{USAGE}");
             ExitCode::SUCCESS
         }
-        Some("hub" | "settings" | "session" | "subjects" | "context" | "memory") => {
+        Some("session") => match session::run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("application failed: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("hub" | "settings" | "subjects" | "context" | "memory") => {
             match hub::run(action.as_deref().unwrap_or("hub")) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {

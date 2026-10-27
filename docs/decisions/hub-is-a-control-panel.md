@@ -30,5 +30,6 @@ read as "one big menu with tabs".
 - Nothing opens at login and nothing opens by accident.
 - The panel can grow (memory, experiment, settings) without turning the product
   into a menu, because it is never the first thing a user sees.
-- The session page remains inside the panel; splitting it into its own window
-  stays an option if the panel still feels heavy in use.
+- The session page was later removed as well: Alt+I opens its own window, see
+  `session-is-its-own-window.md`. The panel no longer contains any of the five
+  actions.

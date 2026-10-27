@@ -38,7 +38,11 @@ export component ThinkingWindow inherits Window {
         TextEdit {text:root.source;read-only:true;wrap:word-wrap;max-height:100px;}
         if root.task-mode: Button {text:"Создать задание из этого фрагмента";enabled:!root.busy && !root.frozen;clicked=>{root.generate();}}
         Text {text:root.assignment;color:#dce1ef;wrap:word-wrap;}
-        Text {text:root.criterion;color:#a5adc2;wrap:word-wrap;}
+        // The criterion describes what a good answer covers, so showing it
+        // before the attempt would hand over the solution — including when a
+        // model writes the answer into its own criterion text.
+        if root.criterion != "" && root.frozen: Text {text:"Критерий сверки: " + root.criterion;color:#a5adc2;wrap:word-wrap;}
+        if root.criterion != "" && !root.frozen: Text {text:"Критерий сверки скрыт до фиксации вашего ответа.";color:#8a93a8;wrap:word-wrap;}
         answer-editor := TextEdit {text <=> root.answer;read-only:root.frozen;enabled:root.ready;placeholder-text:"Сначала ваша собственная попытка — до сверки с ИИ";wrap:word-wrap;edited=>{root.draft(root.answer);}}
         HorizontalLayout {
             Button {text:"Зафиксировать свой ответ";enabled:root.ready && !root.frozen && !root.busy;clicked=>{root.save();}}
@@ -244,17 +248,6 @@ export component HubWindow inherits Window {
     in-out property <string> api-key;
     in-out property <int> provider-slot: 0;
     in-out property <string> provider-label;
-    in-out property <string> objective;
-    in-out property <string> purpose;
-    in-out property <string> prerequisites;
-    in-out property <string> criteria;
-    in-out property <string> steps;
-    in-out property <string> gaps;
-    in-out property <string> results;
-    in-out property <string> timer: "15:00 · нет активного занятия";
-    in-out property <string> session-state;
-    in-out property <[string]> session-names: [];
-    in-out property <int> session-index: -1;
     in-out property <[string]> unit-names: [];
     in-out property <int> unit-index: -1;
     in-out property <string> unit-description;
@@ -290,11 +283,6 @@ export component HubWindow inherits Window {
     callback save-provider();
     callback delete-key();
     callback select-provider(int);
-    callback generate-plan();
-    callback new-session();
-    callback save-session();
-    callback session-action(string);
-    callback select-session(int);
     callback save-unit();
     callback select-unit(int);
     callback assess-unit(int);
@@ -322,48 +310,19 @@ export component HubWindow inherits Window {
         GridLayout {
             spacing: 6px;
             Row {
-                Button { text: "Занятие"; primary: root.page == 0; clicked => { root.page = 0; } }
-                Button { text: "Предметы"; primary: root.page == 1; clicked => { root.page = 1; } }
-                Button { text: "Контекст"; primary: root.page == 2; clicked => { root.page = 2; } }
-                Button { text: "Память"; primary: root.page == 3; clicked => { root.page = 3; } }
+                Button { text: "Предметы"; primary: root.page == 0; clicked => { root.page = 0; } }
+                Button { text: "Контекст"; primary: root.page == 1; clicked => { root.page = 1; } }
+                Button { text: "Память"; primary: root.page == 2; clicked => { root.page = 2; } }
+                Button { text: "Проверка"; primary: root.page == 3; clicked => { root.page = 3; } }
             }
             Row {
-                Button { text: "Проверка"; primary: root.page == 4; clicked => { root.page = 4; } }
-                Button { text: "История"; primary: root.page == 5; clicked => { root.page = 5; } }
-                Button { text: "Опыт"; primary: root.page == 6; clicked => { root.page = 6; } }
-                Button { text: "Настройки"; primary: root.page == 7; clicked => { root.page = 7; } }
+                Button { text: "История"; primary: root.page == 4; clicked => { root.page = 4; } }
+                Button { text: "Опыт"; primary: root.page == 5; clicked => { root.page = 5; } }
+                Button { text: "Настройки"; primary: root.page == 6; clicked => { root.page = 6; } }
             }
         }
         Text { text: root.status; color: #c9d2e7; wrap: word-wrap; }
         if root.page == 0:
-                VerticalLayout {
-                    padding: 16px;
-                    spacing: 10px;
-                    Text { text: root.timer; color: #c8d8ff; font-size: 24px; }
-                    Text { text: root.session-state; color: #a5adc2; }
-                    HorizontalLayout {
-                        ComboBox { model: root.session-names; current-index <=> root.session-index; selected(_) => { root.select-session(self.current-index); } }
-                        Button { text: "Новый план с ИИ"; enabled: !root.busy; clicked => { root.generate-plan(); } }
-                        Button { text: "Свой план"; clicked => { root.new-session(); } }
-                    }
-                    Text { text: "План — редактируемый черновик. Учитесь во внешнем источнике; обязательного теста нет."; color: #a5adc2; wrap: word-wrap; }
-                    LineEdit { text <=> root.objective; placeholder-text: "Что понять / научиться делать"; }
-                    LineEdit { text <=> root.purpose; placeholder-text: "Зачем это для личной цели"; }
-                    LineEdit { text <=> root.prerequisites; placeholder-text: "Предпосылки и что пока неизвестно"; }
-                    LineEdit { text <=> root.criteria; placeholder-text: "Признаки достижения цели"; }
-                    TextEdit { text <=> root.steps; placeholder-text: "Шаги, по одному на строку. [x] — работал над шагом, не доказал освоение."; wrap: word-wrap; vertical-stretch: 1; }
-                    Text { text: root.gaps; color: #c5b794; wrap: word-wrap; }
-                    TextEdit { text <=> root.results; placeholder-text: "Собственные результаты и заметки (дословно)"; wrap: word-wrap; vertical-stretch: 1; }
-                    HorizontalLayout {
-                        Button { text: "Сохранить план"; clicked => { root.save-session(); } }
-                        Button { text: "Начать / продолжить"; clicked => { root.session-action("resume"); } }
-                        Button { text: "Пауза"; clicked => { root.session-action("pause"); } }
-                        Button { text: "Завершить работу"; clicked => { root.session-action("complete"); } }
-                    }
-                    Text { text: "Время и галочки не являются оценкой знания и не создают FSRS-review."; color: #a5adc2; wrap: word-wrap; }
-                }
-            
-        if root.page == 1:
                 VerticalLayout {
                     padding: 16px; spacing: 12px;
                     ComboBox { model: root.subject-names; current-index <=> root.subject-index; selected(_) => { root.select-subject(self.current-index); } }
@@ -380,7 +339,7 @@ export component HubWindow inherits Window {
                     }
                 }
             
-        if root.page == 2:
+        if root.page == 1:
                 VerticalLayout {
                     padding: 16px; spacing: 10px;
                     HorizontalLayout {
@@ -409,7 +368,7 @@ export component HubWindow inherits Window {
                     TextEdit { text: root.ai-text; read-only: true; wrap: word-wrap; vertical-stretch: 2; }
                 }
             
-        if root.page == 3:
+        if root.page == 2:
                 VerticalLayout {
                     padding: 16px; spacing: 12px;
                     ComboBox { model: root.unit-names; current-index <=> root.unit-index; selected(_) => { root.select-unit(self.current-index); } }
@@ -435,7 +394,7 @@ export component HubWindow inherits Window {
                     Rectangle { vertical-stretch: 1; }
                 }
             
-        if root.page == 4:
+        if root.page == 3:
                 VerticalLayout {
                     padding:16px;spacing:10px;
                     Text {text:"Объективная сверка точного ответа";color:#f2f4fb;font-size:20px;}
@@ -459,7 +418,7 @@ export component HubWindow inherits Window {
                     Button {text:"Показать эталон (отметить помощь; без FSRS-review)";clicked=>{root.reveal-task();}}
                 }
             
-        if root.page == 5:
+        if root.page == 4:
                 VerticalLayout {
                     padding: 16px; spacing: 10px;
                     ComboBox { model: root.history-names; current-index <=> root.history-index; selected(_) => { root.select-history(self.current-index); } }
@@ -467,7 +426,7 @@ export component HubWindow inherits Window {
                     Text { visible: root.history-text == ""; text: "Сохранённых заметок пока нет. Сначала сохраните свою мысль на вкладке «Контекст»."; color: #a5adc2; wrap: word-wrap; }
                 }
             
-        if root.page == 6:
+        if root.page == 5:
                 VerticalLayout {
                     padding:16px;spacing:12px;
                     Text {text:"MRT · добровольный эксперимент";color:#f2f4fb;font-size:20px;}
@@ -481,7 +440,7 @@ export component HubWindow inherits Window {
                     Text {text:"Отчёт описательный: размер выборки, пропуски и неопределённость. Нет заявления о причинном эффекте или доказанной оптимизации обучения.";color:#c8d8ff;wrap:word-wrap;}
                 }
             
-        if root.page == 7:
+        if root.page == 6:
                 VerticalLayout {
                     padding: 16px; spacing: 12px;
                     Text { text: "OpenAI-совместимый провайдер"; color: #f2f4fb; font-size: 20px; }
@@ -498,5 +457,111 @@ export component HubWindow inherits Window {
                     Text { text: "MRT по умолчанию выключен. Отдельное добровольное включение — во вкладке «Опыт». Доступ к экрану/аудио не требуется."; color: #a5adc2; wrap: word-wrap; }
                     Rectangle { vertical-stretch: 1; }
                 }
+    }
+}
+
+export component SessionWindow inherits Window {
+    title: "Cognitive Popups — занятие";
+    preferred-width: 860px;
+    preferred-height: 740px;
+    min-width: 620px;
+    min-height: 560px;
+    background: #171920;
+    default-font-size: 14px;
+
+    in-out property <string> timer: "00:00 · нет активного занятия";
+    in-out property <string> session-state: "";
+    in-out property <[string]> session-names: [];
+    in-out property <int> session-index: -1;
+    in-out property <[string]> subject-names: [];
+    in-out property <int> subject-index: -1;
+    in-out property <string> subject-goal: "";
+    in-out property <string> objective;
+    in-out property <string> purpose;
+    in-out property <string> prerequisites;
+    in-out property <string> criteria;
+    in-out property <string> steps;
+    in-out property <string> gaps;
+    in-out property <string> results;
+    in-out property <string> status: "Собственная цель, план и результаты. Это не оценка знания.";
+    in-out property <bool> busy: false;
+    in-out property <string> provider-label;
+    in-out property <string> pending-session: "";
+
+    callback select-subject(int);
+    callback new-session();
+    callback generate-plan();
+    callback save-session();
+    callback session-action(string);
+    callback select-session(int);
+    callback refresh();
+    callback draft();
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+        HorizontalLayout {
+            Text { text: "Занятие"; color: #f2f4fb; font-size: 22px; font-weight: 600; }
+            Rectangle { horizontal-stretch: 1; }
+            Text { text: "Alt+I"; color: #6f7891; vertical-alignment: center; }
+        }
+        HorizontalLayout {
+            Text { text: root.timer; color: #c8d8ff; font-size: 22px; vertical-alignment: center; }
+            Text { text: root.session-state; color: #a5adc2; vertical-alignment: center; }
+        }
+        HorizontalLayout {
+            ComboBox { model: root.session-names; current-index <=> root.session-index; selected(_) => { root.select-session(self.current-index); } }
+            Button { text: "Новый план с ИИ"; enabled: !root.busy; clicked => { root.generate-plan(); } }
+            Button { text: "Свой план"; clicked => { root.new-session(); } }
+        }
+        Text { text: root.status; color: #c9d2e7; wrap: word-wrap; }
+        Text { text: "Время и галочки не являются оценкой знания и не создают FSRS-review. План — редактируемый черновик, обязательного теста нет."; color: #8a93a8; wrap: word-wrap; }
+        Text { visible: root.provider-label != ""; text: root.provider-label; color: #6f7891; wrap: word-wrap; }
+        ComboBox { model: root.subject-names; current-index <=> root.subject-index; selected(_) => { root.select-subject(self.current-index); } }
+        Text { text: root.subject-goal; color: #a5adc2; wrap: word-wrap; visible: root.subject-goal != ""; }
+        // Slint gives a ScrollView at least its content height, so a long plan
+        // would push the action row out of the window. The explicit bound keeps
+        // the plan scrollable and the actions always visible.
+        Rectangle {
+            clip: true;
+            min-height: 240px;
+            max-height: 520px;
+            vertical-stretch: 1;
+            ScrollView {
+                width: 100%;
+                height: 100%;
+                VerticalLayout {
+                spacing: 8px;
+                Text { text: "Цель занятия"; color: #dce1ef; }
+                LineEdit { text <=> root.objective; placeholder-text: "Что понять / научиться делать"; edited => { root.draft(); } }
+                Text { text: "Зачем это для личной цели"; color: #dce1ef; }
+                LineEdit { text <=> root.purpose; edited => { root.draft(); } }
+                Text { text: "Предпосылки и что пока неизвестно"; color: #dce1ef; }
+                LineEdit { text <=> root.prerequisites; edited => { root.draft(); } }
+                Text { text: "Признаки достижения цели"; color: #dce1ef; }
+                LineEdit { text <=> root.criteria; edited => { root.draft(); } }
+                HorizontalLayout {
+                    spacing: 10px;
+                    VerticalLayout {
+                        spacing: 6px;
+                        Text { text: "Шаги, по одному на строку. [x] — работал над шагом, не доказал освоение."; color: #dce1ef; wrap: word-wrap; }
+                        TextEdit { min-height: 88px; text <=> root.steps; wrap: word-wrap; edited => { root.draft(); } }
+                    }
+                    VerticalLayout {
+                        spacing: 6px;
+                        Text { text: "Собственные результаты (дословно)"; color: #dce1ef; wrap: word-wrap; }
+                        TextEdit { min-height: 88px; text <=> root.results; wrap: word-wrap; edited => { root.draft(); } }
+                    }
+                }
+                Text { visible: root.gaps != ""; text: root.gaps; color: #c5b794; wrap: word-wrap; }
+                }
+            }
+        }
+        HorizontalLayout {
+            Button { text: "Сохранить план"; clicked => { root.save-session(); } }
+            Button { text: "Начать / продолжить"; primary: true; clicked => { root.session-action("resume"); } }
+            Button { text: "Пауза"; clicked => { root.session-action("pause"); } }
+            Button { text: "Завершить работу"; clicked => { root.session-action("complete"); } }
+        }
     }
 }

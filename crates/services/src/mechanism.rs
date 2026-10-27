@@ -17,7 +17,7 @@ pub struct FourWords {
 
 impl FourWords {
     pub fn parse(text: &str) -> Result<Self, Error> {
-        let result: Self = serde_json::from_str(text)?;
+        let result: Self = crate::json::extract(text)?;
         if result.cues.len() != 4
             || result.cues.iter().any(|cue| {
                 [&cue.simple, &cue.term, &cue.meaning]

@@ -3,6 +3,7 @@
 pub mod archive;
 pub mod assessment;
 pub mod experiment;
+pub mod json;
 pub mod learning;
 pub mod mechanism;
 pub mod outbox;
@@ -40,11 +41,16 @@ pub fn data_dir() -> Result<PathBuf, Error> {
 
 /// OS locks are released on crash. A second hotkey invocation cannot open a
 /// competing editor or create an extra capture/pseudo-attempt.
+/// Every surface that may exist only once per desktop session. The session
+/// window is its own surface, so it must be listed here as well.
+pub const INSTANCE_WINDOWS: &[&str] =
+    &["hub", "note", "four_words", "task", "prediction", "session"];
+
 pub struct InstanceGuard(std::fs::File);
 
 impl InstanceGuard {
     pub fn acquire(name: &str) -> Result<Self, Error> {
-        if !matches!(name, "hub" | "note" | "four_words" | "task" | "prediction") {
+        if !INSTANCE_WINDOWS.contains(&name) {
             return Err(Error::Invalid("invalid instance lock"));
         }
         let file = std::fs::OpenOptions::new()
@@ -65,5 +71,18 @@ impl InstanceGuard {
 impl Drop for InstanceGuard {
     fn drop(&mut self) {
         let _ = self.0.unlock();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_user_facing_surface_has_its_own_single_instance_lock() {
+        for name in ["hub", "note", "four_words", "task", "prediction", "session"] {
+            assert!(INSTANCE_WINDOWS.contains(&name), "{name} must be lockable");
+        }
+        assert!(!INSTANCE_WINDOWS.contains(&"unknown"));
     }
 }

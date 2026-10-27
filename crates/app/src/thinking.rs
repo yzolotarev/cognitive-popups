@@ -1,6 +1,6 @@
 //! Alt+T and prediction: a real source → task/hypothesis → own attempt →
 //! model feedback flow. Open responses deliberately have no route to FSRS.
-use domain::{NewEvent, OperationId, SourceKind, SourceSnapshot};
+use domain::{NewEvent, OperationId, SourceSnapshot};
 use services::{provider::Provider, store::Store};
 use slint::ComponentHandle;
 use std::{cell::RefCell, rc::Rc};
@@ -131,7 +131,7 @@ impl State {
             })();
             let _=weak.upgrade_in_event_loop(move |ui|{
                 ui.set_busy(false);match result{
-                    Ok(response)=>{ui.set_feedback(response.into());ui.set_status("Ответ модели сохранён отдельно. Это feedback / needs_review; FSRS не менялся.".into());}
+                    Ok(response)=>{ui.set_feedback(crate::text::plain(&response).into());ui.set_status("Ответ модели сохранён отдельно. Это feedback / needs_review; FSRS не менялся.".into());}
                     Err(error)=>ui.set_status(error.to_string().into()),
                 }
             });
@@ -169,7 +169,7 @@ impl State {
                     &provider.model,
                     &response,
                 )?;
-                let exercise: Exercise = serde_json::from_str(&response)
+                let exercise: Exercise = services::json::extract(&response)
                     .map_err(|_| "Модель не вернула JSON задания; исходник сохранён")?;
                 if exercise.question.trim().is_empty() || exercise.criterion.trim().is_empty() {
                     return Err("Задание или критерий пусты".into());
@@ -230,12 +230,7 @@ pub fn run(task_mode: bool) -> std::result::Result<(), Box<dyn std::error::Error
         .into(),
     );
     ui.set_source(captured.snapshot.text.clone().into());
-    let source_kind = match captured.snapshot.kind {
-        SourceKind::Selection => "выделение",
-        SourceKind::Clipboard => "буфер обмена (давность и принадлежность окну не подтверждены)",
-        SourceKind::Manual => "ввод вручную",
-        SourceKind::None => "не захвачен",
-    };
+    let source_kind = crate::text::provenance(captured.snapshot.kind);
     ui.set_disclosure(
         format!(
             "Источник: {source_kind}. Запрос только по явной кнопке → {} / {}.",

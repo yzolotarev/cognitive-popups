@@ -9,11 +9,11 @@ use cognitive_exoskeleton_domain::{SourceKind, SourceSnapshot};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum CaptureError {
-    #[error("nothing is selected and the clipboard is empty")]
+    #[error("выделение пусто и буфер обмена не содержит текста")]
     NothingCaptured,
-    #[error("cannot read the primary selection: {0}")]
+    #[error("не удалось прочитать выделение: {0}")]
     PrimaryUnavailable(String),
-    #[error("cannot read the clipboard: {0}")]
+    #[error("не удалось прочитать буфер обмена: {0}")]
     ClipboardUnavailable(String),
 }
 
@@ -36,7 +36,7 @@ impl Reader for SystemReader {
     fn read_primary(&self) -> Result<Option<String>, String> {
         #[cfg(target_os = "windows")]
         {
-            Err("primary selection is not available on Windows; explicitly confirm clipboard fallback".into())
+            Err("в Windows нет primary selection; подтвердите чтение буфера обмена явно".into())
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -54,7 +54,7 @@ impl Reader for SystemReader {
             arboard::Clipboard::new()
                 .and_then(|mut clipboard| clipboard.get_text())
                 .map(Some)
-                .map_err(|_| "clipboard unavailable or not text".into())
+                .map_err(|_| "буфер обмена недоступен или содержит не текст".into())
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -78,11 +78,11 @@ fn run(program: &str, args: &[&str]) -> Result<Option<String>, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|_| format!("{program} could not start"))?;
+        .map_err(|_| format!("{program} не запустилась"))?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| format!("{program} stdout unavailable"))?;
+        .ok_or_else(|| format!("{program}: вывод недоступен"))?;
     let reader = std::thread::spawn(move || {
         let mut bytes = Vec::new();
         stdout.take(MAX + 1).read_to_end(&mut bytes).map(|_| bytes)
@@ -92,25 +92,25 @@ fn run(program: &str, args: &[&str]) -> Result<Option<String>, String> {
         _ => {
             let _ = child.kill();
             let _ = child.wait();
-            Err(format!("{program} timed out or could not be awaited"))
+            Err(format!("{program} не ответила за 2 секунды"))
         }
     };
     let bytes = reader
         .join()
-        .map_err(|_| format!("{program} reader failed"))?
-        .map_err(|_| format!("{program} output unavailable"))?;
+        .map_err(|_| format!("{program}: сбой чтения"))?
+        .map_err(|_| format!("{program}: вывод не прочитан"))?;
     let status = status?;
     if bytes.len() > MAX as usize {
-        return Err("captured text exceeds the 1 MiB safety limit".into());
+        return Err("захваченный текст больше предельных 1 МиБ".into());
     }
     if !status.success() {
-        return Err(format!("{program} could not read text ({status})"));
+        return Err(format!("{program} не прочитала текст ({status})"));
     }
     // Reader implementations return raw text; normalization happens once in
     // capture_with. Double normalization used to strip two meaningful newlines.
     String::from_utf8(bytes)
         .map(Some)
-        .map_err(|_| "clipboard does not contain valid UTF-8 text".into())
+        .map_err(|_| "буфер обмена не содержит текста в UTF-8".into())
 }
 
 /// Removes the trailing line break added by clipboard tools, keeps the rest

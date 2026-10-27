@@ -7,8 +7,9 @@ decisions in it are not replaced by this README.
 
 Current state: **P2/P5 foundations in progress**. P0 delivered the versioned specification and the
 traceability baseline; the P2 slice provides the typed event journal with
-provenance , idempotent writes, and a deterministic evidence-grade gate with atomic review logging. There is still no working desktop application and no
-GUI framework has been selected. Legacy Python code remains in Git history.
+provenance and idempotent writes. A separate deterministic evidence gate and atomic
+verified-review log now cover a subset of task-verification invariants. There is still
+no working desktop application and no GUI framework has been selected. Legacy Python code remains in Git history.
 
 ## Requirements baseline (P0)
 

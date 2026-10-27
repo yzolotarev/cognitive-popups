@@ -66,6 +66,9 @@ struct OwnNote {
 struct Draft {
     subject_id: Option<String>,
     session_id: Option<String>,
+    /// Older drafts predate this field, so a missing value must not fail them.
+    #[serde(default)]
+    unit_id: Option<String>,
     material: String,
     own_text: String,
     objective: String,
@@ -497,6 +500,7 @@ impl Controller {
         Draft {
             subject_id: self.subject.as_ref().map(|r| r.id.clone()),
             session_id: self.session.as_ref().map(|r| r.id.clone()),
+            unit_id: self.unit.as_ref().map(|r| r.id.clone()),
             material: ui.get_material().to_string(),
             own_text: ui.get_own_text().to_string(),
             objective: ui.get_objective().to_string(),
@@ -542,6 +546,14 @@ impl Controller {
             {
                 self.select_session(ui, index as i32)?;
                 ui.set_session_index(index as i32);
+            }
+            if let Some(index) = self
+                .units
+                .iter()
+                .position(|r| Some(&r.id) == draft.unit_id.as_ref())
+            {
+                self.select_unit(ui, index as i32)?;
+                ui.set_unit_index(index as i32);
             }
             ui.set_material(draft.material.clone().into());
             ui.set_own_text(draft.own_text.clone().into());
@@ -1389,6 +1401,28 @@ mod tests {
         assert_eq!(ui.get_own_text(), "  незавершённая заметка  ");
         assert!(restored.session.as_ref().unwrap().value.plan.steps[0].worked);
         assert_eq!(restored.store.review_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn gui_selected_memory_unit_survives_restart_and_unblocks_the_check() {
+        let (dir, mut controller, ui) = setup();
+        ui.set_unit_description("Маржа считается от себестоимости".into());
+        controller.save_unit(&ui).unwrap();
+        let unit_id = controller.unit.as_ref().expect("unit selected").id.clone();
+        controller.checkpoint(&ui).unwrap();
+        drop(controller);
+
+        let mut restored = Controller::open(dir.path()).unwrap();
+        restored.refresh(&ui).unwrap();
+        restored.restore_draft(&ui).unwrap();
+        assert_eq!(
+            restored.unit.as_ref().map(|record| record.id.clone()),
+            Some(unit_id)
+        );
+        ui.set_check_question("От какой цены считается маржа?".into());
+        ui.set_check_expected("себестоимость".into());
+        restored.create_task(&ui).unwrap();
+        assert_eq!(restored.tasks.len(), 1);
     }
 
     #[test]

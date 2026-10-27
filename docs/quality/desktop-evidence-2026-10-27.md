@@ -31,6 +31,9 @@ This is evidence for specific claims only. It is not full v1 acceptance.
 | Weight validation in the GUI | entering `{"four_words":1,"flashcards":2}` and saving left revision 1 unchanged and showed “неизвестное имя механики…” |
 | Note saved end to end | `note --manual-source`, typed text, `Ctrl+Enter` appended a `user_text` journal event and the process exited |
 | Alt+I session end to end | “Свой план”, objective and success criteria typed, `Сохранить план`, `Начать / продолжить`, `Пауза`, `Начать / продолжить`, `Завершить работу`; the workspace row moved `Paused → Active → Paused → Active → Completed` and `reviews` stayed 0 |
+| Exact-answer check, inexact answer | expected `цена продажи`, answered `цена продажи!`: the attempt was stored as `Incorrect` with no review, and the workspace gained no schedule |
+| Exact-answer check, exact answer, FSRS off | expected `себестоимость`, answered `себестоимость` independently: stored as `Correct`, status “FSRS применён к 0 компонентам”, still 0 reviews, because FSRS for that unit was never enabled |
+| Check verdict is visible | the verdict appeared above the question field; before the fix it was rendered below the last button and fell outside the window |
 | No window on plain start | `cognitive-popups` with no arguments printed the command list and mapped no window (`hyprctl -j clients` listed none) |
 | Control panel is explicit | `cognitive-popups hub`/`session` opened the window titled «Cognitive Popups — управление» |
 | Interrupted session recovery | after killing the hub with an `Active` session, the restart showed `пауза` in both the header and the selector, kept the plan and did not mark the session completed |

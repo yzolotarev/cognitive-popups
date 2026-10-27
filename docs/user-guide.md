@@ -73,8 +73,11 @@ auto-deletion policy has been introduced.
 ## Working loop
 
 1. **Предметы**: create a subject with a long-term goal and context. Optional
-   preferences are integer weights in a JSON object; automatic reweighting by
-   lessons is not enabled without the outstanding policy decision.
+   preferences are integer weights in a JSON object over the mechanisms
+   `four_words`, `explain`, `example`, `exercise`. Unknown names are rejected,
+   `0` excludes a mechanism, and a zero sum means "choose explicitly" — no
+   mechanism is substituted silently. Automatic reweighting by lessons is not
+   enabled without the outstanding policy decision.
 2. **Контекст**: capture a fragment explicitly or paste/type material.
    Clipboard fallback is labelled unverified/stale-possible; confirm the
    displayed text yourself. Your thought and AI output have separate fields and

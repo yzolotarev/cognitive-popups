@@ -4,6 +4,7 @@ use services::{
     learning::{
         MemoryUnit, PLAN_PROMPT, Plan, SelfAssessment, Session, SessionStatus, Step, Subject,
     },
+    mechanism::validate_weights,
     provider::Provider,
     store::{Record, Store},
 };
@@ -627,6 +628,7 @@ impl Controller {
                 .map_err(|_| "Предпочтения: нужен JSON-объект с целыми неотрицательными весами")?,
         };
         value.validate()?;
+        let weight_sum = validate_weights(&value.preferences)?;
         let mut record = self.subject.clone().unwrap_or(Record {
             id: id(),
             revision: 0,
@@ -638,7 +640,16 @@ impl Controller {
         record.value = value;
         self.subject = Some(record);
         self.refresh(ui)?;
-        ui.set_status("Предмет и личная цель сохранены.".into());
+        if weight_sum == 0 {
+            ui.set_status(
+                "Предмет сохранён. Все веса нулевые: автоматический выбор механики недоступен, режим выбирается явно."
+                    .into(),
+            );
+        } else {
+            ui.set_status(
+                "Предмет и личная цель сохранены. Веса механик — ручная настройка.".into(),
+            );
+        }
         Ok(())
     }
 
@@ -1313,6 +1324,22 @@ mod tests {
         assert_eq!(ui.get_own_text(), "  незавершённая заметка  ");
         assert!(restored.session.as_ref().unwrap().value.plan.steps[0].worked);
         assert_eq!(restored.store.review_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn gui_subject_rejects_unknown_mechanism_weights_instead_of_ignoring_them() {
+        let (_dir, mut controller, ui) = setup();
+        let revision = controller.subject.as_ref().unwrap().revision;
+        ui.set_preferences(r#"{"four_words":1,"flashcards":2}"#.into());
+        assert!(controller.save_subject(&ui).is_err());
+        assert_eq!(controller.subject.as_ref().unwrap().revision, revision);
+        ui.set_preferences(r#"{"four_words":0,"exercise":0}"#.into());
+        controller.save_subject(&ui).unwrap();
+        assert!(ui.get_status().contains("явно"));
+        assert_eq!(
+            controller.subject.as_ref().unwrap().value.preferences.len(),
+            2
+        );
     }
 
     #[test]

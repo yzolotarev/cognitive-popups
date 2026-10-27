@@ -1,0 +1,19 @@
+[package]
+name = "cognitive-exoskeleton"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+publish = false
+
+[[test]]
+name = "traceability"
+path = "../../tests/traceability.rs"
+
+[dependencies]
+capture = { package = "cognitive-exoskeleton-capture", path = "../capture" }
+domain = { package = "cognitive-exoskeleton-domain", path = "../domain" }
+journal = { package = "cognitive-exoskeleton-journal", path = "../journal" }
+ui = { package = "cognitive-exoskeleton-ui", path = "../ui" }
+serde_json = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }

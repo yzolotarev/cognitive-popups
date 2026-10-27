@@ -1,0 +1,116 @@
+import { Button, ScrollView, TextEdit } from "std-widgets.slint";
+
+export component NoteWindow inherits Window {
+    in property <string> preview: "";
+    in property <string> source-label: "";
+    in-out property <string> note: "";
+    in-out property <string> status: "Своя мысль сохраняется дословно.";
+    callback save(string);
+    callback cancel();
+
+    width: 560px;
+    height: 380px;
+    title: "Cognitive Exoskeleton — заметка";
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+
+    Rectangle {
+        border-radius: 16px;
+        background: #17171ef2;
+        border-width: 1px;
+        border-color: #ffffff1f;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #00000066;
+        drop-shadow-offset-y: 8px;
+
+        VerticalLayout {
+            padding: 20px;
+            spacing: 12px;
+
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "ЗАМЕТКА";
+                    color: #9aa0b4;
+                    font-size: 11px;
+                    letter-spacing: 1.5px;
+                    vertical-alignment: center;
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Text {
+                    text: root.source-label;
+                    color: #7f879c;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle {
+                background: #0f0f14cc;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: #ffffff14;
+                min-height: 96px;
+                max-height: 96px;
+                clip: true;
+
+                ScrollView {
+                    VerticalLayout {
+                        padding: 12px;
+                        Text {
+                            text: root.preview;
+                            color: #c9cede;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+
+            TextEdit {
+                text <=> root.note;
+                placeholder-text: "Что вы поняли своими словами?";
+                wrap: word-wrap;
+                font-size: 15px;
+                min-height: 110px;
+                vertical-stretch: 1;
+            }
+
+            HorizontalLayout {
+                spacing: 10px;
+                Text {
+                    text: root.status;
+                    color: #8f97ab;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Button {
+                    text: "Отмена";
+                    clicked => { root.cancel(); }
+                }
+                Button {
+                    text: "Сохранить";
+                    primary: true;
+                    clicked => { root.save(root.note); }
+                }
+            }
+        }
+    }
+}
+
+export component SmokeWindow inherits Window {
+    width: 320px;
+    height: 200px;
+    title: "slint-smoke";
+    background: #c0392b;
+
+    Text {
+        text: "SMOKE";
+        color: #ffffff;
+        font-size: 32px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}

@@ -6,6 +6,7 @@ data=${XDG_DATA_HOME:-"$HOME/.local/share"}
 bindir=${XDG_BIN_HOME:-"$HOME/.local/bin"}
 payload="$data/cognitive-popups"
 dest="$bindir/cognitive-popups"
+legacy_dest="$payload/bin/cognitive-popups"
 
 # The five actions are typed and bound as `cognitive-popups <action>`, so the
 # binary has to be reachable by name. A private subdirectory under share/ is not
@@ -13,6 +14,9 @@ dest="$bindir/cognitive-popups"
 # "Unknown command".
 mkdir -p "$bindir" "$data/applications"
 install -Dm755 "$here/cognitive-popups" "$dest"
+ # Keep the package-local copy for scripts and older launchers that addressed
+ # the first installer layout directly. Hotkeys must use the PATH copy above.
+install -Dm755 "$here/cognitive-popups" "$legacy_dest"
 install -Dm644 "$here/hyprland.conf" "$payload/hyprland.conf"
 if [ -f "$here/hyprland.lua" ]; then
     install -Dm644 "$here/hyprland.lua" "$payload/hyprland.lua"

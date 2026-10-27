@@ -3,7 +3,6 @@
 set -eu
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 data=${XDG_DATA_HOME:-"$HOME/.local/share"}
-config=${XDG_CONFIG_HOME:-"$HOME/.config"}
 dest="$data/cognitive-popups/bin/cognitive-popups"
 install -Dm755 "$here/cognitive-popups" "$dest"
 install -Dm644 "$here/hyprland.conf" "$data/cognitive-popups/hyprland.conf"
@@ -14,17 +13,16 @@ case "$dest" in *'%'*|*'"'*|*'\'*|*'`'*|*'$'*) echo 'Unsupported installation pa
 cat > "$data/applications/cognitive-popups.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Cognitive Popups
-Comment=Personal learning goals, contextual thinking and evidence
+Name=Cognitive Popups — управление
+Comment=Control panel for subjects, sessions, memory, experiment and settings
 Exec="$dest" hub
 Terminal=false
 Categories=Education;
 StartupNotify=true
 EOF
 if [ "${1:-}" = '--autostart' ]; then
-    mkdir -p "$config/autostart"
-    cp "$data/applications/cognitive-popups.desktop" "$config/autostart/cognitive-popups.desktop"
+    printf 'Nothing to autostart: every action is a one-shot command bound to a hotkey.\n' >&2
 fi
-printf 'Installed: %s\nAutostart is off unless --autostart was passed.\n' "$dest"
+printf 'Installed: %s\nNo autostart entry was created; the actions run on demand.\n' "$dest"
 printf 'Hyprland keybinds are an opt-in example: %s\n' "$data/cognitive-popups/hyprland.conf"
 printf 'It is NOT sourced automatically; remove old Alt+E/W/T/I binds first.\n'

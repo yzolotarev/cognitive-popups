@@ -6,6 +6,11 @@ the [versioned specification](docs/spec/cognitive_exoskeleton_v0_2_full_spec.md)
 decisions in it are not replaced by this README.
 
 Current state: **full v1 implementation in progress; not release-accepted**.
+
+The product is the five on-demand windows (comment, Four Words, task, prediction,
+session). Running the binary without arguments prints the command list and opens
+nothing; the tabbed control panel is explicit (`cognitive-popups hub`) and is a
+surface for subjects, memory, the experiment and settings, not the entry point.
 Slint 1.18 desktop UI includes provider settings, context/own notes, subjects,
 editable learning sessions with pause/recovery, memory/self-assessments and
 explicit opt-in FSRS with frozen exact-answer checks. See the
@@ -28,6 +33,7 @@ Legacy Python code remains in Git history and is not imported into the new runti
 | [`docs/decisions/full-product-contract.md`](docs/decisions/full-product-contract.md) | The FULL PRODUCT SKILL adopted as the main contract, with its SHA-256 |
 | [`docs/decisions/mrt-protocol-v1.md`](docs/decisions/mrt-protocol-v1.md) | Approved MRT protocol v1: consent, limits, outcome window, reporting |
 | [`docs/decisions/rewrite-map.md`](docs/decisions/rewrite-map.md) | Old behaviour → new scenario → acceptance, and what was deliberately not transferred |
+| [`docs/decisions/hub-is-a-control-panel.md`](docs/decisions/hub-is-a-control-panel.md) | Why the tabbed window is not the entry point and nothing autostarts |
 | [`docs/quality/desktop-evidence-2026-10-27.md`](docs/quality/desktop-evidence-2026-10-27.md) | What was actually verified on a real Linux desktop, and what was not |
 
 `tests/traceability.rs` fails CI when a requirement ID from the specification is missing

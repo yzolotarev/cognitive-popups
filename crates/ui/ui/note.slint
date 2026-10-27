@@ -217,7 +217,7 @@ export component SmokeWindow inherits Window {
 }
 
 export component HubWindow inherits Window {
-    title: "Cognitive Popups";
+    title: "Cognitive Popups — управление";
     preferred-width: 1040px;
     preferred-height: 780px;
     min-width: 780px;
@@ -334,6 +334,7 @@ export component HubWindow inherits Window {
                 Button { text: "Настройки"; primary: root.page == 7; clicked => { root.page = 7; } }
             }
         }
+        Text { text: root.status; color: #c9d2e7; wrap: word-wrap; }
         if root.page == 0:
                 VerticalLayout {
                     padding: 16px;
@@ -439,6 +440,7 @@ export component HubWindow inherits Window {
                     padding:16px;spacing:10px;
                     Text {text:"Объективная сверка точного ответа";color:#f2f4fb;font-size:20px;}
                     Text {text:"До попытки выберите в Памяти проверяемую единицу и зафиксируйте вопрос с точным эталоном. Это ограниченный code-check, не универсальная проверка смысла или компетентности.";color:#a5adc2;wrap:word-wrap;}
+                    Text {visible: root.check-status != ""; text:root.check-status;color:#c9d2e7;wrap:word-wrap;}
                     LineEdit {text <=> root.check-question;placeholder-text:"Вопрос для выбранной единицы";}
                     LineEdit {text <=> root.check-expected;input-type:password;placeholder-text:"Точный эталон (фиксируется до попытки)";}
                     Button {text:"Подтвердить связь с единицей и зафиксировать критерий";clicked=>{root.create-task();}}
@@ -455,7 +457,6 @@ export component HubWindow inherits Window {
                         Button {text:"Пропустить";clicked=>{root.submit-task("skip");}}
                     }
                     Button {text:"Показать эталон (отметить помощь; без FSRS-review)";clicked=>{root.reveal-task();}}
-                    Text {text:root.check-status;color:#c9d2e7;wrap:word-wrap;}
                 }
             
         if root.page == 5:
@@ -497,7 +498,5 @@ export component HubWindow inherits Window {
                     Text { text: "MRT по умолчанию выключен. Отдельное добровольное включение — во вкладке «Опыт». Доступ к экрану/аудио не требуется."; color: #a5adc2; wrap: word-wrap; }
                     Rectangle { vertical-stretch: 1; }
                 }
-            
-        Text { text: root.status; color: #c9d2e7; wrap: word-wrap; }
     }
 }

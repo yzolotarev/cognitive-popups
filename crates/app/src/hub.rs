@@ -1101,8 +1101,15 @@ impl Controller {
             members: vec![],
             source_operations: vec![],
         };
-        self.store.save("unit", &id(), 0, &unit, now())?;
+        let unit_id = id();
+        self.store.save("unit", &unit_id, 0, &unit, now())?;
         self.refresh(ui)?;
+        // A freshly saved unit is the one the user means; without selecting it
+        // "Проверка" refuses to create a task for a unit the UI appears to show.
+        if let Some(index) = self.units.iter().position(|record| record.id == unit_id) {
+            self.select_unit(ui, index as i32)?;
+            ui.set_unit_index(index as i32);
+        }
         ui.set_status("Единица сохранена без автоматического FSRS-расписания.".into());
         Ok(())
     }

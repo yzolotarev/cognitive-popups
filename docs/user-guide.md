@@ -5,11 +5,16 @@ desktop acceptance and the real desktop hotkey/capture checks are still open.
 
 ## Start and install
 
-Run `cognitive-popups hub` (or launch without arguments). `--help` is a
-non-GUI diagnostic and works without a desktop.
+Running the program without arguments prints this guide's command list and
+does not open a window. The five actions are separate windows that appear on
+demand; the control panel (`cognitive-popups hub`, or the installed menu entry
+«Cognitive Popups — управление») is a separate surface for subjects, sessions,
+memory, the experiment and settings, not their menu and not the entry point.
+`--help` is a non-GUI diagnostic and works without a desktop.
 
 Linux release packages include `install.sh`: `sh install.sh` installs a
-user-local binary and launcher; `--autostart` is opt-in. Windows packages
+user-local binary and launcher; there is nothing to autostart, because every
+action is a one-shot command bound to a hotkey. Windows packages
 include `install.ps1` (user-local Start menu shortcut; optional `-Autostart`).
 Neither installer edits your compositor or hotkey configuration.
 
@@ -33,7 +38,7 @@ The historical application is never launched or modified by this runtime.
 | Alt+W | `cognitive-popups four-words` | Four Words: four layered semantic anchors |
 | Alt+T | `cognitive-popups task` | exercise → your own attempt → feedback |
 | Ctrl+Alt+P | `cognitive-popups prediction` | your hypothesis **before** comparison |
-| Alt+I | `cognitive-popups hub` | subject, goal, plan and session |
+| Alt+I | `cognitive-popups session` | subject, goal, plan and session (opens the control panel on that page) |
 
 `cognitive-popups note` is the shortcut-free version of the comment window.
 `--manual-source` reads the material from stdin instead of capturing a

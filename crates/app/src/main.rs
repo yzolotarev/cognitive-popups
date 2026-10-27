@@ -19,8 +19,8 @@ const USAGE: &str = "\
 Cognitive Popups
 
 Usage:
-  cognitive-popups                open the desktop application
-  cognitive-popups hub            subjects, sessions, context, memory and settings
+  cognitive-popups hub            control panel: subjects, sessions, context, memory, experiment, settings
+  cognitive-popups session        control panel opened on the session page
   cognitive-popups note           capture the selection and open the note window
   cognitive-popups comment        own comment (Alt+E)
   cognitive-popups task           exercise → own attempt → feedback (Alt+T)
@@ -32,6 +32,9 @@ Usage:
   cognitive-popups mrt-report     explicit experiment JSON export (no raw user text)
   cognitive-popups archive PATH [TABLE]   explicitly inspect a read-only SQLite archive
   cognitive-popups --help         show this message
+
+No arguments prints this message instead of opening a window. The five actions
+are separate windows that appear on demand; the control panel is not their menu.
 ";
 
 fn init_platform_and_app_id() {
@@ -59,7 +62,13 @@ fn main() -> ExitCode {
             println!("{USAGE}");
             ExitCode::SUCCESS
         }
-        None | Some("hub" | "settings" | "session" | "subjects" | "context" | "memory") => {
+        None => {
+            // The control panel is not the product's entry point: launching the
+            // binary must never drop the user into one big window with tabs.
+            println!("{USAGE}");
+            ExitCode::SUCCESS
+        }
+        Some("hub" | "settings" | "session" | "subjects" | "context" | "memory") => {
             match hub::run(action.as_deref().unwrap_or("hub")) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {

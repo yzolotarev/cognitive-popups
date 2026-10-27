@@ -5,6 +5,12 @@ edition = "2024"
 rust-version = "1.90"
 publish = false
 
+# Historical Rust package name is retained to avoid invalidating the lockfile.
+# The published executable and UI use the current product name.
+[[bin]]
+name = "cognitive-popups"
+path = "src/main.rs"
+
 [workspace]
 members = ["crates/*"]
 resolver = "3"

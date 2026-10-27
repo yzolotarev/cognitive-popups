@@ -191,10 +191,10 @@ pub fn verify(
         if target.criterion_version.trim().is_empty() {
             return Err(EvidenceError::Empty("criterion version"));
         }
-        if let Criterion::ExactText { expected, .. } = &target.criterion {
-            if expected.trim().is_empty() {
-                return Err(EvidenceError::Empty("expected text"));
-            }
+        if let Criterion::ExactText { expected, .. } = &target.criterion
+            && expected.trim().is_empty()
+        {
+            return Err(EvidenceError::Empty("expected text"));
         }
     }
 

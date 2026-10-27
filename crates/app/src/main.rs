@@ -34,8 +34,26 @@ Usage:
   cognitive-popups --help         show this message
 ";
 
+fn init_platform_and_app_id() {
+    // The Wayland app_id can only be set once a platform exists. Creating a
+    // component initializes the platform without mapping a window, so a
+    // throwaway one lets us set the id before the first real window.
+    if slint::set_xdg_app_id("cognitive-popups").is_ok() {
+        return;
+    }
+    if let Ok(probe) = ui::SmokeWindow::new() {
+        if let Err(error) = slint::set_xdg_app_id("cognitive-popups") {
+            eprintln!("warning: could not set app id: {error}");
+        }
+        drop(probe);
+    }
+}
+
 fn main() -> ExitCode {
     let action = std::env::args().nth(1);
+    // Set the Wayland app_id before the first visible window; otherwise the
+    // compositor sees an empty class and window rules cannot address us.
+    init_platform_and_app_id();
     match action.as_deref() {
         Some("--help" | "-h") => {
             println!("{USAGE}");

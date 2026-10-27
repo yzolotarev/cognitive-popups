@@ -64,7 +64,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p package/cognitive-popups-linux
-          cp target/release/cognitive-popups packaging/linux/install.sh docs/user-guide.md LICENSE package/cognitive-popups-linux/
+          cp target/release/cognitive-popups packaging/linux/install.sh packaging/linux/hyprland.conf docs/user-guide.md LICENSE package/cognitive-popups-linux/
           tar -czf cognitive-popups-Linux-x86_64.tar.gz -C package cognitive-popups-linux
           test_home=$(mktemp -d)
           HOME="$test_home" XDG_DATA_HOME="$test_home/data" XDG_CONFIG_HOME="$test_home/config" sh package/cognitive-popups-linux/install.sh

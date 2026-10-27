@@ -117,3 +117,28 @@ Desktop-проверки не выполнялись: P1 ещё не начат,
   unverified; compilation is not desktop acceptance. The UI smoke command is
   diagnostic only; its auto-close/focus behavior remains unresolved.
 - This is an integration checkpoint, not completion of v1 or P3 acceptance.
+
+## Full v1 — 27.10.2026
+
+**Сделано.** `crates/services` (провайдер, хранилище, обучение, проверки,
+эксперимент, архив, Four Words), Slint-окна Hub/Note/FourWords/Thinking,
+команды `hub`, `note`, `comment`, `four-words`, `task`, `prediction`,
+`capture`, `diagnostics`, `credential-probe`, `mrt-report`, `archive`, `smoke`,
+установщики Linux/Windows, пример привязок Hyprland.
+
+**Отклонение.** Первый вариант вкладок на `TabWidget` обрезал «Настройки» в
+тайловом окне 734 px; заменён на сетку 2×4. Кнопки с `checked`, связанным с
+выражением, не переключались кликом; подсветка переведена на `primary`.
+
+**Отклонение.** Wayland `app_id` был пустым: композитор не мог адресовать окно
+по классу. Добавлена инициализация платформы и `set_xdg_app_id` до первого окна.
+
+**Найдено ревьюером и исправлено.** Гонка частотных лимитов MRT, потеря
+сохранённого outcome при поздней обработке, устаревшая проверка сессии перед
+доставкой, расхождение заметки и журнала. Закрыты транзакцией назначения,
+сверкой по времени события, повторной проверкой сессии и transactional outbox.
+
+**Не сделано и почему.** Windows desktop, реальные глобальные hotkey, захват
+выделения из браузера/PDF и живой провайдер не проверены: нет доступа к
+Windows и рабочему desktop-сценарию с валидным ключом. Тестовый `ydotool` не
+доставлял button-события, поэтому клики мышью не считаются доказанными.

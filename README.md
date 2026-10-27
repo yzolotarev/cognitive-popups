@@ -1,13 +1,13 @@
-# Cognitive Exoskeleton
+# Cognitive Popups
 
-Cross-platform desktop application for supporting your own thinking and learning while
+Planned cross-platform desktop application for supporting your own thinking and learning while
 you work in a browser, a PDF, an editor or an external trainer. The product contract is
 the [versioned specification](docs/spec/cognitive_exoskeleton_v0_2_full_spec.md);
 decisions in it are not replaced by this README.
 
-Current state: **P2 in progress**. P0 delivered the versioned specification and the
-traceability baseline; the first P2 slice provides the typed event journal with
-provenance and idempotent writes. There is still no working desktop application and no
+Current state: **P2/P5 foundations in progress**. P0 delivered the versioned specification and the
+traceability baseline; the P2 slice provides the typed event journal with
+provenance , idempotent writes, and a deterministic evidence-grade gate with atomic review logging. There is still no working desktop application and no
 GUI framework has been selected. Legacy Python code remains in Git history.
 
 ## Requirements baseline (P0)
@@ -47,7 +47,7 @@ Windows Server 2022 and Ubuntu 24.04 (x86-64). Download the resulting executable
 from the run's **Artifacts** section; these are development scaffolds, not installers.
 Linux executables are built against Ubuntu 24.04 and are not promised to run on
 older distributions. Artifact downloads may require restoring executable permission
-on Linux (`chmod +x cognitive-exoskeleton`).
+on Linux (`chmod +x cognitive-popups`).
 
 CI uses no LLM keys, personal data or repository secrets. Hosted runners do not
 validate desktop interactions, global hotkeys, selection capture, Wayland/X11

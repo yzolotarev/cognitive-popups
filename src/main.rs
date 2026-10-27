@@ -1,4 +1,4 @@
-const PRODUCT_NAME: &str = "Cognitive Exoskeleton";
+const PRODUCT_NAME: &str = "Cognitive Popups";
 
 fn main() {
     println!("{PRODUCT_NAME} — development scaffold (no desktop UI yet)");
@@ -10,6 +10,6 @@ mod tests {
 
     #[test]
     fn product_identity_is_stable() {
-        assert_eq!(PRODUCT_NAME, "Cognitive Exoskeleton");
+        assert_eq!(PRODUCT_NAME, "Cognitive Popups");
     }
 }

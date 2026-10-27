@@ -1,4 +1,51 @@
-import { Button, ScrollView, TextEdit } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, ScrollView, TextEdit, TabWidget } from "std-widgets.slint";
+
+export struct Cue {
+    simple:string,
+    term:string,
+    meaning:string,
+    stage:int,
+}
+
+export component FourWordsWindow inherits Window {
+    title:"Cognitive Exoskeleton — Four Words";
+    preferred-width:620px;
+    preferred-height:440px;
+    background:#171920;
+    in-out property <[Cue]> cues:[];
+    in-out property <string> source;
+    in-out property <string> disclosure;
+    in-out property <string> status:"Четыре смысловые опоры. Клик или 1–4: опора → термин → смысл.";
+    in-out property <bool> busy:false;
+    callback generate();
+    callback reveal(int);
+    callback cancel();
+    forward-focus: keys;
+    keys := FocusScope {
+        key-pressed(event)=>{
+            if(event.text==Key.Escape){root.cancel();return accept;}
+            if(event.text=="1"){root.reveal(0);return accept;}
+            if(event.text=="2"){root.reveal(1);return accept;}
+            if(event.text=="3"){root.reveal(2);return accept;}
+            if(event.text=="4"){root.reveal(3);return accept;}
+            return reject;
+        }
+        VerticalLayout {
+            padding:20px;spacing:14px;
+            Text {text:"Four Words";color:#f2f4fb;font-size:24px;font-weight:600;}
+            Text {text:root.disclosure;color:#a5adc2;wrap:word-wrap;}
+            TextEdit {text:root.source;read-only:true;wrap:word-wrap;max-height:85px;}
+            for cue[index] in root.cues: VerticalLayout {
+                spacing:4px;
+                Button {text: (index+1) + ". " + (cue.stage==0 ? cue.simple : cue.term);clicked=>{root.reveal(index);}}
+                if cue.stage==2: Text {text:cue.meaning;color:#dce1ef;wrap:word-wrap;}
+            }
+            Rectangle {vertical-stretch:1;}
+            Text {text:root.status;color:#c9d2e7;wrap:word-wrap;}
+            Button {text:"Отправить этот фрагмент → четыре опоры";enabled:!root.busy;clicked=>{root.generate();}}
+        }
+    }
+}
 
 export component NoteWindow inherits Window {
     in property <string> preview: "";
@@ -7,6 +54,8 @@ export component NoteWindow inherits Window {
     in-out property <string> status: "Своя мысль сохраняется дословно.";
     callback save(string);
     callback cancel();
+    callback draft(string);
+    forward-focus: editor;
 
     width: 560px;
     height: 380px;
@@ -68,13 +117,19 @@ export component NoteWindow inherits Window {
                 }
             }
 
-            TextEdit {
+            editor := TextEdit {
                 text <=> root.note;
                 placeholder-text: "Что вы поняли своими словами?";
                 wrap: word-wrap;
                 font-size: 15px;
                 min-height: 110px;
                 vertical-stretch: 1;
+                edited => { root.draft(root.note); }
+                key-pressed(event) => {
+                    if (event.text == Key.Escape) { root.cancel(); return accept; }
+                    if (event.modifiers.control && event.text == Key.Return) { root.save(root.note); return accept; }
+                    return reject;
+                }
             }
 
             HorizontalLayout {
@@ -91,7 +146,7 @@ export component NoteWindow inherits Window {
                     clicked => { root.cancel(); }
                 }
                 Button {
-                    text: "Сохранить";
+                    text: "Сохранить · Ctrl+Enter";
                     primary: true;
                     clicked => { root.save(root.note); }
                 }
@@ -112,5 +167,279 @@ export component SmokeWindow inherits Window {
         font-size: 32px;
         horizontal-alignment: center;
         vertical-alignment: center;
+    }
+}
+
+export component HubWindow inherits Window {
+    title: "Cognitive Exoskeleton";
+    preferred-width: 920px;
+    preferred-height: 780px;
+    min-width: 780px;
+    min-height: 680px;
+    background: #171920;
+    default-font-size: 14px;
+    in-out property <string> status: "Локальные данные. Фоновая запись и предложения выключены.";
+    in-out property <bool> busy: false;
+    in-out property <int> page: 0;
+    in-out property <[string]> subject-names: [];
+    in-out property <int> subject-index: -1;
+    in-out property <string> subject-name;
+    in-out property <string> personal-goal;
+    in-out property <string> subject-context;
+    in-out property <string> preferences: "{}";
+    in-out property <string> material;
+    in-out property <string> own-text;
+    in-out property <string> ai-text;
+    in-out property <[Cue]> cues:[];
+    in-out property <string> source-label: "Источник не захвачен. Можно ввести материал вручную.";
+    in-out property <int> source-kind: 0;
+    in-out property <string> endpoint;
+    in-out property <string> model;
+    in-out property <string> api-key;
+    in-out property <int> provider-slot: 0;
+    in-out property <string> provider-label;
+    in-out property <string> objective;
+    in-out property <string> purpose;
+    in-out property <string> prerequisites;
+    in-out property <string> criteria;
+    in-out property <string> steps;
+    in-out property <string> gaps;
+    in-out property <string> results;
+    in-out property <string> timer: "15:00 · нет активного занятия";
+    in-out property <string> session-state;
+    in-out property <[string]> session-names: [];
+    in-out property <int> session-index: -1;
+    in-out property <[string]> unit-names: [];
+    in-out property <int> unit-index: -1;
+    in-out property <string> unit-description;
+    in-out property <string> unit-state;
+    in-out property <[string]> history-names: [];
+    in-out property <int> history-index: -1;
+    in-out property <string> history-text;
+    in-out property <string> first-check-days;
+    in-out property <string> retention;
+    in-out property <string> check-question;
+    in-out property <string> check-expected;
+    in-out property <string> check-answer;
+    in-out property <string> check-status;
+    in-out property <string> check-criterion;
+    in-out property <string> compound-components;
+    in-out property <[string]> task-names: [];
+    in-out property <int> task-index: -1;
+    in-out property <string> group-members;
+    in-out property <bool> independent-answer: false;
+    in-out property <bool> mrt-enabled: false;
+    in-out property <bool> mrt-outside: false;
+    in-out property <string> mrt-report;
+    callback select-subject(int);
+    callback save-subject();
+    callback new-subject();
+    callback capture();
+    callback material-edited();
+    callback save-note();
+    callback explain();
+    callback four-words();
+    callback reveal-cue(int);
+    callback save-provider();
+    callback delete-key();
+    callback select-provider(int);
+    callback generate-plan();
+    callback new-session();
+    callback save-session();
+    callback session-action(string);
+    callback select-session(int);
+    callback save-unit();
+    callback select-unit(int);
+    callback assess-unit(int);
+    callback select-history(int);
+    callback refresh();
+    callback schedule-unit();
+    callback snooze-unit();
+    callback create-task();
+    callback create-compound-task();
+    callback select-task(int);
+    callback submit-task(string);
+    callback reveal-task();
+    callback create-group();
+    callback save-experiment();
+    callback experiment-report();
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 14px;
+        HorizontalLayout {
+            Text { text: "Cognitive Exoskeleton"; color: #f2f4fb; font-size: 24px; font-weight: 600; }
+            Rectangle { horizontal-stretch: 1; }
+            Text { text: "Ваша цель. Ваша мысль."; color: #a5adc2; vertical-alignment: center; }
+        }
+        TabWidget {
+            current-index <=> root.page;
+            Tab {
+                title: "Занятие";
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 10px;
+                    Text { text: root.timer; color: #c8d8ff; font-size: 24px; }
+                    Text { text: root.session-state; color: #a5adc2; }
+                    HorizontalLayout {
+                        ComboBox { model: root.session-names; current-index <=> root.session-index; selected(_) => { root.select-session(self.current-index); } }
+                        Button { text: "Новый план с ИИ"; enabled: !root.busy; clicked => { root.generate-plan(); } }
+                        Button { text: "Свой план"; clicked => { root.new-session(); } }
+                    }
+                    Text { text: "План — редактируемый черновик. Учитесь во внешнем источнике; обязательного теста нет."; color: #a5adc2; wrap: word-wrap; }
+                    LineEdit { text <=> root.objective; placeholder-text: "Что понять / научиться делать"; }
+                    LineEdit { text <=> root.purpose; placeholder-text: "Зачем это для личной цели"; }
+                    LineEdit { text <=> root.prerequisites; placeholder-text: "Предпосылки и что пока неизвестно"; }
+                    LineEdit { text <=> root.criteria; placeholder-text: "Признаки достижения цели"; }
+                    TextEdit { text <=> root.steps; placeholder-text: "Шаги, по одному на строку. [x] — работал над шагом, не доказал освоение."; wrap: word-wrap; vertical-stretch: 1; }
+                    Text { text: root.gaps; color: #c5b794; wrap: word-wrap; }
+                    TextEdit { text <=> root.results; placeholder-text: "Собственные результаты и заметки (дословно)"; wrap: word-wrap; vertical-stretch: 1; }
+                    HorizontalLayout {
+                        Button { text: "Сохранить план"; clicked => { root.save-session(); } }
+                        Button { text: "Начать / продолжить"; clicked => { root.session-action("resume"); } }
+                        Button { text: "Пауза"; clicked => { root.session-action("pause"); } }
+                        Button { text: "Завершить работу"; clicked => { root.session-action("complete"); } }
+                    }
+                    Text { text: "Время и галочки не являются оценкой знания и не создают FSRS-review."; color: #a5adc2; wrap: word-wrap; }
+                }
+            }
+            Tab {
+                title: "Предметы";
+                VerticalLayout {
+                    padding: 16px; spacing: 12px;
+                    ComboBox { model: root.subject-names; current-index <=> root.subject-index; selected(_) => { root.select-subject(self.current-index); } }
+                    LineEdit { text <=> root.subject-name; placeholder-text: "Предмет"; }
+                    Text { text: "Долгосрочная личная цель"; color: #dce1ef; }
+                    TextEdit { text <=> root.personal-goal; wrap: word-wrap; }
+                    Text { text: "Контекст, подготовка и доступные материалы"; color: #dce1ef; }
+                    TextEdit { text <=> root.subject-context; wrap: word-wrap; }
+                    Text { text: "Предпочтения механик: JSON {название: вес}. Автокоррекция уроком не включена."; color: #a5adc2; wrap: word-wrap; }
+                    LineEdit { text <=> root.preferences; }
+                    HorizontalLayout {
+                        Button { text: "Новый предмет"; clicked => { root.new-subject(); } }
+                        Button { text: "Сохранить предмет"; primary: true; clicked => { root.save-subject(); } }
+                    }
+                }
+            }
+            Tab {
+                title: "Контекст";
+                VerticalLayout {
+                    padding: 16px; spacing: 10px;
+                    HorizontalLayout {
+                        Button { text: "Захватить выделение"; enabled: !root.busy; clicked => { root.capture(); } }
+                        Text { text: root.source-label; color: #a5adc2; wrap: word-wrap; }
+                    }
+                    TextEdit { text <=> root.material; enabled: !root.busy; placeholder-text: "Исходный материал — отдельно от собственной мысли"; wrap: word-wrap; edited=>{root.material-edited();} }
+                    TextEdit { text <=> root.own-text; enabled: !root.busy; placeholder-text: "Ваша мысль / вопрос (сохраняется до запроса ИИ)"; wrap: word-wrap; }
+                    Text { text: root.provider-label; color: #a5adc2; wrap: word-wrap; }
+                    HorizontalLayout {
+                        Button { text: "Сохранить свою мысль"; clicked => { root.save-note(); } }
+                        Button { text: "Отправить контекст и вопрос ИИ"; enabled: !root.busy; clicked => { root.explain(); } }
+                        Button { text:"Four Words";enabled:!root.busy;clicked=>{root.four-words();} }
+                    }
+                    for cue[index] in root.cues: VerticalLayout {
+                        spacing:4px;
+                        Button {text:(index+1)+". "+(cue.stage==0?cue.simple:cue.term);clicked=>{root.reveal-cue(index);}}
+                        if cue.stage==2: Text {text:cue.meaning;color:#dce1ef;wrap:word-wrap;}
+                    }
+                    Text { text: "Ответ ИИ — не ваша попытка и не доказательство знания"; color: #c8d8ff; }
+                    TextEdit { text: root.ai-text; read-only: true; wrap: word-wrap; vertical-stretch: 2; }
+                }
+            }
+            Tab {
+                title: "Память";
+                VerticalLayout {
+                    padding: 16px; spacing: 12px;
+                    ComboBox { model: root.unit-names; current-index <=> root.unit-index; selected(_) => { root.select-unit(self.current-index); } }
+                    TextEdit { text <=> root.unit-description; placeholder-text: "Новая учебная единица: знание, операция или компетентность"; wrap: word-wrap; }
+                    Button { text: "Сохранить как новую единицу"; clicked => { root.save-unit(); } }
+                    Text { text: root.unit-state; color: #c8d8ff; wrap: word-wrap; }
+                    HorizontalLayout {
+                        Button { text: "Считаю освоенным"; clicked => { root.assess-unit(0); } }
+                        Button { text: "Затрудняюсь"; clicked => { root.assess-unit(1); } }
+                        Button { text: "Неактуально"; clicked => { root.assess-unit(2); } }
+                    }
+                    Text { text: "Самооценка хранится как ваше заявление. Автоматического Good/Again нет. Единица может оставаться без FSRS-расписания."; color: #a5adc2; wrap: word-wrap; }
+                    HorizontalLayout {
+                        LineEdit {text <=> root.first-check-days; placeholder-text:"Первый срок / отложить: дней (явно)";}
+                        LineEdit {text <=> root.retention; placeholder-text:"Желаемое удержание 0.7…0.99";}
+                    }
+                    HorizontalLayout {
+                        Button {text:"Включить FSRS для выбранной единицы";clicked=>{root.schedule-unit();}}
+                        Button {text:"Отложить без оценки";clicked=>{root.snooze-unit();}}
+                    }
+                    LineEdit {text <=> root.group-members;placeholder-text:"Группа: номера единиц через запятую (1,2,3)";}
+                    Button {text:"Создать группу без слияния FSRS";clicked=>{root.create-group();}}
+                    Rectangle { vertical-stretch: 1; }
+                }
+            }
+            Tab {
+                title: "Проверка";
+                VerticalLayout {
+                    padding:16px;spacing:10px;
+                    Text {text:"Объективная сверка точного ответа";color:#f2f4fb;font-size:20px;}
+                    Text {text:"До попытки выберите в Памяти проверяемую единицу и зафиксируйте вопрос с точным эталоном. Это ограниченный code-check, не универсальная проверка смысла или компетентности.";color:#a5adc2;wrap:word-wrap;}
+                    LineEdit {text <=> root.check-question;placeholder-text:"Вопрос для выбранной единицы";}
+                    LineEdit {text <=> root.check-expected;input-type:password;placeholder-text:"Точный эталон (фиксируется до попытки)";}
+                    Button {text:"Подтвердить связь с единицей и зафиксировать критерий";clicked=>{root.create-task();}}
+                    LineEdit {text <=> root.compound-components;placeholder-text:"Комплекс: номер|вопрос|эталон ; номер|вопрос|эталон";}
+                    Button {text:"Зафиксировать комплексную задачу (отдельные критерии компонентов)";clicked=>{root.create-compound-task();}}
+                    ComboBox {model:root.task-names;current-index <=> root.task-index;selected(_)=>{root.select-task(self.current-index);}}
+                    Text {text:root.check-criterion;color:#c8d8ff;wrap:word-wrap;}
+                    TextEdit {text <=> root.check-answer;placeholder-text:"Ваш ответ. Для комплекса — строка на компонент; [unknown], [blocked], [skip] допустимы отдельно.";wrap:word-wrap;}
+                    CheckBox {text:"Отвечал самостоятельно, без внешней помощи";checked <=> root.independent-answer;}
+                    HorizontalLayout {
+                        Button {text:"Проверить";clicked=>{root.submit-task("answer");}}
+                        Button {text:"Не знаю";clicked=>{root.submit-task("unknown");}}
+                        Button {text:"Блокирующий пробел";clicked=>{root.submit-task("blocked");}}
+                        Button {text:"Пропустить";clicked=>{root.submit-task("skip");}}
+                    }
+                    Button {text:"Показать эталон (отметить помощь; без FSRS-review)";clicked=>{root.reveal-task();}}
+                    Text {text:root.check-status;color:#c9d2e7;wrap:word-wrap;}
+                }
+            }
+            Tab {
+                title: "История";
+                VerticalLayout {
+                    padding: 16px; spacing: 10px;
+                    ComboBox { model: root.history-names; current-index <=> root.history-index; selected(_) => { root.select-history(self.current-index); } }
+                    TextEdit { text: root.history-text; read-only: true; wrap: word-wrap; }
+                }
+            }
+            Tab {
+                title: "Эксперимент";
+                VerticalLayout {
+                    padding:16px;spacing:12px;
+                    Text {text:"MRT · добровольный эксперимент";color:#f2f4fb;font-size:20px;}
+                    Text {text:"Протокол v1 утверждён: после проверенной ошибки — 50% короткое системное предложение диагностики / 50% молчание. Не чаще раза в 15 минут, максимум 3 назначения в сутки UTC. Отдельная самостоятельная проверка той же единицы за 24 часа — outcome; отсутствие — missing.";color:#a5adc2;wrap:word-wrap;}
+                    CheckBox {text:"Разрешить MRT в активном занятии";checked <=> root.mrt-enabled;toggled=>{root.save-experiment();}}
+                    CheckBox {text:"Отдельно разрешить вне активного Alt+I";checked <=> root.mrt-outside;toggled=>{root.save-experiment();}}
+                    Text {text:"Отзыв прекращает новые назначения и отменяет ещё не доставленные предложения. Клики и время в приложении не являются учебным результатом и не меняют FSRS.";color:#a5adc2;wrap:word-wrap;}
+                    Button {text:"Обновить отчёт";clicked=>{root.experiment-report();}}
+                    TextEdit {text:root.mrt-report;read-only:true;wrap:word-wrap;}
+                    Text {text:"Отчёт описательный: размер выборки, пропуски и неопределённость. Нет заявления о причинном эффекте или доказанной оптимизации обучения.";color:#c8d8ff;wrap:word-wrap;}
+                }
+            }
+            Tab {
+                title: "Настройки";
+                VerticalLayout {
+                    padding: 16px; spacing: 12px;
+                    Text { text: "OpenAI-совместимый провайдер"; color: #f2f4fb; font-size: 20px; }
+                    ComboBox { model: ["По умолчанию", "Контекст", "План Alt+I", "Four Words"]; current-index <=> root.provider-slot; selected(_) => { root.select-provider(self.current-index); } }
+                    LineEdit { text <=> root.endpoint; placeholder-text: "https://…/v1/chat/completions"; }
+                    LineEdit { text <=> root.model; placeholder-text: "ID модели"; }
+                    LineEdit { text <=> root.api-key; input-type: password; placeholder-text: "Новый API-ключ (пусто — оставить существующий)"; }
+                    HorizontalLayout {
+                        Button { text: "Сохранить"; primary: true; clicked => { root.save-provider(); } }
+                        Button { text: "Удалить ключ"; clicked => { root.delete-key(); } }
+                    }
+                    Text { text: "Ключ — только в системном Credential Store / Secret Service. Если хранилище недоступно, сохранение ключа отклоняется; plaintext fallback нет."; color: #a5adc2; wrap: word-wrap; }
+                    Text { text: "Внешнему провайдеру отправляются только явно показанные материал, вопрос или выбранный предмет и история планирования, после нажатия кнопки. Нет фоновой записи экрана, аудио или clipboard-наблюдения."; color: #a5adc2; wrap: word-wrap; }
+                    Text { text: "MRT по умолчанию выключен. Отдельное добровольное включение — во вкладке «Эксперимент». Доступ к экрану/аудио не требуется."; color: #a5adc2; wrap: word-wrap; }
+                    Rectangle { vertical-stretch: 1; }
+                }
+            }
+        }
+        Text { text: root.status; color: #c9d2e7; wrap: word-wrap; }
     }
 }

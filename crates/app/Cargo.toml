@@ -10,10 +10,18 @@ name = "traceability"
 path = "../../tests/traceability.rs"
 
 [dependencies]
+services = { package = "cognitive-exoskeleton-services", path = "../services" }
+slint = { workspace = true }
 capture = { package = "cognitive-exoskeleton-capture", path = "../capture" }
 domain = { package = "cognitive-exoskeleton-domain", path = "../domain" }
 journal = { package = "cognitive-exoskeleton-journal", path = "../journal" }
 ui = { package = "cognitive-exoskeleton-ui", path = "../ui" }
 serde_json = { workspace = true }
+serde = { workspace = true }
+zeroize = "1.8"
 time = { workspace = true }
 uuid = { workspace = true }
+
+[dev-dependencies]
+i-slint-backend-testing = "=1.18.1"
+tempfile = "3"

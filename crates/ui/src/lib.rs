@@ -1,9 +1,6 @@
 //! Slint windows for the product. Rendering only: the caller owns storage and
 //! decides what a saved note means.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 slint::include_modules!();
 
 #[derive(Debug, thiserror::Error)]
@@ -13,28 +10,50 @@ pub enum UiError {
 }
 
 /// Shows the captured fragment and asks for the reader's own words.
-/// Returns `Some(note)` only when the reader saved a non-empty note.
-pub fn run_note(preview: &str, source_label: &str) -> Result<Option<String>, UiError> {
+/// A save is acknowledged only after the caller's durable commit succeeds.
+pub fn run_note(
+    preview: &str,
+    source_label: &str,
+    mut save: impl FnMut(&str) -> Result<(), String> + 'static,
+    mut draft: impl FnMut(&str) -> Result<(), String> + 'static,
+) -> Result<(), UiError> {
     let ui = NoteWindow::new()?;
     ui.set_preview(preview.into());
     ui.set_source_label(source_label.into());
 
-    let saved = Rc::new(RefCell::new(None::<String>));
     let weak = ui.as_weak();
+    let mut committed = false;
 
-    let saved_on_save = saved.clone();
     ui.on_save(move |note| {
+        if committed {
+            return;
+        }
         if note.trim().is_empty() {
             if let Some(ui) = weak.upgrade() {
                 ui.set_status("Пустая заметка не сохраняется.".into());
             }
             return;
         }
-        *saved_on_save.borrow_mut() = Some(note.to_string());
+        if let Err(error) = save(&note) {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_status(error.into());
+            }
+            return;
+        }
+        committed = true;
         if let Some(ui) = weak.upgrade() {
             ui.set_status("Сохранено.".into());
         }
         let _ = slint::quit_event_loop();
+    });
+
+    let weak_draft = ui.as_weak();
+    ui.on_draft(move |note| {
+        if let Err(error) = draft(&note)
+            && let Some(ui) = weak_draft.upgrade()
+        {
+            ui.set_status(error.into());
+        }
     });
 
     let weak_cancel = ui.as_weak();
@@ -47,8 +66,7 @@ pub fn run_note(preview: &str, source_label: &str) -> Result<Option<String>, UiE
 
     ui.show()?;
     slint::run_event_loop()?;
-    let result = saved.borrow_mut().take();
-    Ok(result)
+    Ok(())
 }
 
 /// Minimal window used by the platform probe to separate a rendering problem

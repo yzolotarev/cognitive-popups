@@ -34,32 +34,83 @@ pub struct SystemReader;
 
 impl Reader for SystemReader {
     fn read_primary(&self) -> Result<Option<String>, String> {
-        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-            run("wl-paste", &["--primary", "--no-newline"])
-        } else {
-            run("xclip", &["-selection", "primary", "-o"])
+        #[cfg(target_os = "windows")]
+        {
+            Err("primary selection is not available on Windows; explicitly confirm clipboard fallback".into())
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+                run("wl-paste", &["--primary", "--no-newline"])
+            } else {
+                run("xclip", &["-selection", "primary", "-o"])
+            }
         }
     }
 
     fn read_clipboard(&self) -> Result<Option<String>, String> {
-        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-            run("wl-paste", &["--no-newline"])
-        } else {
-            run("xclip", &["-selection", "clipboard", "-o"])
+        #[cfg(target_os = "windows")]
+        {
+            arboard::Clipboard::new()
+                .and_then(|mut clipboard| clipboard.get_text())
+                .map(Some)
+                .map_err(|_| "clipboard unavailable or not text".into())
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+                run("wl-paste", &["--no-newline"])
+            } else {
+                run("xclip", &["-selection", "clipboard", "-o"])
+            }
         }
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn run(program: &str, args: &[&str]) -> Result<Option<String>, String> {
-    let output = std::process::Command::new(program)
+    use std::io::Read;
+    use std::process::Stdio;
+    use wait_timeout::ChildExt;
+    const MAX: u64 = 1_048_576;
+    let mut child = std::process::Command::new(program)
         .args(args)
-        .output()
-        .map_err(|error| format!("{program}: {error}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("{program} exited with {}: {stderr}", output.status));
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| format!("{program} could not start"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| format!("{program} stdout unavailable"))?;
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.take(MAX + 1).read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let status = match child.wait_timeout(std::time::Duration::from_secs(2)) {
+        Ok(Some(status)) => Ok(status),
+        _ => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(format!("{program} timed out or could not be awaited"))
+        }
+    };
+    let bytes = reader
+        .join()
+        .map_err(|_| format!("{program} reader failed"))?
+        .map_err(|_| format!("{program} output unavailable"))?;
+    let status = status?;
+    if bytes.len() > MAX as usize {
+        return Err("captured text exceeds the 1 MiB safety limit".into());
     }
-    Ok(normalize(&String::from_utf8_lossy(&output.stdout)))
+    if !status.success() {
+        return Err(format!("{program} could not read text ({status})"));
+    }
+    // Reader implementations return raw text; normalization happens once in
+    // capture_with. Double normalization used to strip two meaningful newlines.
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| "clipboard does not contain valid UTF-8 text".into())
 }
 
 /// Removes the trailing line break added by clipboard tools, keeps the rest

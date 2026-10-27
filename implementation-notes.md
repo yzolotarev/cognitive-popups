@@ -53,6 +53,55 @@ Desktop-проверки не выполнялись: P1 ещё не начат,
 - OD-09: выбран Slint 1.18; для пассивных подсказок используются системные уведомления.
 - OD-10: Linux-first, Windows desktop acceptance remains blocked (CI builds do not count).
 - Статусы требований в исходной спецификации/registry не повышены самовольно; решения вынесены в `docs/decisions/open-decisions.md`.
+# Full-v1 implementation pass (2026-10-27)
+
+- Continued on `implementation/full-v1`, based on the integrated snapshot and
+  PR #6. No main-branch merge or modification of historical app data.
+- Added `crates/services`: protected OS credentials, bounded/redacted HTTP
+  provider, durable versioned subject/session/unit objects, optimistic concurrency,
+  draft recovery, frozen exact-answer evidence and atomic FSRS 6.6.2 batches.
+- Added the Slint desktop hub: settings, subjects/goals/preferences, context/own
+  notes/AI separation, editable plans under a 15-minute guide timer, pause/resume,
+  own results, memory/self-assessments, optional manual scheduling, snooze,
+  composite groups/checks, history and opt-in experiments.
+- Author explicitly approved MRT protocol v1 in this session (OD-06). Eligibility
+  comes from stored independent code-check errors; both arms and assignment
+  probabilities are logged before delivery. Frequency: 900 seconds, 3/UTC day;
+  outcome window: 24h. Delivery attempts, failure, revocation and control are distinct.
+- Capture is bounded (2-second subprocess deadlines, 1 MiB text limit), moved off
+  the GUI thread, and persisted before display. Edited material is marked manual;
+  clipboard age/window ownership are never claimed. Windows has a native clipboard
+  fallback; primary-selection parity remains unverified.
+- Note Save now waits for durable commit; typed drafts are local. Ctrl+Enter and
+  Escape are wired, with input focus forwarded to the editor. OS instance locks
+  prevent duplicate editors from repeated invocations. No legacy bindings changed.
+- Separate new runtime directory `cognitive-exoskeleton-v1`; previous development
+  and historical databases are untouched. Immutable SQLite archive inspection
+  refuses live WAL snapshots and has a byte-preservation/no-sidecar test.
+- Linux/Windows user-local installation scripts and package CI added; autostart
+  is opt-in. This is not a claim of Windows desktop acceptance or signing.
+- Local checks at this checkpoint: 46 tests, strict workspace Clippy, formatting,
+  release build; cargo audit has no vulnerability failures but 8 unmaintained
+  transitive-dependency warnings (Slint/zbus/keyring stack), not suppressed.
+- Real Hyprland probe: diagnostic window auto-exits in 5.10 s; hub is mapped,
+  submits buffers/commits and does not panic. Protected credential store synthetic
+  write/read/delete passed; no existing secret was read or enumerated.
+
+## Deviations / remaining gates
+
+- Exact-answer code checks are intentionally limited: a frozen user-confirmed
+  mapping does not establish arbitrary semantic competence. No LLM-only grade.
+- Automatic admission/first-check policy and true FSRS merges remain unapproved;
+  explicit manual dates/retention and non-destructive groups are available.
+- No historical W/T executors, graph recommender or screen/audio recorder were
+  silently promoted into mandatory scope. Preference selection/legacy KEEP
+  policy still requires its own decision.
+- Real external browser/PDF/editor capture, focus/hotkeys, installation on both
+  desktops, live-provider plan quality and release metrics still require evidence.
+  Tests of UI controllers use Slint's testing backend, not desktop acceptance.
+- Prowl structural checks are unavailable in this clone (no `.prowl` workspace);
+  this does not replace compiler, integration or desktop checks.
+
 # Integration checkpoint: local P2/P3 + PR #6 (2026-10-27)
 
 - Preserved the local capture/UI/app slice in `wip/p2-p3-local-snapshot`

@@ -5,10 +5,15 @@ you work in a browser, a PDF, an editor or an external trainer. The product cont
 the [versioned specification](docs/spec/cognitive_exoskeleton_v0_2_full_spec.md);
 decisions in it are not replaced by this README.
 
-Current state: **P2 in progress**. P0 delivered the versioned specification and the
-traceability baseline; the first P2 slice provides the typed event journal with
-provenance and idempotent writes. There is still no working desktop application and no
-GUI framework has been selected. Legacy Python code remains in Git history.
+Current state: **full v1 implementation in progress; not release-accepted**.
+Slint 1.18 desktop UI includes provider settings, context/own notes, subjects,
+editable learning sessions with pause/recovery, memory/self-assessments and
+explicit opt-in FSRS with frozen exact-answer checks. See the
+[working user guide](docs/user-guide.md) for behavior and honest limits.
+The author approved MRT protocol v1 during implementation; opt-in assignment,
+system notifications, silence control and descriptive reports are connected to
+stored code-check errors. Real desktop acceptance still gates the full product.
+Legacy Python code remains in Git history and is not imported into the new runtime.
 
 ## Requirements baseline (P0)
 
@@ -29,11 +34,11 @@ from the registry, appears twice, or changes status without the specification ch
 Install [rustup](https://rustup.rs/), then run:
 
 ```sh
-cargo run --locked
+cargo run --locked -p cognitive-exoskeleton -- hub
 cargo fmt --all -- --check
-cargo clippy --locked --all-targets --all-features -- -D warnings
-cargo test --locked --all-targets --all-features
-cargo build --locked --release
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-targets --all-features
+cargo build --locked --workspace --release
 ```
 
 The toolchain and lint components are pinned in `rust-toolchain.toml`.
@@ -44,7 +49,8 @@ Commit `Cargo.lock` when changing dependencies.
 Every pull request and push to `main` runs formatting, dependency auditing,
 Clippy, tests, release builds and executable smoke tests. Builds run natively on
 Windows Server 2022 and Ubuntu 24.04 (x86-64). Download the resulting executables
-from the run's **Artifacts** section; these are development scaffolds, not installers.
+from the run's **Artifacts** section. Packages include user-local installation scripts;
+these are development builds, not signed/accepted releases.
 Linux executables are built against Ubuntu 24.04 and are not promised to run on
 older distributions. Artifact downloads may require restoring executable permission
 on Linux (`chmod +x cognitive-exoskeleton`).
@@ -61,4 +67,5 @@ Repository administrators must require these checks in the `main` branch rule:
 - `Build and test (Windows)`
 - `Dependency audit`
 
-Installer packaging, code signing and GitHub Releases are not configured yet.
+Code signing and publishing GitHub Releases are not configured yet. Packaging CI
+does not replace installation and desktop acceptance on actual supported machines.

@@ -42,7 +42,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Install Linux desktop build dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxkbcommon-dev libwayland-dev libudev-dev libegl1-mesa-dev
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxkbcommon-dev libwayland-dev libudev-dev libegl1-mesa-dev libdbus-1-dev
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
@@ -58,11 +58,31 @@ jobs:
       - run: cargo test --locked --workspace --all-targets --all-features
       - run: cargo build --locked --workspace --release
       - name: Smoke test executable
-        run: ./target/release/${{ matrix.executable }}
+        run: ./target/release/${{ matrix.executable }} --help
+      - name: Package and smoke install Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p package/cognitive-exoskeleton-linux
+          cp target/release/cognitive-exoskeleton packaging/linux/install.sh docs/user-guide.md LICENSE package/cognitive-exoskeleton-linux/
+          tar -czf cognitive-exoskeleton-Linux-x86_64.tar.gz -C package cognitive-exoskeleton-linux
+          test_home=$(mktemp -d)
+          HOME="$test_home" XDG_DATA_HOME="$test_home/data" XDG_CONFIG_HOME="$test_home/config" sh package/cognitive-exoskeleton-linux/install.sh
+          "$test_home/data/cognitive-exoskeleton-v1/bin/cognitive-exoskeleton" --help
+          test ! -e "$test_home/config/autostart/cognitive-exoskeleton-v1.desktop"
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force package/cognitive-exoskeleton-windows | Out-Null
+          Copy-Item target/release/cognitive-exoskeleton.exe,packaging/windows/install.ps1,docs/user-guide.md,LICENSE package/cognitive-exoskeleton-windows/
+          Compress-Archive -Path package/cognitive-exoskeleton-windows -DestinationPath cognitive-exoskeleton-Windows-x86_64.zip
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: cognitive-exoskeleton-${{ matrix.platform }}-x86_64
-          path: target/release/${{ matrix.executable }}
+          path: |
+            target/release/${{ matrix.executable }}
+            cognitive-exoskeleton-${{ matrix.platform }}-x86_64.*
           if-no-files-found: error
           retention-days: 14
 

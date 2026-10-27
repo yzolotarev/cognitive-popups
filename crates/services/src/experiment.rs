@@ -31,6 +31,8 @@ pub struct Eligibility {
     pub verified_error_event_id: Option<String>,
     pub last_decision_at: Option<i64>,
     pub unit_id: String,
+    #[serde(default)]
+    pub active_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -100,14 +102,23 @@ impl crate::store::Store {
     ) -> Result<Option<Decision>, Error> {
         use crate::assessment::{Attempt, Observed};
         let key = format!("mrt:{task_id}");
-        if self.get::<Decision>("mrt_decision", &key)?.is_some() {
-            return Ok(None);
-        }
         let Some(task) = self.task(task_id)? else {
             return Ok(None);
         };
-        let json: Option<String> = self
+        // Consent, prior assignments, frequency checks and assignment commit
+        // are one serialized operation, not a read-then-write race.
+        let tx = self
             .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM objects WHERE kind='mrt_decision' AND id=?1)",
+            [&key],
+            |r| r.get(0),
+        )?;
+        if exists {
+            return Ok(None);
+        }
+        let json: Option<String> = tx
             .query_row(
                 "SELECT json FROM attempts WHERE task_id=?1",
                 [task_id],
@@ -123,25 +134,69 @@ impl crate::store::Store {
         else {
             return Ok(None);
         };
-        let consent = self.mrt_consent()?;
-        let previous = self.list::<Decision>("mrt_decision")?;
+        let consent: Option<String> = tx
+            .query_row(
+                "SELECT json FROM objects WHERE kind='consent' AND id='mrt'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let consent: Consent = consent
+            .map(|json| serde_json::from_str(&json))
+            .transpose()?
+            .unwrap_or_default();
+        let previous = {
+            let mut statement = tx.prepare("SELECT json FROM objects WHERE kind='mrt_decision'")?;
+            statement
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .map(|json| serde_json::from_str::<Decision>(&json))
+                .collect::<Result<Vec<_>, _>>()?
+        };
         if previous
             .iter()
-            .filter(|r| r.value.at.div_euclid(86400) == at.div_euclid(86400))
+            .filter(|r| r.at.div_euclid(86400) == at.div_euclid(86400))
             .count()
             >= 3
         {
             return Ok(None);
         }
+        let unit_id = task.components[index].unit_id.clone();
+        let unit_json: String = tx.query_row(
+            "SELECT json FROM objects WHERE kind='unit' AND id=?1",
+            [&unit_id],
+            |r| r.get(0),
+        )?;
+        let unit: crate::learning::MemoryUnit = serde_json::from_str(&unit_json)?;
+        let sessions = {
+            let mut statement = tx.prepare("SELECT id,json FROM objects WHERE kind='session'")?;
+            statement
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let mut active_session_id = None;
+        if in_session {
+            for (id, json) in sessions {
+                let session: crate::learning::Session = serde_json::from_str(&json)?;
+                if session.status == crate::learning::SessionStatus::Active
+                    && session.subject_id == unit.subject_id
+                {
+                    active_session_id = Some(id);
+                    break;
+                }
+            }
+        }
         let eligibility = Eligibility {
             consent: consent.enabled,
             outside_session_consent: consent.outside_session,
-            in_session,
+            in_session: active_session_id.is_some(),
             reliable_context: attempt.at == at,
             interfering_window,
             verified_error_event_id: Some(format!("{}:{}", task_id, index)),
-            last_decision_at: previous.iter().map(|r| r.value.at).max(),
-            unit_id: task.components[index].unit_id.clone(),
+            last_decision_at: previous.iter().map(|r| r.at).max(),
+            unit_id,
+            active_session_id,
         };
         let mut random = [0u8; 8];
         getrandom::fill(&mut random)
@@ -156,50 +211,61 @@ impl crate::store::Store {
             Ok(decision) => decision,
             Err(_) => return Ok(None),
         };
-        self.save("mrt_decision", &key, 0, &decision, at)?;
+        let json = serde_json::to_string(&decision)?;
+        tx.execute(
+            "INSERT INTO objects(kind,id,revision,json) VALUES('mrt_decision',?1,1,?2)",
+            rusqlite::params![key, json],
+        )?;
+        tx.execute(
+            "INSERT INTO changes(kind,id,revision,at,json) VALUES('mrt_decision',?1,1,?2,?3)",
+            rusqlite::params![key, at, json],
+        )?;
+        tx.commit()?;
         Ok(Some(decision))
     }
 
     /// Same observation mechanism for treatment and control. Only independent
     /// stored code checks of the exact same target are eligible outcomes.
     pub fn observe_mrt(&mut self, task_id: &str, at: i64) -> Result<(), Error> {
-        use crate::assessment::{Attempt, Observed};
-        let Some(task) = self.task(task_id)? else {
+        if self.task(task_id)?.is_none() {
             return Ok(());
-        };
-        let json: Option<String> = self
-            .connection
-            .query_row(
-                "SELECT json FROM attempts WHERE task_id=?1",
-                [task_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let Some(json) = json else { return Ok(()) };
-        let attempt: Attempt = serde_json::from_str(&json)?;
+        }
+        self.reconcile_mrt(at)
+    }
+
+    fn reconcile_mrt(&mut self, at: i64) -> Result<(), Error> {
+        use crate::assessment::Observed;
         for mut record in self.list::<Decision>("mrt_decision")? {
             let decision = &mut record.value;
-            if decision.outcome != Outcome::Pending {
+            if matches!(decision.outcome, Outcome::IndependentCheck { .. }) {
                 continue;
             }
-            if at.saturating_sub(decision.at) > 86400 {
+            let before = decision.outcome.clone();
+            // Reconcile persisted attempts before expiring, even if processing
+            // resumed after the measurement window. Event time is authoritative.
+            let evidence =
+                self.evidence_for_units(std::slice::from_ref(&decision.eligibility.unit_id))?;
+            let observed = evidence
+                .into_iter()
+                .filter(|e| {
+                    e.at > decision.at
+                        && e.at.saturating_sub(decision.at)
+                            <= decision.protocol.outcome_window_seconds
+                        && decision.id != format!("mrt:{}", e.task_id)
+                        && matches!(e.observed, Observed::Correct | Observed::Incorrect)
+                })
+                .min_by_key(|e| (e.at, e.task_id.clone()));
+            if let Some(evidence) = observed {
+                decision.outcome = Outcome::Pending;
+                decision.independent_outcome(
+                    format!("{}:{}", evidence.task_id, evidence.unit_id),
+                    evidence.at,
+                    evidence.observed == Observed::Correct,
+                )?;
+            } else if at.saturating_sub(decision.at) > decision.protocol.outcome_window_seconds {
                 decision.outcome = Outcome::Missing;
-            } else if decision.id != format!("mrt:{task_id}") {
-                for (component, outcome) in task.components.iter().zip(&attempt.outcomes) {
-                    if attempt.at > decision.at
-                        && component.unit_id == decision.eligibility.unit_id
-                        && matches!(outcome, Observed::Correct | Observed::Incorrect)
-                    {
-                        decision.independent_outcome(
-                            format!("{task_id}:{}", component.unit_id),
-                            attempt.at,
-                            *outcome == Observed::Correct,
-                        )?;
-                        break;
-                    }
-                }
             }
-            if decision.outcome != Outcome::Pending {
+            if decision.outcome != before {
                 self.save("mrt_decision", &record.id, record.revision, decision, at)?;
             }
         }
@@ -207,20 +273,9 @@ impl crate::store::Store {
     }
 
     pub fn mrt_report(&mut self, at: i64) -> Result<serde_json::Value, Error> {
+        self.reconcile_mrt(at)?;
         let mut decisions = Vec::new();
-        for mut record in self.list::<Decision>("mrt_decision")? {
-            if record.value.outcome == Outcome::Pending
-                && at.saturating_sub(record.value.at) > record.value.protocol.outcome_window_seconds
-            {
-                record.value.outcome = Outcome::Missing;
-                self.save(
-                    "mrt_decision",
-                    &record.id,
-                    record.revision,
-                    &record.value,
-                    at,
-                )?;
-            }
+        for record in self.list::<Decision>("mrt_decision")? {
             decisions.push(record.value);
         }
         Ok(
@@ -245,7 +300,15 @@ pub fn deliver_pending(path: &std::path::Path, id: &str, at: i64) -> Result<(), 
         return Ok(());
     }
     let consent = store.mrt_consent()?;
-    if !consent.enabled || (!record.value.eligibility.in_session && !consent.outside_session) {
+    let currently_in_session = if let Some(session_id) = &record.value.eligibility.active_session_id
+    {
+        store
+            .get::<crate::learning::Session>("session", session_id)?
+            .is_some_and(|session| session.value.status == crate::learning::SessionStatus::Active)
+    } else {
+        false
+    };
+    if !consent.enabled || (!currently_in_session && !consent.outside_session) {
         record.value.delivery = Delivery::CancelledConsentRevoked;
         store.save("mrt_decision", id, record.revision, &record.value, at)?;
         return Ok(());
@@ -445,6 +508,7 @@ mod tests {
                 verified_error_event_id: Some("verified-event".into()),
                 last_decision_at: None,
                 unit_id: "unit".into(),
+                active_session_id: Some("session".into()),
             },
         )
     }
@@ -521,6 +585,21 @@ mod tests {
                 1,
             )
             .unwrap();
+        let mut session = crate::learning::Session::new(
+            "subject".into(),
+            crate::learning::Plan {
+                objective: "addition".into(),
+                purpose: "test".into(),
+                prerequisites: "known".into(),
+                success_criteria: "exact sum".into(),
+                steps: vec![],
+                gaps: vec![],
+            },
+            String::new(),
+        )
+        .unwrap();
+        session.resume(1).unwrap();
+        store.save("session", "session", 0, &session, 1).unwrap();
         (dir, store)
     }
 
@@ -593,7 +672,9 @@ mod tests {
         assert_eq!(report["decisions"].as_array().unwrap().len(), 3);
         let missing = report["suggestion"]["missing"].as_u64().unwrap()
             + report["control"]["missing"].as_u64().unwrap();
-        assert_eq!(missing, 2);
+        // Later stored independent errors are outcomes too, even if no
+        // observe callback ran for them before report generation.
+        assert_eq!(missing, 0);
         assert_eq!(store.review_count().unwrap(), 0);
     }
 
@@ -617,5 +698,113 @@ mod tests {
             Delivery::CancelledConsentRevoked
         );
         assert_eq!(store.review_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn simultaneous_candidates_cannot_race_the_frequency_limit() {
+        let (dir, mut store) = runtime();
+        store
+            .save_mrt_consent(
+                &Consent {
+                    enabled: true,
+                    outside_session: false,
+                },
+                1,
+            )
+            .unwrap();
+        checked_task(&mut store, "a", 100, "5");
+        checked_task(&mut store, "b", 100, "5");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles = ["a", "b"]
+            .into_iter()
+            .map(|id| {
+                let path = dir.path().join("db.sqlite3");
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let mut store = crate::store::Store::open(path).unwrap();
+                    barrier.wait();
+                    store.consider_mrt(id, true, false, 100).unwrap().is_some()
+                })
+            })
+            .collect::<Vec<_>>();
+        let assigned = handles
+            .into_iter()
+            .map(|h| usize::from(h.join().unwrap()))
+            .sum::<usize>();
+        assert_eq!(assigned, 1);
+        assert_eq!(store.list::<Decision>("mrt_decision").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn late_processing_uses_stored_outcome_time_before_expiration() {
+        let (_dir, mut store) = runtime();
+        store
+            .save_mrt_consent(
+                &Consent {
+                    enabled: true,
+                    outside_session: false,
+                },
+                1,
+            )
+            .unwrap();
+        checked_task(&mut store, "error", 100, "5");
+        let decision = store
+            .consider_mrt("error", true, false, 100)
+            .unwrap()
+            .unwrap();
+        checked_task(&mut store, "valid-in-window", 200, "4");
+        store.mrt_report(86501).unwrap();
+        store.observe_mrt("valid-in-window", 86502).unwrap();
+        let outcome = store
+            .get::<Decision>("mrt_decision", &decision.id)
+            .unwrap()
+            .unwrap()
+            .value
+            .outcome;
+        assert!(matches!(
+            outcome,
+            Outcome::IndependentCheck {
+                at: 200,
+                correct: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn ending_session_cancels_pending_inside_only_delivery() {
+        let (dir, mut store) = runtime();
+        store
+            .save_mrt_consent(
+                &Consent {
+                    enabled: true,
+                    outside_session: false,
+                },
+                1,
+            )
+            .unwrap();
+        let (p, e) = config();
+        let decision = assign("pending-ended".into(), 100, p, e, 0).unwrap();
+        store
+            .save("mrt_decision", "pending-ended", 0, &decision, 100)
+            .unwrap();
+        let mut session = store
+            .get::<crate::learning::Session>("session", "session")
+            .unwrap()
+            .unwrap();
+        session.value.complete(101);
+        store
+            .save("session", "session", session.revision, &session.value, 101)
+            .unwrap();
+        deliver_pending(&dir.path().join("db.sqlite3"), "pending-ended", 102).unwrap();
+        assert_eq!(
+            store
+                .get::<Decision>("mrt_decision", "pending-ended")
+                .unwrap()
+                .unwrap()
+                .value
+                .delivery,
+            Delivery::CancelledConsentRevoked
+        );
     }
 }

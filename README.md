@@ -1,4 +1,4 @@
-# Cognitive Exoskeleton
+# Cognitive Popups
 
 Cross-platform desktop application for supporting your own thinking and learning while
 you work in a browser, a PDF, an editor or an external trainer. The product contract is
@@ -34,7 +34,7 @@ from the registry, appears twice, or changes status without the specification ch
 Install [rustup](https://rustup.rs/), then run:
 
 ```sh
-cargo run --locked -p cognitive-exoskeleton -- hub
+cargo run --locked -p cognitive-popups -- hub
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 cargo test --locked --workspace --all-targets --all-features
@@ -53,7 +53,7 @@ from the run's **Artifacts** section. Packages include user-local installation s
 these are development builds, not signed/accepted releases.
 Linux executables are built against Ubuntu 24.04 and are not promised to run on
 older distributions. Artifact downloads may require restoring executable permission
-on Linux (`chmod +x cognitive-exoskeleton`).
+on Linux (`chmod +x cognitive-popups`).
 
 CI uses no LLM keys, personal data or repository secrets. Hosted runners do not
 validate desktop interactions, global hotkeys, selection capture, Wayland/X11

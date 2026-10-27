@@ -6,6 +6,8 @@ rust-version = "1.90"
 publish = false
 
 [dependencies]
+domain = { package = "cognitive-exoskeleton-domain", path = "../domain" }
+journal = { package = "cognitive-exoskeleton-journal", path = "../journal" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -12,22 +12,26 @@ use domain::{NewEvent, OperationId, SourceKind};
 use time::OffsetDateTime;
 
 mod hub;
+mod thinking;
 mod tools;
 
 const USAGE: &str = "\
-Cognitive Exoskeleton
+Cognitive Popups
 
 Usage:
-  cognitive-exoskeleton           open the desktop application
-  cognitive-exoskeleton hub       subjects, sessions, context, memory and settings
-  cognitive-exoskeleton note      capture the selection and open the note window
-  cognitive-exoskeleton four-words   Four Words (Alt+W): four layered semantic anchors
-  cognitive-exoskeleton capture   print what would be captured (diagnostics)
-  cognitive-exoskeleton diagnostics   counts only; no keys or raw text
-  cognitive-exoskeleton credential-probe   test and delete a unique synthetic credential
-  cognitive-exoskeleton mrt-report   explicit experiment JSON export (no raw user text)
-  cognitive-exoskeleton archive PATH [TABLE]   explicitly inspect a read-only SQLite archive
-  cognitive-exoskeleton --help    show this message
+  cognitive-popups                open the desktop application
+  cognitive-popups hub            subjects, sessions, context, memory and settings
+  cognitive-popups note           capture the selection and open the note window
+  cognitive-popups comment        own comment (Alt+E)
+  cognitive-popups task           exercise → own attempt → feedback (Alt+T)
+  cognitive-popups prediction     original hypothesis before comparison (Ctrl+Alt+P)
+  cognitive-popups four-words     Four Words (Alt+W): four layered semantic anchors
+  cognitive-popups capture        print what would be captured (explicit diagnostic)
+  cognitive-popups diagnostics    counts only; no keys or raw text
+  cognitive-popups credential-probe   test and delete a unique synthetic credential
+  cognitive-popups mrt-report     explicit experiment JSON export (no raw user text)
+  cognitive-popups archive PATH [TABLE]   explicitly inspect a read-only SQLite archive
+  cognitive-popups --help         show this message
 ";
 
 fn main() -> ExitCode {
@@ -57,6 +61,13 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("Four Words: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("task" | "prediction") => match thinking::run(action.as_deref() == Some("task")) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("Thinking tool: {error}");
                 ExitCode::FAILURE
             }
         },
@@ -103,7 +114,7 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Some("note") => match run_note() {
+        Some("note" | "comment") => match run_note() {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("note failed: {error}");
@@ -202,7 +213,8 @@ impl From<domain::DomainError> for AppError {
 }
 
 fn run_capture() -> Result<(), AppError> {
-    let capture = capture::capture_with(&capture::SystemReader)?;
+    let capture =
+        tools::capture_for_action().map_err(|error| AppError::State(error.to_string()))?;
     let report = serde_json::json!({
         "kind": match capture.snapshot.kind {
             SourceKind::Selection => "selection",
@@ -220,7 +232,8 @@ fn run_capture() -> Result<(), AppError> {
 fn run_note() -> Result<(), AppError> {
     let _instance =
         services::InstanceGuard::acquire("note").map_err(|e| AppError::State(e.to_string()))?;
-    let capture = capture::capture_with(&capture::SystemReader)?;
+    let capture =
+        tools::capture_for_action().map_err(|error| AppError::State(error.to_string()))?;
     let mut snapshot = capture.snapshot;
     if snapshot.kind == SourceKind::Selection
         && let Some((class, title)) = active_window()

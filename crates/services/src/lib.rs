@@ -5,6 +5,7 @@ pub mod assessment;
 pub mod experiment;
 pub mod learning;
 pub mod mechanism;
+pub mod outbox;
 pub mod provider;
 pub mod store;
 
@@ -43,7 +44,7 @@ pub struct InstanceGuard(std::fs::File);
 
 impl InstanceGuard {
     pub fn acquire(name: &str) -> Result<Self, Error> {
-        if !matches!(name, "hub" | "note" | "four_words") {
+        if !matches!(name, "hub" | "note" | "four_words" | "task" | "prediction") {
             return Err(Error::Invalid("invalid instance lock"));
         }
         let file = std::fs::OpenOptions::new()

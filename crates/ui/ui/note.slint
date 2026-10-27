@@ -7,8 +7,54 @@ export struct Cue {
     stage:int,
 }
 
+export component ThinkingWindow inherits Window {
+    title:"Cognitive Popups — собственная попытка";
+    preferred-width:640px;
+    preferred-height:720px;
+    background:#171920;
+    in-out property <string> heading;
+    in-out property <string> source;
+    in-out property <string> disclosure;
+    in-out property <string> assignment;
+    in-out property <string> criterion;
+    in-out property <string> answer;
+    in-out property <string> feedback;
+    in-out property <string> status;
+    in-out property <bool> task-mode:false;
+    in-out property <bool> ready:false;
+    in-out property <bool> frozen:false;
+    in-out property <bool> busy:false;
+    callback generate();
+    callback save();
+    callback compare();
+    callback hint();
+    callback skip();
+    callback draft(string);
+    forward-focus: answer-editor;
+    VerticalLayout {
+        padding:20px;spacing:12px;
+        Text {text:root.heading;color:#f2f4fb;font-size:24px;font-weight:600;}
+        Text {text:root.disclosure;color:#a5adc2;wrap:word-wrap;}
+        TextEdit {text:root.source;read-only:true;wrap:word-wrap;max-height:100px;}
+        if root.task-mode: Button {text:"Создать задание из этого фрагмента";enabled:!root.busy && !root.frozen;clicked=>{root.generate();}}
+        Text {text:root.assignment;color:#dce1ef;wrap:word-wrap;}
+        Text {text:root.criterion;color:#a5adc2;wrap:word-wrap;}
+        answer-editor := TextEdit {text <=> root.answer;read-only:root.frozen;enabled:root.ready;placeholder-text:"Сначала ваша собственная попытка — до сверки с ИИ";wrap:word-wrap;edited=>{root.draft(root.answer);}}
+        HorizontalLayout {
+            Button {text:"Зафиксировать свой ответ";enabled:root.ready && !root.frozen && !root.busy;clicked=>{root.save();}}
+            Button {text:"Сверить с ИИ (feedback, не FSRS)";enabled:root.ready && !root.busy;clicked=>{root.compare();}}
+        }
+        HorizontalLayout {
+            if root.task-mode: Button {text:"Подсказка (учитывается как помощь)";enabled:root.ready && !root.busy;clicked=>{root.hint();}}
+            Button {text:"Пропустить / закрыть без оценки";enabled:!root.busy;clicked=>{root.skip();}}
+        }
+        TextEdit {text:root.feedback;read-only:true;wrap:word-wrap;vertical-stretch:1;}
+        Text {text:root.status;color:#c9d2e7;wrap:word-wrap;}
+    }
+}
+
 export component FourWordsWindow inherits Window {
-    title:"Cognitive Exoskeleton — Four Words";
+    title:"Cognitive Popups — Four Words";
     preferred-width:620px;
     preferred-height:440px;
     background:#171920;
@@ -59,7 +105,7 @@ export component NoteWindow inherits Window {
 
     width: 560px;
     height: 380px;
-    title: "Cognitive Exoskeleton — заметка";
+    title: "Cognitive Popups — заметка";
     no-frame: true;
     always-on-top: true;
     background: transparent;
@@ -171,7 +217,7 @@ export component SmokeWindow inherits Window {
 }
 
 export component HubWindow inherits Window {
-    title: "Cognitive Exoskeleton";
+    title: "Cognitive Popups";
     preferred-width: 920px;
     preferred-height: 780px;
     min-width: 780px;
@@ -240,6 +286,7 @@ export component HubWindow inherits Window {
     callback explain();
     callback four-words();
     callback reveal-cue(int);
+    callback open-tool(string);
     callback save-provider();
     callback delete-key();
     callback select-provider(int);
@@ -268,7 +315,7 @@ export component HubWindow inherits Window {
         padding: 20px;
         spacing: 14px;
         HorizontalLayout {
-            Text { text: "Cognitive Exoskeleton"; color: #f2f4fb; font-size: 24px; font-weight: 600; }
+            Text { text: "Cognitive Popups"; color: #f2f4fb; font-size: 24px; font-weight: 600; }
             Rectangle { horizontal-stretch: 1; }
             Text { text: "Ваша цель. Ваша мысль."; color: #a5adc2; vertical-alignment: center; }
         }
@@ -328,6 +375,11 @@ export component HubWindow inherits Window {
                     HorizontalLayout {
                         Button { text: "Захватить выделение"; enabled: !root.busy; clicked => { root.capture(); } }
                         Text { text: root.source-label; color: #a5adc2; wrap: word-wrap; }
+                    }
+                    HorizontalLayout {
+                        Button {text:"Alt+E · Комментарий";enabled:!root.busy;clicked=>{root.open-tool("comment");}}
+                        Button {text:"Alt+T · Попробовать";enabled:!root.busy;clicked=>{root.open-tool("task");}}
+                        Button {text:"Ctrl+Alt+P · Прогноз";enabled:!root.busy;clicked=>{root.open-tool("prediction");}}
                     }
                     TextEdit { text <=> root.material; enabled: !root.busy; placeholder-text: "Исходный материал — отдельно от собственной мысли"; wrap: word-wrap; edited=>{root.material-edited();} }
                     TextEdit { text <=> root.own-text; enabled: !root.busy; placeholder-text: "Ваша мысль / вопрос (сохраняется до запроса ИИ)"; wrap: word-wrap; }
@@ -425,7 +477,7 @@ export component HubWindow inherits Window {
                 VerticalLayout {
                     padding: 16px; spacing: 12px;
                     Text { text: "OpenAI-совместимый провайдер"; color: #f2f4fb; font-size: 20px; }
-                    ComboBox { model: ["По умолчанию", "Контекст", "План Alt+I", "Four Words"]; current-index <=> root.provider-slot; selected(_) => { root.select-provider(self.current-index); } }
+                    ComboBox { model: ["По умолчанию", "Контекст", "План Alt+I", "Four Words", "Alt+T задача", "Прогноз"]; current-index <=> root.provider-slot; selected(_) => { root.select-provider(self.current-index); } }
                     LineEdit { text <=> root.endpoint; placeholder-text: "https://…/v1/chat/completions"; }
                     LineEdit { text <=> root.model; placeholder-text: "ID модели"; }
                     LineEdit { text <=> root.api-key; input-type: password; placeholder-text: "Новый API-ключ (пусто — оставить существующий)"; }

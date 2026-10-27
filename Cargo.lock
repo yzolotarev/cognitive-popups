@@ -799,25 +799,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cognitive-exoskeleton"
-version = "0.1.0"
-dependencies = [
- "cognitive-exoskeleton-capture",
- "cognitive-exoskeleton-domain",
- "cognitive-exoskeleton-journal",
- "cognitive-exoskeleton-services",
- "cognitive-exoskeleton-ui",
- "i-slint-backend-testing",
- "serde",
- "serde_json",
- "slint",
- "tempfile",
- "time",
- "uuid",
- "zeroize",
-]
-
-[[package]]
 name = "cognitive-exoskeleton-capture"
 version = "0.1.0"
 dependencies = [
@@ -853,6 +834,8 @@ dependencies = [
 name = "cognitive-exoskeleton-services"
 version = "0.1.0"
 dependencies = [
+ "cognitive-exoskeleton-domain",
+ "cognitive-exoskeleton-journal",
  "directories",
  "fsrs",
  "getrandom 0.4.3",
@@ -876,6 +859,25 @@ dependencies = [
  "slint",
  "slint-build",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "cognitive-popups"
+version = "0.1.0"
+dependencies = [
+ "cognitive-exoskeleton-capture",
+ "cognitive-exoskeleton-domain",
+ "cognitive-exoskeleton-journal",
+ "cognitive-exoskeleton-services",
+ "cognitive-exoskeleton-ui",
+ "i-slint-backend-testing",
+ "serde",
+ "serde_json",
+ "slint",
+ "tempfile",
+ "time",
+ "uuid",
+ "zeroize",
 ]
 
 [[package]]

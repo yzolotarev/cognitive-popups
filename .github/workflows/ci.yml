@@ -32,10 +32,10 @@ jobs:
         include:
           - platform: Linux
             runner: ubuntu-24.04
-            executable: cognitive-exoskeleton
+            executable: cognitive-popups
           - platform: Windows
             runner: windows-2022
-            executable: cognitive-exoskeleton.exe
+            executable: cognitive-popups.exe
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
@@ -63,26 +63,26 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          mkdir -p package/cognitive-exoskeleton-linux
-          cp target/release/cognitive-exoskeleton packaging/linux/install.sh docs/user-guide.md LICENSE package/cognitive-exoskeleton-linux/
-          tar -czf cognitive-exoskeleton-Linux-x86_64.tar.gz -C package cognitive-exoskeleton-linux
+          mkdir -p package/cognitive-popups-linux
+          cp target/release/cognitive-popups packaging/linux/install.sh docs/user-guide.md LICENSE package/cognitive-popups-linux/
+          tar -czf cognitive-popups-Linux-x86_64.tar.gz -C package cognitive-popups-linux
           test_home=$(mktemp -d)
-          HOME="$test_home" XDG_DATA_HOME="$test_home/data" XDG_CONFIG_HOME="$test_home/config" sh package/cognitive-exoskeleton-linux/install.sh
-          "$test_home/data/cognitive-exoskeleton-v1/bin/cognitive-exoskeleton" --help
-          test ! -e "$test_home/config/autostart/cognitive-exoskeleton-v1.desktop"
+          HOME="$test_home" XDG_DATA_HOME="$test_home/data" XDG_CONFIG_HOME="$test_home/config" sh package/cognitive-popups-linux/install.sh
+          "$test_home/data/cognitive-popups/bin/cognitive-popups" --help
+          test ! -e "$test_home/config/autostart/cognitive-popups.desktop"
       - name: Package Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force package/cognitive-exoskeleton-windows | Out-Null
-          Copy-Item target/release/cognitive-exoskeleton.exe,packaging/windows/install.ps1,docs/user-guide.md,LICENSE package/cognitive-exoskeleton-windows/
-          Compress-Archive -Path package/cognitive-exoskeleton-windows -DestinationPath cognitive-exoskeleton-Windows-x86_64.zip
+          New-Item -ItemType Directory -Force package/cognitive-popups-windows | Out-Null
+          Copy-Item target/release/cognitive-popups.exe,packaging/windows/install.ps1,docs/user-guide.md,LICENSE package/cognitive-popups-windows/
+          Compress-Archive -Path package/cognitive-popups-windows -DestinationPath cognitive-popups-Windows-x86_64.zip
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: cognitive-exoskeleton-${{ matrix.platform }}-x86_64
+          name: cognitive-popups-${{ matrix.platform }}-x86_64
           path: |
             target/release/${{ matrix.executable }}
-            cognitive-exoskeleton-${{ matrix.platform }}-x86_64.*
+            cognitive-popups-${{ matrix.platform }}-x86_64.*
           if-no-files-found: error
           retention-days: 14
 

@@ -1,4 +1,4 @@
-use domain::{NewEvent, OperationId, SourceKind};
+use domain::{NewEvent, OperationId, SourceKind, SourceSnapshot};
 use services::{
     mechanism::{FOUR_WORDS_PROMPT, FourWords},
     provider::Provider,
@@ -7,6 +7,28 @@ use services::{
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::rc::Rc;
 use time::OffsetDateTime;
+
+pub fn capture_for_action() -> Result<capture::Capture, Box<dyn std::error::Error>> {
+    if std::env::args().any(|arg| arg == "--manual-source") {
+        use std::io::Read;
+        let mut text = String::new();
+        std::io::stdin().take(1_048_577).read_to_string(&mut text)?;
+        if text.len() > 1_048_576 || text.trim().is_empty() {
+            return Err("Manual source empty or over 1 MiB".into());
+        }
+        Ok(capture::Capture {
+            snapshot: SourceSnapshot {
+                kind: SourceKind::Manual,
+                text,
+                application: None,
+                window_title: None,
+            },
+            diagnostics: vec!["explicitly provided material, not an automatic selection".into()],
+        })
+    } else {
+        Ok(capture::capture_with(&capture::SystemReader)?)
+    }
+}
 
 pub fn cue_model(words: FourWords) -> ModelRc<ui::Cue> {
     Rc::new(VecModel::from(
@@ -36,7 +58,7 @@ pub fn advance(model: ModelRc<ui::Cue>, index: i32) {
 
 pub fn four_words() -> Result<(), Box<dyn std::error::Error>> {
     let _guard = services::InstanceGuard::acquire("four_words")?;
-    let captured = capture::capture_with(&capture::SystemReader)?;
+    let captured = capture_for_action()?;
     let directory = services::data_dir()?;
     let operation = OperationId::new(uuid::Uuid::new_v4().to_string())?;
     let journal_path = directory.join("journal.sqlite3");

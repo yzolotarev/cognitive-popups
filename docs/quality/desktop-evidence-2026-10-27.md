@@ -24,6 +24,8 @@ This is evidence for specific claims only. It is not full v1 acceptance.
 | Alt+T window from a real selection | `task` opened “Микроупражнение · Alt+T” with the captured text, the source kind, the own-attempt field and the “no attempt on close” footer |
 | Ctrl+Alt+P window | `prediction` opened “Свой прогноз · Ctrl+Alt+P” with the hypothesis prompt before any model call |
 | Focus comes back after an explicit window | with kitty active, `note --manual-source` took focus; `Escape` closed it and `kitty` was active again |
+| All eight hub sections render | `Занятие`, `Предметы`, `Контекст`, `Память`, `Проверка`, `История`, `Опыт`, `Настройки` were each opened and screenshotted; `context`/`memory`/`settings` also via their CLI entry points |
+| Empty states explain themselves | history and MRT report show a short explanation instead of a blank box |
 
 ## Fixed during this check
 
@@ -36,6 +38,10 @@ This is evidence for specific claims only. It is not full v1 acceptance.
 3. `checkable` buttons whose `checked` was bound to an expression could not be
    toggled by clicking; switched to `primary` highlighting with a direct
    `page = N` assignment.
+4. The check-answer `TextEdit` collapsed to one line and its placeholder was
+   clipped; it now has a minimum height and a shorter prompt.
+5. A label still said “вне активного Alt+I” and the settings text pointed at a
+   tab named “Эксперимент”; both now use the shipped wording (“занятия”, «Опыт»).
 
 ## Not verified
 

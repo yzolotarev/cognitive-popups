@@ -446,7 +446,7 @@ export component HubWindow inherits Window {
                     Button {text:"Зафиксировать комплексную задачу (отдельные критерии компонентов)";clicked=>{root.create-compound-task();}}
                     ComboBox {model:root.task-names;current-index <=> root.task-index;selected(_)=>{root.select-task(self.current-index);}}
                     Text {text:root.check-criterion;color:#c8d8ff;wrap:word-wrap;}
-                    TextEdit {text <=> root.check-answer;placeholder-text:"Ваш ответ. Для комплекса — строка на компонент; [unknown], [blocked], [skip] допустимы отдельно.";wrap:word-wrap;}
+                    TextEdit {min-height:84px;text <=> root.check-answer;placeholder-text:"Ваш ответ (комплекс — строка на компонент)";wrap:word-wrap;}
                     CheckBox {text:"Отвечал самостоятельно, без внешней помощи";checked <=> root.independent-answer;}
                     HorizontalLayout {
                         Button {text:"Проверить";clicked=>{root.submit-task("answer");}}
@@ -463,6 +463,7 @@ export component HubWindow inherits Window {
                     padding: 16px; spacing: 10px;
                     ComboBox { model: root.history-names; current-index <=> root.history-index; selected(_) => { root.select-history(self.current-index); } }
                     TextEdit { text: root.history-text; read-only: true; wrap: word-wrap; }
+                    Text { visible: root.history-text == ""; text: "Сохранённых заметок пока нет. Сначала сохраните свою мысль на вкладке «Контекст»."; color: #a5adc2; wrap: word-wrap; }
                 }
             
         if root.page == 6:
@@ -471,10 +472,11 @@ export component HubWindow inherits Window {
                     Text {text:"MRT · добровольный эксперимент";color:#f2f4fb;font-size:20px;}
                     Text {text:"Протокол v1 утверждён: после проверенной ошибки — 50% короткое системное предложение диагностики / 50% молчание. Не чаще раза в 15 минут, максимум 3 назначения в сутки UTC. Отдельная самостоятельная проверка той же единицы за 24 часа — outcome; отсутствие — missing.";color:#a5adc2;wrap:word-wrap;}
                     CheckBox {text:"Разрешить MRT в активном занятии";checked <=> root.mrt-enabled;toggled=>{root.save-experiment();}}
-                    CheckBox {text:"Отдельно разрешить вне активного Alt+I";checked <=> root.mrt-outside;toggled=>{root.save-experiment();}}
+                    CheckBox {text:"Отдельно разрешить вне активного занятия (Alt+I)";checked <=> root.mrt-outside;toggled=>{root.save-experiment();}}
                     Text {text:"Отзыв прекращает новые назначения и отменяет ещё не доставленные предложения. Клики и время в приложении не являются учебным результатом и не меняют FSRS.";color:#a5adc2;wrap:word-wrap;}
                     Button {text:"Обновить отчёт";clicked=>{root.experiment-report();}}
                     TextEdit {text:root.mrt-report;read-only:true;wrap:word-wrap;}
+                    Text {visible: root.mrt-report == ""; text:"Отчёт пока пуст: назначений не было или выключено согласие. Пустой отчёт — не доказательство пользы и не ошибка.";color:#a5adc2;wrap:word-wrap;}
                     Text {text:"Отчёт описательный: размер выборки, пропуски и неопределённость. Нет заявления о причинном эффекте или доказанной оптимизации обучения.";color:#c8d8ff;wrap:word-wrap;}
                 }
             
@@ -492,7 +494,7 @@ export component HubWindow inherits Window {
                     }
                     Text { text: "Ключ — только в системном Credential Store / Secret Service. Если хранилище недоступно, сохранение ключа отклоняется; plaintext fallback нет."; color: #a5adc2; wrap: word-wrap; }
                     Text { text: "Внешнему провайдеру отправляются только явно показанные материал, вопрос или выбранный предмет и история планирования, после нажатия кнопки. Нет фоновой записи экрана, аудио или clipboard-наблюдения."; color: #a5adc2; wrap: word-wrap; }
-                    Text { text: "MRT по умолчанию выключен. Отдельное добровольное включение — во вкладке «Эксперимент». Доступ к экрану/аудио не требуется."; color: #a5adc2; wrap: word-wrap; }
+                    Text { text: "MRT по умолчанию выключен. Отдельное добровольное включение — во вкладке «Опыт». Доступ к экрану/аудио не требуется."; color: #a5adc2; wrap: word-wrap; }
                     Rectangle { vertical-stretch: 1; }
                 }
             

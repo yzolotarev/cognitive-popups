@@ -12,11 +12,21 @@ demand; the control panel (`cognitive-popups hub`, or the installed menu entry
 memory, the experiment and settings, not their menu and not the entry point.
 `--help` is a non-GUI diagnostic and works without a desktop.
 
-Linux release packages include `install.sh`: `sh install.sh` installs a
-user-local binary and launcher; there is nothing to autostart, because every
-action is a one-shot command bound to a hotkey. Windows packages
+Linux release packages include `install.sh`: `sh install.sh` installs the
+binary into `~/.local/bin` (override the directory with `XDG_BIN_HOME`), the
+launcher into the applications menu, and the opt-in keybind examples into
+`~/.local/share/cognitive-popups/`. The binary has to be reachable **by name**,
+because the hotkeys run `cognitive-popups <action>`; `cognitive-popups
+--version` prints the version of the installed file, which is how you check that
+a hotkey starts the build you just installed. There is nothing to autostart,
+because every action is a one-shot command bound to a hotkey. Windows packages
 include `install.ps1` (user-local Start menu shortcut; optional `-Autostart`).
 Neither installer edits your compositor or hotkey configuration.
+
+Hyprland 0.56 with a Lua config (Ryoku) reads `hyprland.lua`; the classic
+`hyprland.conf` example carries the same five binds. Both are examples only:
+remove old binds for the same keys first, then add the five lines and reload
+with `hyprctl reload`. Alt+I opens the session window, not the control panel.
 
 Linux needs the runtime libraries used by Slint (Wayland/X11, EGL, fontconfig),
 `wl-clipboard` on Wayland or `xclip` on X11, and an unlocked Secret Service for

@@ -33,6 +33,7 @@ Usage:
   cognitive-popups credential-probe   test and delete a unique synthetic credential
   cognitive-popups mrt-report     explicit experiment JSON export (no raw user text)
   cognitive-popups archive PATH [TABLE]   explicitly inspect a read-only SQLite archive
+  cognitive-popups --version      print the version of this installed binary
   cognitive-popups --help         show this message
 
 No arguments prints this message instead of opening a window. The five actions
@@ -62,6 +63,12 @@ fn main() -> ExitCode {
     match action.as_deref() {
         Some("--help" | "-h") => {
             println!("{USAGE}");
+            ExitCode::SUCCESS
+        }
+        Some("--version" | "-V") => {
+            // A hotkey runs whatever the command resolves to; printing the
+            // version is how the user checks that it is the installed build.
+            println!("cognitive-popups {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         None => {

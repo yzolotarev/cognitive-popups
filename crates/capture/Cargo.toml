@@ -1,0 +1,10 @@
+[package]
+name = "cognitive-exoskeleton-capture"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+publish = false
+
+[dependencies]
+cognitive-exoskeleton-domain = { path = "../domain" }
+thiserror = { workspace = true }

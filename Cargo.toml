@@ -1,10 +1,3 @@
-[package]
-name = "cognitive-exoskeleton"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.90"
-publish = false
-
 [workspace]
 members = ["crates/*"]
 resolver = "3"
@@ -16,3 +9,4 @@ thiserror = "2.0"
 time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 rusqlite = { version = "0.38", features = ["bundled"] }
+slint = "1.18"

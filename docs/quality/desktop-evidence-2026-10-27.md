@@ -23,6 +23,7 @@ This is evidence for specific claims only. It is not full v1 acceptance.
 | Missing provider configuration is handled | activating the generate button with no model showed the configuration error in the window; nothing was sent and the app stayed alive |
 | Alt+T window from a real selection | `task` opened “Микроупражнение · Alt+T” with the captured text, the source kind, the own-attempt field and the “no attempt on close” footer |
 | Ctrl+Alt+P window | `prediction` opened “Свой прогноз · Ctrl+Alt+P” with the hypothesis prompt before any model call |
+| Focus comes back after an explicit window | with kitty active, `note --manual-source` took focus; `Escape` closed it and `kitty` was active again |
 
 ## Fixed during this check
 

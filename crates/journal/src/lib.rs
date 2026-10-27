@@ -408,8 +408,7 @@ mod tests {
         journal
             .append(&[NewEvent::user_text(operation(), at(1), "same-key", "answer").unwrap()])
             .unwrap();
-        let changed_time =
-            NewEvent::user_text(operation(), at(2), "same-key", "answer").unwrap();
+        let changed_time = NewEvent::user_text(operation(), at(2), "same-key", "answer").unwrap();
         assert!(matches!(
             journal.append(&[changed_time]),
             Err(JournalError::IdempotencyConflict { .. })

@@ -15,7 +15,7 @@ const REGISTRY: &str = "docs/requirements/registry.md";
 const PREFIXES: [&str; 7] = ["PR-", "CT-", "LI-", "MM-", "EX-", "DS-", "INV-"];
 
 fn root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 fn cells(line: &str) -> Vec<String> {

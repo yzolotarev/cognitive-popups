@@ -53,3 +53,18 @@ Desktop-проверки не выполнялись: P1 ещё не начат,
 - OD-09: выбран Slint 1.18; для пассивных подсказок используются системные уведомления.
 - OD-10: Linux-first, Windows desktop acceptance remains blocked (CI builds do not count).
 - Статусы требований в исходной спецификации/registry не повышены самовольно; решения вынесены в `docs/decisions/open-decisions.md`.
+# Integration checkpoint: local P2/P3 + PR #6 (2026-10-27)
+
+- Preserved the local capture/UI/app slice in `wip/p2-p3-local-snapshot`
+  (`2ef8e6f`) before integrating PR #6 on a separate branch.
+- Merged PR #6 without conflicts; corrected its Rust formatting.
+- Restored the root traceability integration test via the app package: a
+  virtual workspace does not discover root-level `tests/` automatically.
+- Local validation: 23 tests passed, including 3 traceability and 9 journal
+  tests; workspace Clippy with warnings denied, formatting, release build,
+  and CLI `--help` smoke check passed.
+- CI installs Linux desktop build dependencies and allows 45 minutes for
+  cold Slint builds. Windows runtime capture and desktop acceptance remain
+  unverified; compilation is not desktop acceptance. The UI smoke command is
+  diagnostic only; its auto-close/focus behavior remains unresolved.
+- This is an integration checkpoint, not completion of v1 or P3 acceptance.

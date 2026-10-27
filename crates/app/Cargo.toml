@@ -5,6 +5,10 @@ edition = "2024"
 rust-version = "1.90"
 publish = false
 
+[[test]]
+name = "traceability"
+path = "../../tests/traceability.rs"
+
 [dependencies]
 capture = { package = "cognitive-exoskeleton-capture", path = "../capture" }
 domain = { package = "cognitive-exoskeleton-domain", path = "../domain" }

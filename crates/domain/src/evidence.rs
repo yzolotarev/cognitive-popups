@@ -191,7 +191,7 @@ pub fn verify(
             }
             Some(ComponentSubmission { answer: Answer::Blocked, .. }) => ComponentStatus::Blocked,
             Some(ComponentSubmission { answer: Answer::Submitted(text), assisted }) => {
-                match (matches_criterion(text, &target.criterion), assisted) {
+                match (matches_criterion(text, &target.criterion), *assisted) {
                     (true, true) => ComponentStatus::AssistedCorrect,
                     (false, true) => ComponentStatus::AssistedIncorrect,
                     (true, false) => ComponentStatus::Correct,

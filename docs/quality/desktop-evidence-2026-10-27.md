@@ -18,6 +18,9 @@ This is evidence for specific claims only. It is not full v1 acceptance.
 | Explicit material path | `note --manual-source` rendered the piped fragment with the label “ИСТОЧНИК: ввод вручную” |
 | Keyboard typing reaches the app | typed text appeared in the note's own-words field |
 | No crash during interaction | process stayed in its event loop; no panic or stderr output |
+| Real primary-selection capture | `wl-copy --primary …` then `cognitive-popups capture` printed `kind: selection` with the exact text and empty diagnostics |
+| Capture → Four Words window | `four-words` opened with the captured text, labelled “Выделение” and the configured endpoint/model disclosure |
+| Missing provider configuration is handled | activating the generate button with no model showed the configuration error in the window; nothing was sent and the app stayed alive |
 
 ## Fixed during this check
 

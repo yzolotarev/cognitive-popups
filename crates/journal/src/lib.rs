@@ -32,6 +32,8 @@ pub enum JournalError {
     Corrupt { id: String, reason: String },
     #[error("cannot prepare storage directory: {0}")]
     Io(#[from] std::io::Error),
+    #[error("idempotency key {key} was reused for a different event")]
+    IdempotencyConflict { key: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,8 +108,8 @@ impl Journal {
         Ok(())
     }
 
-    /// Appends a batch atomically. Duplicate idempotency keys are reported, not
-    /// inserted again; the first write wins.
+    /// Appends a batch atomically. Replaying an identical event is harmless;
+    /// reusing its key with different content is an error, rolling back the batch.
     pub fn append(&mut self, events: &[NewEvent]) -> Result<AppendReport, JournalError> {
         if events.is_empty() {
             return Ok(AppendReport {
@@ -132,17 +134,47 @@ impl Journal {
             )?;
             for event in events {
                 let payload = serde_json::to_string(event.payload())?;
+                let timestamp = event.occurred_at().format(&Rfc3339)?;
                 let changed = statement.execute(params![
                     EventId::generate().as_str(),
                     event.operation().as_str(),
-                    event.occurred_at().format(&Rfc3339)?,
+                    &timestamp,
                     event.author().as_str(),
                     event.payload().kind_name(),
                     event.idempotency_key(),
-                    payload,
+                    &payload,
                     SCHEMA_VERSION,
                 ])?;
                 if changed == 0 {
+                    let existing: (String, String, String, String, String, i64) =
+                        transaction.query_row(
+                            "SELECT operation_id, occurred_at, author, kind, payload_json, schema_version
+                             FROM events WHERE idempotency_key = ?1",
+                            [event.idempotency_key()],
+                            |row| {
+                                Ok((
+                                    row.get(0)?,
+                                    row.get(1)?,
+                                    row.get(2)?,
+                                    row.get(3)?,
+                                    row.get(4)?,
+                                    row.get(5)?,
+                                ))
+                            },
+                        )?;
+                    let incoming = (
+                        event.operation().as_str().to_owned(),
+                        timestamp,
+                        event.author().as_str().to_owned(),
+                        event.payload().kind_name().to_owned(),
+                        payload,
+                        SCHEMA_VERSION,
+                    );
+                    if existing != incoming {
+                        return Err(JournalError::IdempotencyConflict {
+                            key: event.idempotency_key().to_owned(),
+                        });
+                    }
                     report.duplicates += 1;
                 } else {
                     report.inserted += 1;
@@ -325,7 +357,7 @@ mod tests {
     fn duplicates_inside_one_batch_are_kept_once() {
         let mut journal = Journal::open_in_memory().unwrap();
         let report = journal
-            .append(&[source("a", "k"), source("b", "k")])
+            .append(&[source("a", "k"), source("a", "k")])
             .unwrap();
         assert_eq!(
             report,
@@ -335,6 +367,52 @@ mod tests {
             }
         );
         assert_eq!(journal.len().unwrap(), 1);
+    }
+
+    #[test]
+    fn conflicting_replay_does_not_replace_the_original_event() {
+        let mut journal = Journal::open_in_memory().unwrap();
+        journal.append(&[source("original", "shared-key")]).unwrap();
+        let error = journal
+            .append(&[source("modified", "shared-key")])
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            JournalError::IdempotencyConflict { key } if key == "shared-key"
+        ));
+        assert_eq!(journal.len().unwrap(), 1);
+        let stored = journal.read_operation(&operation()).unwrap();
+        assert!(matches!(
+            stored[0].event.payload(),
+            Payload::Source(snapshot) if snapshot.text == "original"
+        ));
+    }
+
+    #[test]
+    fn conflicting_keys_inside_one_batch_roll_back_all_events() {
+        let mut journal = Journal::open_in_memory().unwrap();
+        let error = journal
+            .append(&[
+                source("first", "key-1"),
+                source("second", "key-2"),
+                source("changed", "key-1"),
+            ])
+            .unwrap_err();
+        assert!(matches!(error, JournalError::IdempotencyConflict { .. }));
+        assert_eq!(journal.len().unwrap(), 0);
+    }
+
+    #[test]
+    fn replay_with_same_payload_but_changed_time_is_rejected() {
+        let mut journal = Journal::open_in_memory().unwrap();
+        journal
+            .append(&[NewEvent::user_text(operation(), at(1), "same-key", "answer").unwrap()])
+            .unwrap();
+        let changed_time = NewEvent::user_text(operation(), at(2), "same-key", "answer").unwrap();
+        assert!(matches!(
+            journal.append(&[changed_time]),
+            Err(JournalError::IdempotencyConflict { .. })
+        ));
     }
 
     #[test]

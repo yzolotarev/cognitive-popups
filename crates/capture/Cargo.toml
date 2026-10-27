@@ -1,0 +1,14 @@
+[package]
+name = "cognitive-exoskeleton-capture"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+publish = false
+
+[dependencies]
+cognitive-exoskeleton-domain = { path = "../domain" }
+thiserror = { workspace = true }
+wait-timeout = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+arboard = { version = "3.6", default-features = false }

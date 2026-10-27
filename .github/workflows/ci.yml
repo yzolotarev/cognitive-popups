@@ -32,10 +32,10 @@ jobs:
         include:
           - platform: Linux
             runner: ubuntu-24.04
-            executable: cognitive-exoskeleton
+            executable: cognitive-popups
           - platform: Windows
             runner: windows-2022
-            executable: cognitive-exoskeleton.exe
+            executable: cognitive-popups.exe
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:
@@ -58,7 +58,7 @@ jobs:
         run: ./target/release/${{ matrix.executable }}
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: cognitive-exoskeleton-${{ matrix.platform }}-x86_64
+          name: cognitive-popups-${{ matrix.platform }}-x86_64
           path: target/release/${{ matrix.executable }}
           if-no-files-found: error
           retention-days: 14

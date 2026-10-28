@@ -5,14 +5,18 @@
 //! action does not create a second record. The journal stores provenance
 //! separately and never rewrites a reader's own text.
 
+mod transcript;
+
+pub use transcript::{AI_MARKER, OTHER_MARKER, USER_MARKER, render_transcript};
+
 use cognitive_exoskeleton_domain::{
-    Author, DomainError, EventId, NewEvent, OperationId, Payload, StoredEvent,
+    Author, DomainError, EventId, LessonId, NewEvent, OperationId, Payload, StoredEvent,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum JournalError {
@@ -81,7 +85,7 @@ impl Journal {
                 supported: SCHEMA_VERSION,
             });
         }
-        if version < SCHEMA_VERSION {
+        if version < 1 {
             self.connection.execute_batch(
                 "
                 BEGIN IMMEDIATE;
@@ -99,6 +103,18 @@ impl Journal {
                 CREATE INDEX IF NOT EXISTS events_by_operation
                     ON events (operation_id, sequence);
                 PRAGMA user_version = 1;
+                COMMIT;
+                ",
+            )?;
+        }
+        if version < 2 {
+            self.connection.execute_batch(
+                "
+                BEGIN IMMEDIATE;
+                ALTER TABLE events ADD COLUMN lesson_id TEXT;
+                CREATE INDEX IF NOT EXISTS events_by_lesson
+                    ON events (lesson_id, sequence);
+                PRAGMA user_version = 2;
                 COMMIT;
                 ",
             )?;
@@ -125,8 +141,8 @@ impl Journal {
                 "
                 INSERT INTO events (
                     id, operation_id, occurred_at, author, kind,
-                    idempotency_key, payload_json, schema_version
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                    idempotency_key, payload_json, schema_version, lesson_id
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                 ON CONFLICT(idempotency_key) DO NOTHING
                 ",
             )?;
@@ -141,6 +157,7 @@ impl Journal {
                     event.idempotency_key(),
                     payload,
                     SCHEMA_VERSION,
+                    event.lesson().map(LessonId::as_str),
                 ])?;
                 if changed == 0 {
                     report.duplicates += 1;
@@ -157,17 +174,32 @@ impl Journal {
         &self,
         operation: &OperationId,
     ) -> Result<Vec<StoredEvent>, JournalError> {
-        let mut statement = self.connection.prepare(
+        self.read_where("operation_id = ?1", operation.as_str())
+    }
+
+    /// Every event of one Alt+I lesson, in the order they were written.
+    pub fn read_lesson(&self, lesson: &LessonId) -> Result<Vec<StoredEvent>, JournalError> {
+        self.read_where("lesson_id = ?1", lesson.as_str())
+    }
+
+    /// The lesson as text for the end-of-lesson model call: one line per event,
+    /// marked by who produced it. Text from development tools and AI chats is left out.
+    pub fn lesson_transcript(&self, lesson: &LessonId) -> Result<String, JournalError> {
+        Ok(render_transcript(&self.read_lesson(lesson)?))
+    }
+
+    fn read_where(&self, condition: &str, value: &str) -> Result<Vec<StoredEvent>, JournalError> {
+        let mut statement = self.connection.prepare(&format!(
             "
             SELECT sequence, id, operation_id, occurred_at, author, kind,
-                   idempotency_key, payload_json
+                   idempotency_key, payload_json, lesson_id
             FROM events
-            WHERE operation_id = ?1
+            WHERE {condition}
             ORDER BY sequence
-            ",
-        )?;
+            "
+        ))?;
         let rows = statement
-            .query_map([operation.as_str()], |row| {
+            .query_map([value], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
@@ -177,12 +209,13 @@ impl Journal {
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
                     row.get::<_, String>(7)?,
+                    row.get::<_, Option<String>>(8)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut events = Vec::with_capacity(rows.len());
-        for (sequence, id, operation_id, occurred_at, author, kind, key, payload) in rows {
+        for (sequence, id, operation_id, occurred_at, author, kind, key, payload, lesson) in rows {
             let payload: Payload = serde_json::from_str(&payload)?;
             if payload.kind_name() != kind {
                 return Err(JournalError::Corrupt {
@@ -194,13 +227,16 @@ impl Journal {
                 id: id.clone(),
                 reason: format!("unknown author {author}"),
             })?;
-            let event = NewEvent::restore(
+            let mut event = NewEvent::restore(
                 OperationId::new(operation_id)?,
                 author,
                 OffsetDateTime::parse(&occurred_at, &Rfc3339)?,
                 key,
                 payload,
             )?;
+            if let Some(lesson) = lesson {
+                event = event.with_lesson(LessonId::new(lesson)?);
+            }
             events.push(StoredEvent {
                 sequence,
                 id: EventId::new(id)?,
@@ -246,7 +282,9 @@ fn author_from_str(value: &str) -> Option<Author> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cognitive_exoskeleton_domain::{SelfAssessmentValue, SourceKind, SourceSnapshot, UnitId};
+    use cognitive_exoskeleton_domain::{
+        SelfAssessmentValue, SourceContext, SourceKind, SourceSnapshot, UnitId,
+    };
     use time::macros::datetime;
 
     fn operation() -> OperationId {
@@ -269,6 +307,7 @@ mod tests {
                 text: text.into(),
                 application: Some("Firefox".into()),
                 window_title: Some("Article".into()),
+                context: SourceContext::Study,
             },
         )
         .unwrap()
@@ -397,5 +436,111 @@ mod tests {
                 duplicates: 0
             }
         );
+    }
+
+    fn lesson() -> LessonId {
+        LessonId::new("lesson-1").unwrap()
+    }
+
+    #[test]
+    fn lesson_events_are_read_back_in_order_and_only_for_that_lesson() {
+        let mut journal = Journal::open_in_memory().unwrap();
+        let other = LessonId::new("lesson-2").unwrap();
+        journal
+            .append(&[
+                source("абзац о ранге", "k-1").with_lesson(lesson()),
+                NewEvent::user_text(operation(), at(1), "k-2", "моя гипотеза")
+                    .unwrap()
+                    .with_lesson(lesson()),
+                NewEvent::user_text(operation(), at(2), "k-3", "другой урок")
+                    .unwrap()
+                    .with_lesson(other),
+                NewEvent::user_text(operation(), at(3), "k-4", "вне урока").unwrap(),
+            ])
+            .unwrap();
+        let stored = journal.read_lesson(&lesson()).unwrap();
+        assert_eq!(stored.len(), 2);
+        assert!(stored[0].sequence < stored[1].sequence);
+        assert!(stored.iter().all(|e| e.event.lesson() == Some(&lesson())));
+    }
+
+    #[test]
+    fn lesson_transcript_marks_who_wrote_each_line() {
+        let mut journal = Journal::open_in_memory().unwrap();
+        journal
+            .append(&[
+                source("абзац о ранге", "k-1").with_lesson(lesson()),
+                NewEvent::ai_response(operation(), at(1), "k-2", "p", "m", "4 слова: ранг")
+                    .unwrap()
+                    .with_lesson(lesson()),
+                NewEvent::user_text(operation(), at(2), "k-3", "ранг = число строк")
+                    .unwrap()
+                    .with_lesson(lesson()),
+            ])
+            .unwrap();
+        let text = journal.lesson_transcript(&lesson()).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines,
+            vec![
+                "[e1] sth else: абзац о ранге",
+                "[e2] ->ai generated for this task: 4 слова: ранг",
+                "[e3] ->user: ранг = число строк",
+            ]
+        );
+    }
+
+    #[test]
+    fn development_and_ai_chat_text_never_enters_the_transcript() {
+        let mut journal = Journal::open_in_memory().unwrap();
+        let mut dev = SourceSnapshot {
+            kind: SourceKind::Selection,
+            text: "fn main() {}".into(),
+            application: Some("kitty".into()),
+            window_title: None,
+            context: SourceContext::Development,
+        };
+        let first = NewEvent::source(operation(), at(0), "k-1", dev.clone()).unwrap();
+        dev.context = SourceContext::AiChat;
+        dev.text = "ответ чата".into();
+        let second = NewEvent::source(operation(), at(1), "k-2", dev).unwrap();
+        journal
+            .append(&[first.with_lesson(lesson()), second.with_lesson(lesson())])
+            .unwrap();
+        assert_eq!(journal.read_lesson(&lesson()).unwrap().len(), 2);
+        assert_eq!(journal.lesson_transcript(&lesson()).unwrap(), "");
+    }
+
+    #[test]
+    fn a_version_one_database_is_migrated_in_place() {
+        let directory =
+            std::env::temp_dir().join(format!("cognitive-journal-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("journal.sqlite3");
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "
+                    CREATE TABLE events (
+                        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                        id TEXT NOT NULL UNIQUE, operation_id TEXT NOT NULL,
+                        occurred_at TEXT NOT NULL, author TEXT NOT NULL, kind TEXT NOT NULL,
+                        idempotency_key TEXT NOT NULL UNIQUE, payload_json TEXT NOT NULL,
+                        schema_version INTEGER NOT NULL
+                    );
+                    INSERT INTO events VALUES (1, 'id-1', 'op-1', '2026-10-27T12:00:00Z',
+                        'user', 'user_text', 'k-old', '{\"payload\":\"user_text\",\"text\":\"старое\"}', 1);
+                    PRAGMA user_version = 1;
+                    ",
+                )
+                .unwrap();
+        }
+        let journal = Journal::open(&path).unwrap();
+        let stored = journal.read_operation(&operation()).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert!(stored[0].event.lesson().is_none());
+        drop(journal);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

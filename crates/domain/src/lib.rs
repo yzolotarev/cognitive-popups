@@ -96,6 +96,25 @@ impl UnitId {
     }
 }
 
+/// One Alt+I lesson. Events carry it so the end of a lesson can be read back as
+/// one transcript; events outside a lesson have none.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct LessonId(String);
+
+impl LessonId {
+    pub fn new(value: impl Into<String>) -> Result<Self, DomainError> {
+        let value = value.into();
+        if value.trim().is_empty() {
+            return Err(DomainError::Empty { field: "lesson id" });
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Where a captured fragment came from. `None` is an honest "no automatic
 /// source"; it is never replaced with a guess from stale clipboard contents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,12 +126,31 @@ pub enum SourceKind {
     None,
 }
 
+/// What kind of window the text was taken from. Text from a development tool or
+/// from a chat with an AI is still answered, but never becomes study history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceContext {
+    #[default]
+    Study,
+    Development,
+    AiChat,
+}
+
+impl SourceContext {
+    pub fn is_study(self) -> bool {
+        self == SourceContext::Study
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceSnapshot {
     pub kind: SourceKind,
     pub text: String,
     pub application: Option<String>,
     pub window_title: Option<String>,
+    #[serde(default)]
+    pub context: SourceContext,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,7 +190,8 @@ impl Payload {
         }
     }
 
-    fn required_author(&self) -> Author {
+    /// The only author a payload may have.
+    pub fn author(&self) -> Author {
         match self {
             Payload::Source(_) => Author::System,
             Payload::UserText { .. } | Payload::SelfAssessment { .. } => Author::User,
@@ -171,9 +210,49 @@ pub struct NewEvent {
     occurred_at: OffsetDateTime,
     idempotency_key: String,
     payload: Payload,
+    lesson: Option<LessonId>,
 }
 
 impl NewEvent {
+    /// Builds an event from a payload with the same checks as the typed
+    /// constructors; the author follows from the payload.
+    pub fn new(
+        operation: OperationId,
+        occurred_at: OffsetDateTime,
+        idempotency_key: impl Into<String>,
+        payload: Payload,
+    ) -> Result<Self, DomainError> {
+        match payload {
+            Payload::Source(snapshot) => {
+                Self::source(operation, occurred_at, idempotency_key, snapshot)
+            }
+            Payload::UserText { text } => {
+                Self::user_text(operation, occurred_at, idempotency_key, text)
+            }
+            Payload::AiResponse {
+                provider,
+                model,
+                text,
+            } => Self::ai_response(
+                operation,
+                occurred_at,
+                idempotency_key,
+                provider,
+                model,
+                text,
+            ),
+            Payload::SelfAssessment { unit, value } => {
+                Self::self_assessment(operation, occurred_at, idempotency_key, unit, value)
+            }
+        }
+    }
+
+    /// Attaches the event to an Alt+I lesson.
+    pub fn with_lesson(mut self, lesson: LessonId) -> Self {
+        self.lesson = Some(lesson);
+        self
+    }
+
     pub fn source(
         operation: OperationId,
         occurred_at: OffsetDateTime,
@@ -265,7 +344,7 @@ impl NewEvent {
         idempotency_key: impl Into<String>,
         payload: Payload,
     ) -> Result<Self, DomainError> {
-        if payload.required_author() != author {
+        if payload.author() != author {
             return Err(DomainError::AuthorMismatch {
                 payload: payload.kind_name(),
                 author,
@@ -283,6 +362,7 @@ impl NewEvent {
             occurred_at,
             idempotency_key,
             payload,
+            lesson: None,
         })
     }
 
@@ -304,6 +384,10 @@ impl NewEvent {
 
     pub fn payload(&self) -> &Payload {
         &self.payload
+    }
+
+    pub fn lesson(&self) -> Option<&LessonId> {
+        self.lesson.as_ref()
     }
 
     /// Rebuilds an event read from storage, applying the same author rules as
@@ -407,6 +491,7 @@ mod tests {
                 text: "   ".into(),
                 application: None,
                 window_title: None,
+                context: SourceContext::Study,
             },
         );
         assert_eq!(
@@ -429,5 +514,37 @@ mod tests {
         .unwrap();
         assert_eq!(event.author(), Author::User);
         assert!(matches!(event.payload(), Payload::SelfAssessment { .. }));
+    }
+
+    #[test]
+    fn generic_constructor_applies_the_typed_checks() {
+        let result = NewEvent::new(
+            OperationId::new("op-1").unwrap(),
+            now(),
+            "key-1",
+            Payload::UserText { text: "  ".into() },
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            DomainError::Empty { field: "user text" }
+        );
+    }
+
+    #[test]
+    fn source_context_defaults_to_study_for_older_records() {
+        let snapshot: SourceSnapshot = serde_json::from_str(
+            r#"{"kind":"selection","text":"x","application":null,"window_title":null}"#,
+        )
+        .unwrap();
+        assert_eq!(snapshot.context, SourceContext::Study);
+    }
+
+    #[test]
+    fn lesson_is_optional_and_attached_explicitly() {
+        let event =
+            NewEvent::user_text(OperationId::new("op-1").unwrap(), now(), "k", "мысль").unwrap();
+        assert!(event.lesson().is_none());
+        let event = event.with_lesson(LessonId::new("lesson-1").unwrap());
+        assert_eq!(event.lesson().unwrap().as_str(), "lesson-1");
     }
 }

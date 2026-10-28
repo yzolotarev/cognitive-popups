@@ -13,6 +13,16 @@ GUI framework has been selected. Legacy Python code remains in Git history.
 ## Пакет v2 (28.10.2026)
 
 Актуальный пакет для разработки — [`docs/v2/`](docs/v2/README.md): спецификация `SPEC.md`, план `ROADMAP.md` (этапы P0–P8, P0 — проба Rust + GTK 4), модель данных, приёмочный день, журнал решений B1–B35, карта 101 функции v1 и промпты v1 для переноса. Где пакет расходится со спецификацией v0.2 ниже, действует пакет; сверка — [`docs/v2/reconcile-rust-spec.md`](docs/v2/reconcile-rust-spec.md). Инструкция для агента — [`CLAUDE.md`](CLAUDE.md).
+## Journal from the command line
+
+```sh
+cargo run -- log add --db /tmp/j.sqlite3 --json '{"operation":"op-1","key":"k-1","lesson":"L1","event":{"payload":"user_text","text":"моя гипотеза"}}'
+cargo run -- log lesson --db /tmp/j.sqlite3 L1
+```
+
+`log lesson` prints the lesson transcript that the end-of-lesson units prompt reads:
+one line per event, `[e<n>]` id, then `->user:`, `->ai generated for this task:` or
+`sth else:`. Text from development tools and AI chats is stored but never printed.
 
 ## Requirements baseline (P0)
 

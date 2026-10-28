@@ -13,6 +13,7 @@ use cognitive_exoskeleton_ai::{
 };
 use cognitive_exoskeleton_domain::{LessonId, NewEvent, OperationId, Payload};
 use cognitive_exoskeleton_journal::Journal;
+use cognitive_exoskeleton_units::{ExtractError, UnitStore, extract_lesson};
 use serde::Deserialize;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -27,6 +28,9 @@ usage:
   cognitive-exoskeleton ai check
   cognitive-exoskeleton ai ask --prompts <dir> --prompt <key> (--input <text> | --input-file <path>)
                                [--json] [--max-tokens <n>]
+  cognitive-exoskeleton units extract --db <path> --prompts <dir> --subject <id> --lesson <id>
+  cognitive-exoskeleton units list --db <path> --subject <id>
+  cognitive-exoskeleton units separate --db <path> <link-id>
 
 AI settings (environment):
   COGNITIVE_AI_PROVIDER   gemini (default) | openai_compatible
@@ -72,8 +76,10 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &[String]) -> Result<String, String> {
-    if args.first().map(String::as_str) == Some("ai") {
-        return run_ai(&args[1..]);
+    match args.first().map(String::as_str) {
+        Some("ai") => return run_ai(&args[1..]),
+        Some("units") => return run_units(&args[1..]),
+        _ => {}
     }
     let (command, rest) = match args {
         [group, command, rest @ ..] if group == "log" => (command.as_str(), rest),
@@ -183,6 +189,86 @@ fn run_ai(args: &[String]) -> Result<String, String> {
         )),
         Ok(text) => Ok(text),
         Err(error) => Err(format!("{} ({error})", error.user_message(provider))),
+    }
+}
+
+/// Units live in the same database file as the journal, in their own tables.
+fn run_units(args: &[String]) -> Result<String, String> {
+    let (command, rest) = args.split_first().ok_or("units needs a command")?;
+    let mut options = std::collections::HashMap::new();
+    let mut positional = Vec::new();
+    let mut iter = rest.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--db" | "--prompts" | "--subject" | "--lesson" => {
+                let value = iter.next().ok_or(format!("{arg} needs a value"))?;
+                options.insert(arg.as_str(), value.clone());
+            }
+            other if other.starts_with("--") => return Err(format!("unknown option {other}")),
+            other => positional.push(other.to_string()),
+        }
+    }
+    let db = options.get("--db").ok_or("--db is required")?;
+    let mut store = UnitStore::open(db).map_err(|e| e.to_string())?;
+    let subject = || options.get("--subject").ok_or("--subject is required");
+    match command.as_str() {
+        "extract" => {
+            let journal = Journal::open(db).map_err(|e| e.to_string())?;
+            let prompts = options.get("--prompts").ok_or("--prompts is required")?;
+            let prompts = PromptStore::from_dir(prompts).map_err(|e| e.to_string())?;
+            let lesson = options.get("--lesson").ok_or("--lesson is required")?;
+            let lesson = LessonId::new(lesson.clone()).map_err(|e| e.to_string())?;
+            let config = ai_config_from_env()?;
+            let provider = config.provider_name();
+            let client = Client::new(config, UreqTransport::default());
+            let (summary, extraction) =
+                extract_lesson(&journal, &mut store, &client, &prompts, subject()?, &lesson)
+                    .map_err(|e| match e {
+                        ExtractError::Ai(error) => {
+                            format!("{} ({error})", error.user_message(provider))
+                        }
+                        other => other.to_string(),
+                    })?;
+            let mut out = summary
+                .notification()
+                .unwrap_or_else(|| "новых единиц нет".into());
+            for note in &extraction.notes {
+                out.push_str(&format!("\n  проверка: {note}"));
+            }
+            Ok(out)
+        }
+        "list" => {
+            let mut out = String::new();
+            for unit in store.registry(subject()?).map_err(|e| e.to_string())? {
+                let events = store.events_of(&unit.id).map_err(|e| e.to_string())?;
+                let events: Vec<String> = events.iter().map(|s| format!("e{s}")).collect();
+                out.push_str(&format!(
+                    "{} · {} · {} · {}{} · [{}]\n",
+                    unit.id,
+                    unit.title,
+                    unit.action,
+                    unit.kind,
+                    if unit.mastered {
+                        " · освоена"
+                    } else {
+                        ""
+                    },
+                    events.join(" ")
+                ));
+            }
+            for (link, target, title) in store.open_links(subject()?).map_err(|e| e.to_string())? {
+                out.push_str(&format!("связь {link}: «{title}» добавлена к {target}\n"));
+            }
+            Ok(out.trim_end().to_string())
+        }
+        "separate" => {
+            let [link] = positional.as_slice() else {
+                return Err("separate needs exactly one link id".into());
+            };
+            let unit = store.separate(link).map_err(|e| e.to_string())?;
+            Ok(format!("отделена в новую единицу {unit}"))
+        }
+        other => Err(format!("unknown units command {other}")),
     }
 }
 

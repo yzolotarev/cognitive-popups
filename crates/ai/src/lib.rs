@@ -91,6 +91,10 @@ impl<T: Transport> Client<T> {
         &self.config
     }
 
+    pub fn transport(&self) -> &T {
+        &self.transport
+    }
+
     /// Plain text answer.
     pub fn complete(&self, request: &Request) -> Result<String, AiError> {
         let key = self.config.key().ok_or(AiError::NoKey)?;

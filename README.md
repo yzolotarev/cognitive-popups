@@ -39,6 +39,20 @@ OpenAI-compatible service (`COGNITIVE_AI_PROVIDER=openai_compatible`,
 readable by other users is refused. Prompts are read from Markdown files (first
 ```` ```text ```` block), so they change without a rebuild.
 
+## Learning units from the command line
+
+```sh
+cargo run -- units extract --db journal.db --prompts docs/v2/port/prompts --subject linal --lesson L1
+cargo run -- units list --db journal.db --subject linal
+cargo run -- units separate --db journal.db <link-id>
+```
+
+At the end of a lesson the model proposes units from the transcript; the code
+keeps only what it can check: cited events exist, at least one of them was written by
+the reader, `same_as` names a known unit, the kind is one of eight, merge candidates
+are made only of units the reader marked as mastered. A lesson is extracted once.
+Units live in the journal's database file, in their own tables.
+
 ## Requirements baseline (P0)
 
 | Artefact | Purpose |

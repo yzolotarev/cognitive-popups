@@ -12,12 +12,14 @@ use cognitive_exoskeleton_ai::{
     ProviderKind, Request, UreqTransport,
 };
 use cognitive_exoskeleton_domain::{LessonId, NewEvent, OperationId, Payload};
-use cognitive_exoskeleton_journal::Journal;
+use cognitive_exoskeleton_journal::{Journal, citable_events, marked_text};
 use cognitive_exoskeleton_memory::{
     DAY, Grade, GradeSource, MIN_REVIEWS_FOR_OWN_PARAMETERS, Memory, Note, OptimizeOutcome,
     ReviewOutcome,
 };
-use cognitive_exoskeleton_practice::{PracticeError, probe_tree};
+use cognitive_exoskeleton_practice::{
+    DueUnit, EvidenceLine, PracticeError, ProbeTree, RecallSet, arrange, probe_tree, recall_cards,
+};
 use cognitive_exoskeleton_units::{ExtractError, UnitStore, extract_lesson};
 use serde::Deserialize;
 use time::OffsetDateTime;
@@ -47,6 +49,8 @@ usage:
   cognitive-exoskeleton memory goal --db <path> --subject <id> [--deadline <rfc3339>] [--inactive]
   cognitive-exoskeleton memory optimize --db <path> --subject <id> [--now <t>]
   cognitive-exoskeleton practice probes --text <file> --prompts <dir>
+  cognitive-exoskeleton practice tree --db <path> --prompts <dir> [--text <file>] [--from-pill]
+                                      [--now <t>]   probes + «Достань из памяти»
 
 AI settings (environment):
   COGNITIVE_AI_PROVIDER   gemini (default) | openai_compatible
@@ -447,8 +451,50 @@ fn run_memory(args: &[String]) -> Result<String, String> {
 /// Alt+T probes for a text, as JSON (S5).
 fn run_practice(args: &[String]) -> Result<String, String> {
     let (command, rest) = args.split_first().ok_or("practice needs a command")?;
-    let (options, _, _) = parse_options(rest, &["--text", "--prompts"], &[])?;
+    let (options, flags, _) = parse_options(
+        rest,
+        &["--text", "--prompts", "--db", "--now"],
+        &["--from-pill"],
+    )?;
+    let ai_error = |provider: &'static str| {
+        move |e: PracticeError| match e {
+            PracticeError::Ai(error) => format!("{} ({error})", error.user_message(provider)),
+            other => other.to_string(),
+        }
+    };
     match command.as_str() {
+        "tree" => {
+            let db = options.get("--db").ok_or("--db is required")?;
+            let prompts = options.get("--prompts").ok_or("--prompts is required")?;
+            let prompts = PromptStore::from_dir(prompts).map_err(|e| e.to_string())?;
+            let at = now(options.get("--now").map(String::as_str))?;
+            let config = ai_config_from_env()?;
+            let provider = config.provider_name();
+            let client = Client::new(config, UreqTransport::default());
+            let due = due_units(db, at)?;
+            let recall = if due.is_empty() {
+                RecallSet::default()
+            } else {
+                recall_cards(&client, &prompts, &due, Priority::Foreground)
+                    .map_err(ai_error(provider))?
+            };
+            let probes = match options.get("--text") {
+                Some(path) => {
+                    let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+                    probe_tree(&client, &prompts, &text, Priority::Foreground)
+                        .map_err(ai_error(provider))?
+                }
+                None => ProbeTree::default(),
+            };
+            let mut notes = probes.notes;
+            notes.extend(recall.notes);
+            let tree = arrange(probes.groups, recall.cards, flags.contains("--from-pill"));
+            if let Some(model) = client.answered_by() {
+                eprintln!("ответила модель {model}");
+            }
+            serde_json::to_string_pretty(&serde_json::json!({"categories": tree, "notes": notes}))
+                .map_err(|e| e.to_string())
+        }
         "probes" => {
             let path = options.get("--text").ok_or("--text is required")?;
             let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
@@ -457,15 +503,8 @@ fn run_practice(args: &[String]) -> Result<String, String> {
             let config = ai_config_from_env()?;
             let provider = config.provider_name();
             let client = Client::new(config, UreqTransport::default());
-            let tree =
-                probe_tree(&client, &prompts, &text, Priority::Foreground).map_err(
-                    |e| match e {
-                        PracticeError::Ai(error) => {
-                            format!("{} ({error})", error.user_message(provider))
-                        }
-                        other => other.to_string(),
-                    },
-                )?;
+            let tree = probe_tree(&client, &prompts, &text, Priority::Foreground)
+                .map_err(ai_error(provider))?;
             if let Some(model) = client.answered_by() {
                 eprintln!("ответила модель {model}");
             }
@@ -473,6 +512,44 @@ fn run_practice(args: &[String]) -> Result<String, String> {
         }
         other => Err(format!("unknown practice command {other}")),
     }
+}
+
+/// Due units with their evidence, most overdue first (input of «Достань из памяти»).
+fn due_units(db: &str, at: i64) -> Result<Vec<DueUnit>, String> {
+    let store = UnitStore::open(db).map_err(|e| e.to_string())?;
+    let mut memory = Memory::open(db).map_err(|e| e.to_string())?;
+    let journal = Journal::open(db).map_err(|e| e.to_string())?;
+    sync_memory(&store, &mut memory, at)?;
+    let mut units = Vec::new();
+    for due in memory.due(at).map_err(|e| e.to_string())? {
+        let registry = store.registry(&due.subject).map_err(|e| e.to_string())?;
+        let Some(unit) = registry.into_iter().find(|u| u.id == due.unit) else {
+            continue;
+        };
+        let sequences = store.events_of(&unit.id).map_err(|e| e.to_string())?;
+        let events = journal
+            .read_sequences(&sequences)
+            .map_err(|e| e.to_string())?;
+        let evidence = citable_events(&events)
+            .into_iter()
+            .map(|stored| {
+                let (marker, text) = marked_text(stored);
+                EvidenceLine {
+                    sequence: stored.sequence,
+                    marker,
+                    text,
+                }
+            })
+            .collect();
+        units.push(DueUnit {
+            id: unit.id,
+            title: unit.title,
+            action: unit.action,
+            kind: unit.kind,
+            evidence,
+        });
+    }
+    Ok(units)
 }
 
 /// Every current unit is on the schedule (B35: units always rest on the reader's

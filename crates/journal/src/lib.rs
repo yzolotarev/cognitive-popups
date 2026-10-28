@@ -7,7 +7,9 @@
 
 mod transcript;
 
-pub use transcript::{AI_MARKER, OTHER_MARKER, USER_MARKER, citable_events, render_transcript};
+pub use transcript::{
+    AI_MARKER, OTHER_MARKER, USER_MARKER, citable_events, marked_text, render_transcript,
+};
 
 use cognitive_exoskeleton_domain::{
     Author, DomainError, EventId, LessonId, NewEvent, OperationId, Payload, StoredEvent,
@@ -174,12 +176,22 @@ impl Journal {
         &self,
         operation: &OperationId,
     ) -> Result<Vec<StoredEvent>, JournalError> {
-        self.read_where("operation_id = ?1", operation.as_str())
+        self.read_where("operation_id = ?1", [operation.as_str()])
     }
 
     /// Every event of one Alt+I lesson, in the order they were written.
     pub fn read_lesson(&self, lesson: &LessonId) -> Result<Vec<StoredEvent>, JournalError> {
-        self.read_where("lesson_id = ?1", lesson.as_str())
+        self.read_where("lesson_id = ?1", [lesson.as_str()])
+    }
+
+    /// The events with these sequence numbers (a unit's evidence), in order.
+    /// Unknown numbers are skipped.
+    pub fn read_sequences(&self, sequences: &[i64]) -> Result<Vec<StoredEvent>, JournalError> {
+        if sequences.is_empty() {
+            return Ok(Vec::new());
+        }
+        let list: Vec<String> = sequences.iter().map(i64::to_string).collect();
+        self.read_where(&format!("sequence IN ({})", list.join(",")), [])
     }
 
     /// The lesson as text for the end-of-lesson model call: one line per event,
@@ -188,7 +200,11 @@ impl Journal {
         Ok(render_transcript(&self.read_lesson(lesson)?))
     }
 
-    fn read_where(&self, condition: &str, value: &str) -> Result<Vec<StoredEvent>, JournalError> {
+    fn read_where(
+        &self,
+        condition: &str,
+        params: impl rusqlite::Params,
+    ) -> Result<Vec<StoredEvent>, JournalError> {
         let mut statement = self.connection.prepare(&format!(
             "
             SELECT sequence, id, operation_id, occurred_at, author, kind,
@@ -199,7 +215,7 @@ impl Journal {
             "
         ))?;
         let rows = statement
-            .query_map([value], |row| {
+            .query_map(params, |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
@@ -358,6 +374,22 @@ mod tests {
         );
         assert_eq!(journal.len().unwrap(), 1);
         assert_eq!(journal.find_by_key("same-key").unwrap(), Some(1));
+    }
+
+    #[test]
+    fn events_are_read_back_by_their_numbers() {
+        let mut journal = Journal::open_in_memory().unwrap();
+        journal
+            .append(&[source("a", "k1"), source("b", "k2"), source("c", "k3")])
+            .unwrap();
+        let read: Vec<i64> = journal
+            .read_sequences(&[3, 1, 99])
+            .unwrap()
+            .iter()
+            .map(|e| e.sequence)
+            .collect();
+        assert_eq!(read, vec![1, 3]);
+        assert!(journal.read_sequences(&[]).unwrap().is_empty());
     }
 
     #[test]

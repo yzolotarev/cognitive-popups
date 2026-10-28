@@ -93,6 +93,18 @@ arithmetic in drill pairs is computed exactly; the meaning of the rest is checke
 by a verifier model that can only remove cards. Rejected branches are asked for
 again once, with the reason.
 
+```sh
+cargo run -- practice tree --db journal.db --prompts docs/v2/port/prompts --text page.txt
+cargo run -- practice tree --db journal.db --prompts docs/v2/port/prompts --from-pill
+cargo run -- memory review --db journal.db <unit> совпало --source self_graded --key attempt-21
+```
+
+`practice tree` adds «Достань из памяти» when units are due: one card per unit,
+a question to answer from memory and a reference quoted verbatim from the unit's
+own journal events, hidden until the reader answers. It replaces the third probe
+category, comes first when opened from the «FSRS! N» pill, and is the only one
+without a text. The reader grades by comparing: промахнулся / частично / совпало.
+
 ## Requirements baseline (P0)
 
 | Artefact | Purpose |

@@ -25,6 +25,10 @@ pub struct AiConfig {
     /// Gemini: defaults to the public endpoint. OpenAI-compatible: required,
     /// for example `https://api.groq.com/openai/v1`.
     pub base_url: Option<String>,
+    /// Models of the same provider tried in order when the main one is
+    /// overloaded or missing. The answer always names the model that gave it.
+    #[serde(default)]
+    pub fallback_models: Vec<String>,
     #[serde(skip)]
     key: Option<String>,
 }
@@ -35,6 +39,7 @@ impl std::fmt::Debug for AiConfig {
             .field("provider", &self.provider)
             .field("model", &self.model)
             .field("base_url", &self.base_url)
+            .field("fallback_models", &self.fallback_models)
             .field("key", &self.key.as_ref().map(|_| "<set>"))
             .finish()
     }
@@ -46,8 +51,23 @@ impl AiConfig {
             provider,
             model: model.into(),
             base_url,
+            fallback_models: Vec::new(),
             key: None,
         }
+    }
+
+    pub fn with_fallbacks(mut self, models: Vec<String>) -> Self {
+        self.fallback_models = models
+            .into_iter()
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty() && *m != self.model)
+            .collect();
+        self
+    }
+
+    /// The main model first, then the fallbacks.
+    pub fn models(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.model.as_str()).chain(self.fallback_models.iter().map(String::as_str))
     }
 
     pub fn with_key(mut self, key: Option<String>) -> Self {
@@ -120,15 +140,21 @@ impl Transport for UreqTransport {
     }
 }
 
+/// Room for a thinking model's reasoning on top of the answer budget: Gemini
+/// counts thought tokens against `maxOutputTokens`, and the thinking settings
+/// differ per model (`thinkingLevel` vs `thinkingBudget`), so none is sent.
+pub const THINKING_RESERVE: u32 = 2048;
+
 pub(crate) fn send(
     config: &AiConfig,
+    model: &str,
     key: &str,
     transport: &impl Transport,
     request: &Request,
 ) -> Result<String, AiError> {
     let (url, headers, body) = match config.provider {
-        ProviderKind::Gemini => gemini_request(config, key, request),
-        ProviderKind::OpenaiCompatible => openai_request(config, key, request)?,
+        ProviderKind::Gemini => gemini_request(config, model, key, request),
+        ProviderKind::OpenaiCompatible => openai_request(config, model, key, request)?,
     };
     let (status, text) = transport
         .post(&url, &headers, &body)
@@ -136,7 +162,11 @@ pub(crate) fn send(
     if !(200..300).contains(&status) {
         let message = error_message(&text);
         return Err(if status == 429 || status >= 500 {
-            AiError::Unavailable { status, message }
+            AiError::Unavailable {
+                status,
+                retry_after: retry_after(&text),
+                message,
+            }
         } else {
             AiError::Rejected { status, message }
         });
@@ -148,7 +178,7 @@ pub(crate) fn send(
     }
 }
 
-fn gemini_request(config: &AiConfig, key: &str, request: &Request) -> WireRequest {
+fn gemini_request(config: &AiConfig, model: &str, key: &str, request: &Request) -> WireRequest {
     let base = config
         .base_url
         .as_deref()
@@ -156,9 +186,9 @@ fn gemini_request(config: &AiConfig, key: &str, request: &Request) -> WireReques
     let url = format!(
         "{}/models/{}:generateContent",
         base.trim_end_matches('/'),
-        config.model
+        model
     );
-    let mut generation = json!({ "maxOutputTokens": request.max_tokens });
+    let mut generation = json!({ "maxOutputTokens": request.max_tokens + THINKING_RESERVE });
     if request.json {
         generation["responseMimeType"] = json!("application/json");
     }
@@ -170,7 +200,12 @@ fn gemini_request(config: &AiConfig, key: &str, request: &Request) -> WireReques
     (url, vec![("x-goog-api-key", key.to_string())], body)
 }
 
-fn openai_request(config: &AiConfig, key: &str, request: &Request) -> Result<WireRequest, AiError> {
+fn openai_request(
+    config: &AiConfig,
+    model: &str,
+    key: &str,
+    request: &Request,
+) -> Result<WireRequest, AiError> {
     let base = config
         .base_url
         .as_deref()
@@ -180,7 +215,7 @@ fn openai_request(config: &AiConfig, key: &str, request: &Request) -> Result<Wir
         })?;
     let url = format!("{}/chat/completions", base.trim_end_matches('/'));
     let mut body = json!({
-        "model": config.model,
+        "model": model,
         "max_tokens": request.max_tokens,
         "messages": [
             { "role": "system", "content": request.system },
@@ -194,18 +229,40 @@ fn openai_request(config: &AiConfig, key: &str, request: &Request) -> Result<Wir
 }
 
 fn gemini_text(value: &Value) -> Result<String, AiError> {
-    let parts = value["candidates"][0]["content"]["parts"]
+    let candidate = &value["candidates"][0];
+    if candidate.is_null() {
+        return Err(AiError::Shape(format!("no candidates: {}", short(value))));
+    }
+    let empty = Vec::new();
+    let text: String = candidate["content"]["parts"]
         .as_array()
-        .ok_or_else(|| AiError::Shape(format!("no candidates: {}", short(value))))?;
-    let text: String = parts
+        .unwrap_or(&empty)
         .iter()
         .filter(|part| part["thought"].as_bool() != Some(true))
         .filter_map(|part| part["text"].as_str())
         .collect();
     if text.trim().is_empty() {
-        return Err(AiError::Shape("empty answer".into()));
+        return Err(AiError::Shape(
+            match candidate["finishReason"].as_str() {
+                Some("MAX_TOKENS") => "the answer was cut off by the token limit",
+                Some("SAFETY") | Some("PROHIBITED_CONTENT") => "the answer was blocked",
+                _ => "empty answer",
+            }
+            .into(),
+        ));
     }
     Ok(text)
+}
+
+/// Seconds the provider asks to wait: Gemini's `RetryInfo.retryDelay` («17s»).
+fn retry_after(text: &str) -> Option<u64> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    value["error"]["details"]
+        .as_array()?
+        .iter()
+        .filter_map(|d| d["retryDelay"].as_str())
+        .find_map(|d| d.trim_end_matches('s').parse::<f64>().ok())
+        .map(|s| s.ceil() as u64)
 }
 
 fn openai_text(value: &Value) -> Result<String, AiError> {
@@ -260,6 +317,14 @@ pub(crate) mod tests {
                     })
                     .collect(),
             )
+        }
+
+        pub(crate) fn gemini_body(text: &str) -> String {
+            json!({"candidates":[{"content":{"parts":[{"text": text}]}}]}).to_string()
+        }
+
+        pub(crate) fn urls(&self) -> Vec<String> {
+            self.seen.borrow().iter().map(|s| s.0.clone()).collect()
         }
 
         pub(crate) fn calls(&self) -> usize {
@@ -385,6 +450,42 @@ pub(crate) mod tests {
         assert_eq!(
             error.user_message("Gemini"),
             "Gemini не принял ключ. Проверь ключ в настройках ИИ."
+        );
+    }
+}
+
+#[cfg(test)]
+mod stability_tests {
+    use super::*;
+
+    #[test]
+    fn retry_delay_is_read_from_gemini_details() {
+        let body = r#"{"error":{"code":429,"details":[{"@type":"x"},{"retryDelay":"16.4s"}]}}"#;
+        assert_eq!(retry_after(body), Some(17));
+        assert_eq!(retry_after(r#"{"error":{"code":503}}"#), None);
+    }
+
+    #[test]
+    fn a_thinking_model_cut_off_by_the_limit_is_named() {
+        let value = serde_json::json!({"candidates":[{"content":{},"finishReason":"MAX_TOKENS"}]});
+        let error = gemini_text(&value).unwrap_err().to_string();
+        assert!(error.contains("cut off"), "{error}");
+    }
+
+    #[test]
+    fn the_answer_budget_leaves_room_for_thinking() {
+        let config = AiConfig::new(ProviderKind::Gemini, "m", None);
+        let request = Request {
+            system: "S".into(),
+            input: "I".into(),
+            max_tokens: 20,
+            json: false,
+            priority: crate::Priority::Foreground,
+        };
+        let (_, _, body) = gemini_request(&config, "m", "k", &request);
+        assert_eq!(
+            body["generationConfig"]["maxOutputTokens"],
+            20 + THINKING_RESERVE
         );
     }
 }

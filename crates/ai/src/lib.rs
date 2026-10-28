@@ -16,7 +16,7 @@ mod provider;
 
 pub use gate::{Gate, Priority};
 pub use prompts::{PromptError, PromptStore};
-pub use provider::{AiConfig, ProviderKind, Transport, UreqTransport};
+pub use provider::{AiConfig, ProviderKind, THINKING_RESERVE, Transport, UreqTransport};
 
 use serde_json::Value;
 
@@ -24,12 +24,22 @@ use serde_json::Value;
 /// generation (Q-67), so a model retirement does not require a release.
 pub const DEFAULT_GEMINI_MODEL: &str = "gemini-flash-lite-latest";
 
+/// Tried in order when the main model is overloaded (B38). Chosen by a live
+/// check on the probe workload; each has its own rate limit.
+pub const DEFAULT_GEMINI_FALLBACKS: [&str; 3] =
+    ["gemini-3.5-flash", "gemini-3.6-flash", "gemma-4-31b-it"];
+
 #[derive(Debug, thiserror::Error)]
 pub enum AiError {
     #[error("no AI key configured")]
     NoKey,
     #[error("the provider is overloaded or rate-limited ({status}): {message}")]
-    Unavailable { status: u16, message: String },
+    Unavailable {
+        status: u16,
+        /// Seconds the provider asked to wait, when it said.
+        retry_after: Option<u64>,
+        message: String,
+    },
     #[error("the provider rejected the request ({status}): {message}")]
     Rejected { status: u16, message: String },
     #[error("network error: {0}")]
@@ -76,6 +86,17 @@ pub struct Client<T: Transport> {
     config: AiConfig,
     transport: T,
     gate: Gate,
+    sleep: fn(std::time::Duration),
+    answered_by: std::sync::Mutex<Option<String>>,
+}
+
+/// Longest wait for a rate limit before trying the next model: the reader is
+/// waiting for a foreground request, nobody is for a background one.
+fn wait_limit(priority: Priority) -> u64 {
+    match priority {
+        Priority::Foreground => 5,
+        Priority::Background => 30,
+    }
 }
 
 impl<T: Transport> Client<T> {
@@ -84,7 +105,21 @@ impl<T: Transport> Client<T> {
             config,
             transport,
             gate: Gate::default(),
+            sleep: std::thread::sleep,
+            answered_by: std::sync::Mutex::new(None),
         }
+    }
+
+    #[cfg(test)]
+    fn without_sleep(mut self) -> Self {
+        self.sleep = |_| {};
+        self
+    }
+
+    /// The model that gave the last answer: shown next to it, so a fallback is
+    /// never silent.
+    pub fn answered_by(&self) -> Option<String> {
+        self.answered_by.lock().ok()?.clone()
     }
 
     pub fn config(&self) -> &AiConfig {
@@ -96,10 +131,42 @@ impl<T: Transport> Client<T> {
     }
 
     /// Plain text answer.
+    ///
+    /// Stability within one provider: a rate limit with a short requested wait
+    /// is waited out once; an overloaded or missing model hands over to the next
+    /// model in the list. A rejected key or request stops at once.
     pub fn complete(&self, request: &Request) -> Result<String, AiError> {
         let key = self.config.key().ok_or(AiError::NoKey)?;
         let _turn = self.gate.enter(request.priority);
-        provider::send(&self.config, key, &self.transport, request)
+        let mut last = None;
+        for model in self.config.models() {
+            let mut waited = false;
+            loop {
+                match provider::send(&self.config, model, key, &self.transport, request) {
+                    Ok(text) => {
+                        if let Ok(mut slot) = self.answered_by.lock() {
+                            *slot = Some(model.to_string());
+                        }
+                        return Ok(text);
+                    }
+                    Err(AiError::Unavailable {
+                        retry_after: Some(seconds),
+                        ..
+                    }) if !waited && seconds <= wait_limit(request.priority) => {
+                        waited = true;
+                        (self.sleep)(std::time::Duration::from_secs(seconds));
+                    }
+                    Err(error @ AiError::Unavailable { .. })
+                    | Err(error @ AiError::Rejected { status: 404, .. })
+                    | Err(error @ AiError::Shape(_)) => {
+                        last = Some(error);
+                        break;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        Err(last.expect("at least the main model was tried"))
     }
 
     /// JSON answer accepted by `validate`. A first answer that does not parse or
@@ -212,6 +279,50 @@ mod tests {
     fn fenced_json_is_accepted_and_arrays_are_not() {
         assert!(parse_json_object("```json\n{\"a\":1}\n```").is_ok());
         assert!(parse_json_object("[1,2]").is_err());
+    }
+
+    #[test]
+    fn an_overloaded_model_hands_over_to_the_next_and_says_so() {
+        let transport = StubTransport::new(vec![
+            (503, r#"{"error":{"message":"high demand"}}"#.into()),
+            (404, r#"{"error":{"message":"no such model"}}"#.into()),
+            (200, StubTransport::gemini_body("ok")),
+        ]);
+        let config = gemini_config(Some("k")).with_fallbacks(vec!["gone".into(), "spare".into()]);
+        let client = Client::new(config, transport).without_sleep();
+        assert_eq!(client.complete(&request()).unwrap(), "ok");
+        assert_eq!(client.answered_by().as_deref(), Some("spare"));
+        let urls = client.transport.urls();
+        assert!(urls[0].contains("/models/gemini-flash-lite-latest:"));
+        assert!(urls[2].contains("/models/spare:"));
+    }
+
+    #[test]
+    fn a_short_rate_limit_is_waited_out_once_on_the_same_model() {
+        let limited = r#"{"error":{"message":"quota","details":[{"retryDelay":"3s"}]}}"#;
+        let transport = StubTransport::new(vec![
+            (429, limited.into()),
+            (200, StubTransport::gemini_body("ok")),
+        ]);
+        let client = Client::new(gemini_config(Some("k")), transport).without_sleep();
+        assert_eq!(client.complete(&request()).unwrap(), "ok");
+        assert_eq!(
+            client.answered_by().as_deref(),
+            Some("gemini-flash-lite-latest")
+        );
+    }
+
+    #[test]
+    fn a_rejected_key_is_not_retried_on_other_models() {
+        let transport =
+            StubTransport::new(vec![(401, r#"{"error":{"message":"bad key"}}"#.into())]);
+        let config = gemini_config(Some("k")).with_fallbacks(vec!["spare".into()]);
+        let client = Client::new(config, transport).without_sleep();
+        assert!(matches!(
+            client.complete(&request()),
+            Err(AiError::Rejected { status: 401, .. })
+        ));
+        assert_eq!(client.transport.calls(), 1);
     }
 
     #[test]

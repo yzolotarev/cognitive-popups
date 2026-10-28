@@ -53,6 +53,28 @@ the reader, `same_as` names a known unit, the kind is one of eight, merge candid
 are made only of units the reader marked as mastered. A lesson is extracted once.
 Units live in the journal's database file, in their own tables.
 
+## Memory (FSRS) from the command line
+
+```sh
+cargo run -- memory due --db journal.db                       # FSRS! N and the list
+cargo run -- memory review --db journal.db <unit> good --source self_graded --key attempt-17
+cargo run -- memory note --db journal.db <unit> self_report --key attempt-18   # «не помню»
+cargo run -- memory goal --db journal.db --subject linal --deadline 2026-12-20T00:00:00Z
+cargo run -- memory optimize --db journal.db --subject linal
+cargo run -- units merge --db journal.db --title … --action … --kind transfer <unit> <unit>
+cargo run -- units unmerge --db journal.db <merged-unit>
+```
+
+One schedule for everything: FSRS-6 (`fsrs` crate) with desired retention 0.9,
+learning steps 1 and 10 minutes, relearning 10 minutes. A grade comes only from
+code (`verified`) or from the reader comparing with the reference (`self_graded`);
+there is no Easy and no way for a model to grade. «Не помню», skips and model
+verdicts are kept as evidence without touching the schedule. Each attempt carries a
+key, so a repeated submission is one review. A goal due within 7 days takes the
+queue; a removed goal pauses its units. A subject trains its own 21 weights after
+400 reviews, at most monthly. A merged unit starts from its weakest part; its
+parts wait unchanged until it is undone.
+
 ## Requirements baseline (P0)
 
 | Artefact | Purpose |

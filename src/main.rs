@@ -13,6 +13,10 @@ use cognitive_exoskeleton_ai::{
 };
 use cognitive_exoskeleton_domain::{LessonId, NewEvent, OperationId, Payload};
 use cognitive_exoskeleton_journal::Journal;
+use cognitive_exoskeleton_memory::{
+    DAY, Grade, GradeSource, MIN_REVIEWS_FOR_OWN_PARAMETERS, Memory, Note, OptimizeOutcome,
+    ReviewOutcome,
+};
 use cognitive_exoskeleton_units::{ExtractError, UnitStore, extract_lesson};
 use serde::Deserialize;
 use time::OffsetDateTime;
@@ -31,6 +35,16 @@ usage:
   cognitive-exoskeleton units extract --db <path> --prompts <dir> --subject <id> --lesson <id>
   cognitive-exoskeleton units list --db <path> --subject <id>
   cognitive-exoskeleton units separate --db <path> <link-id>
+  cognitive-exoskeleton units master --db <path> <unit-id> [--undo]
+  cognitive-exoskeleton units merge --db <path> --title <t> --action <a> --kind <k> <unit-id>...
+  cognitive-exoskeleton units unmerge --db <path> <merged-unit-id>
+  cognitive-exoskeleton memory due --db <path> [--now <rfc3339>]
+  cognitive-exoskeleton memory review --db <path> <unit-id> <again|hard|good>
+                                      --source <verified|self_graded> --key <k> [--now <t>]
+  cognitive-exoskeleton memory note --db <path> <unit-id> <self_report|skipped|model_verdict|no_data>
+                                    --key <k> [--now <t>]
+  cognitive-exoskeleton memory goal --db <path> --subject <id> [--deadline <rfc3339>] [--inactive]
+  cognitive-exoskeleton memory optimize --db <path> --subject <id> [--now <t>]
 
 AI settings (environment):
   COGNITIVE_AI_PROVIDER   gemini (default) | openai_compatible
@@ -79,6 +93,7 @@ fn run(args: &[String]) -> Result<String, String> {
     match args.first().map(String::as_str) {
         Some("ai") => return run_ai(&args[1..]),
         Some("units") => return run_units(&args[1..]),
+        Some("memory") => return run_memory(&args[1..]),
         _ => {}
     }
     let (command, rest) = match args {
@@ -195,19 +210,19 @@ fn run_ai(args: &[String]) -> Result<String, String> {
 /// Units live in the same database file as the journal, in their own tables.
 fn run_units(args: &[String]) -> Result<String, String> {
     let (command, rest) = args.split_first().ok_or("units needs a command")?;
-    let mut options = std::collections::HashMap::new();
-    let mut positional = Vec::new();
-    let mut iter = rest.iter();
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--db" | "--prompts" | "--subject" | "--lesson" => {
-                let value = iter.next().ok_or(format!("{arg} needs a value"))?;
-                options.insert(arg.as_str(), value.clone());
-            }
-            other if other.starts_with("--") => return Err(format!("unknown option {other}")),
-            other => positional.push(other.to_string()),
-        }
-    }
+    let (options, flags, positional) = parse_options(
+        rest,
+        &[
+            "--db",
+            "--prompts",
+            "--subject",
+            "--lesson",
+            "--title",
+            "--action",
+            "--kind",
+        ],
+        &["--undo"],
+    )?;
     let db = options.get("--db").ok_or("--db is required")?;
     let mut store = UnitStore::open(db).map_err(|e| e.to_string())?;
     let subject = || options.get("--subject").ok_or("--subject is required");
@@ -268,8 +283,215 @@ fn run_units(args: &[String]) -> Result<String, String> {
             let unit = store.separate(link).map_err(|e| e.to_string())?;
             Ok(format!("отделена в новую единицу {unit}"))
         }
+        "master" => {
+            let [unit] = positional.as_slice() else {
+                return Err("master needs exactly one unit id".into());
+            };
+            let mastered = !flags.contains("--undo");
+            store
+                .set_mastered(unit, mastered)
+                .map_err(|e| e.to_string())?;
+            Ok(if mastered {
+                "отмечено: освоил"
+            } else {
+                "отметка снята"
+            }
+            .into())
+        }
+        "merge" => {
+            let need = |key: &str| options.get(key).ok_or(format!("{key} is required"));
+            let merged = store
+                .merge(
+                    &positional,
+                    need("--title")?,
+                    need("--action")?,
+                    need("--kind")?,
+                )
+                .map_err(|e| e.to_string())?;
+            let mut memory = Memory::open(db).map_err(|e| e.to_string())?;
+            sync_memory(&store, &mut memory, now(None)?)?;
+            memory
+                .merge(&merged, &positional, now(None)?)
+                .map_err(|e| e.to_string())?;
+            Ok(format!("объединено в {merged}"))
+        }
+        "unmerge" => {
+            let [merged] = positional.as_slice() else {
+                return Err("unmerge needs exactly one merged unit id".into());
+            };
+            let parts = store.unmerge(merged).map_err(|e| e.to_string())?;
+            let mut memory = Memory::open(db).map_err(|e| e.to_string())?;
+            memory.unmerge(merged).map_err(|e| e.to_string())?;
+            Ok(format!("отделены: {}", parts.join(", ")))
+        }
         other => Err(format!("unknown units command {other}")),
     }
+}
+
+/// Memory works on the same database file as the journal and the units.
+fn run_memory(args: &[String]) -> Result<String, String> {
+    let (command, rest) = args.split_first().ok_or("memory needs a command")?;
+    let (options, flags, positional) = parse_options(
+        rest,
+        &[
+            "--db",
+            "--subject",
+            "--source",
+            "--key",
+            "--now",
+            "--deadline",
+        ],
+        &["--inactive"],
+    )?;
+    let db = options.get("--db").ok_or("--db is required")?;
+    let at = now(options.get("--now").map(String::as_str))?;
+    let store = UnitStore::open(db).map_err(|e| e.to_string())?;
+    let mut memory = Memory::open(db).map_err(|e| e.to_string())?;
+    sync_memory(&store, &mut memory, at)?;
+    let subject = || options.get("--subject").ok_or("--subject is required");
+    let key = || {
+        options
+            .get("--key")
+            .ok_or("--key is required (one key per attempt)")
+    };
+    match command.as_str() {
+        "due" => {
+            let due = memory.due(at).map_err(|e| e.to_string())?;
+            let mut out = format!("FSRS! {}", due.len());
+            for unit in due {
+                out.push_str(&format!(
+                    "\n{} · {} · {}",
+                    unit.unit,
+                    unit.subject,
+                    unit.phase.as_str()
+                ));
+            }
+            Ok(out)
+        }
+        "review" => {
+            let [unit, grade] = positional.as_slice() else {
+                return Err("review needs <unit> <again|hard|good>".into());
+            };
+            let grade = Grade::parse(grade).ok_or("grade is again, hard or good")?;
+            let source = options
+                .get("--source")
+                .and_then(|s| GradeSource::parse(s))
+                .ok_or("--source is verified or self_graded")?;
+            match memory
+                .review(unit, grade, source, key()?, at)
+                .map_err(|e| e.to_string())?
+            {
+                ReviewOutcome::Duplicate => Ok("duplicate: already recorded".into()),
+                ReviewOutcome::Recorded {
+                    state,
+                    gap_candidate,
+                } => {
+                    let mut out = format!(
+                        "следующий раз через {} · {}",
+                        human_wait(state.due - at),
+                        state.phase.as_str()
+                    );
+                    if gap_candidate {
+                        out.push_str("\nкандидат в пробелы урока");
+                    }
+                    Ok(out)
+                }
+            }
+        }
+        "note" => {
+            let [unit, kind] = positional.as_slice() else {
+                return Err("note needs <unit> <self_report|skipped|model_verdict|no_data>".into());
+            };
+            let note = Note::parse(kind).ok_or("unknown evidence kind")?;
+            let added = memory
+                .note(unit, note, key()?, at)
+                .map_err(|e| e.to_string())?;
+            Ok(if added {
+                "записано, расписание не изменилось"
+            } else {
+                "duplicate: already recorded"
+            }
+            .into())
+        }
+        "goal" => {
+            let deadline = match options.get("--deadline") {
+                Some(value) => Some(now(Some(value))?),
+                None => None,
+            };
+            memory
+                .set_subject(subject()?, deadline, !flags.contains("--inactive"))
+                .map_err(|e| e.to_string())?;
+            Ok("цель обновлена".into())
+        }
+        "optimize" => match memory.optimize(subject()?, at).map_err(|e| e.to_string())? {
+            OptimizeOutcome::NotEnoughHistory { reviews } => Ok(format!(
+                "мало истории: {reviews} из {MIN_REVIEWS_FOR_OWN_PARAMETERS} повторений, веса общие"
+            )),
+            OptimizeOutcome::TooSoon { next_at } => Ok(format!(
+                "уже обучено; следующий раз через {}",
+                human_wait(next_at - at)
+            )),
+            OptimizeOutcome::Trained { reviews } => Ok(format!(
+                "свои веса предмета обучены на {reviews} повторениях"
+            )),
+        },
+        other => Err(format!("unknown memory command {other}")),
+    }
+}
+
+/// Every current unit is on the schedule (B35: units always rest on the reader's
+/// own events and belong to an Alt+S subject).
+fn sync_memory(store: &UnitStore, memory: &mut Memory, at: i64) -> Result<(), String> {
+    for (unit, subject) in store.all_units().map_err(|e| e.to_string())? {
+        memory
+            .enroll(&unit, &subject, at)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn now(value: Option<&str>) -> Result<i64, String> {
+    match value {
+        Some(text) => OffsetDateTime::parse(text, &Rfc3339)
+            .map(|t| t.unix_timestamp())
+            .map_err(|e| format!("time {text}: {e}")),
+        None => Ok(OffsetDateTime::now_utc().unix_timestamp()),
+    }
+}
+
+fn human_wait(seconds: i64) -> String {
+    match seconds {
+        s if s < 3600 => format!("{} мин", (s + 59) / 60),
+        s if s < DAY => format!("{} ч", (s + 3599) / 3600),
+        s => format!("{} дн", (s + DAY - 1) / DAY),
+    }
+}
+
+type Options = (
+    std::collections::HashMap<String, String>,
+    std::collections::HashSet<String>,
+    Vec<String>,
+);
+
+fn parse_options(rest: &[String], valued: &[&str], flags: &[&str]) -> Result<Options, String> {
+    let mut options = std::collections::HashMap::new();
+    let mut set = std::collections::HashSet::new();
+    let mut positional = Vec::new();
+    let mut iter = rest.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            name if valued.contains(&name) => {
+                let value = iter.next().ok_or(format!("{arg} needs a value"))?;
+                options.insert(arg.clone(), value.clone());
+            }
+            name if flags.contains(&name) => {
+                set.insert(arg.clone());
+            }
+            other if other.starts_with("--") => return Err(format!("unknown option {other}")),
+            other => positional.push(other.to_string()),
+        }
+    }
+    Ok((options, set, positional))
 }
 
 fn ai_config_from_env() -> Result<AiConfig, String> {

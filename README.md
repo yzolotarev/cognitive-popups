@@ -36,7 +36,10 @@ cargo run -- ai ask --prompts docs/v2/port/prompts --prompt seed_system --input-
 Bring your own key: Gemini (default model `gemini-flash-lite-latest`) or any
 OpenAI-compatible service (`COGNITIVE_AI_PROVIDER=openai_compatible`,
 `COGNITIVE_AI_BASE_URL`, `COGNITIVE_AI_MODEL`). Without a key nothing is sent. A key file
-readable by other users is refused. Prompts are read from Markdown files (first
+readable by other users is refused. When the main model is overloaded, the client waits out a short
+rate limit once and then tries the fallback models of the same provider
+(`COGNITIVE_AI_FALLBACK_MODELS`; Gemini has defaults); the answer names the model
+that gave it. Prompts are read from Markdown files (first
 ```` ```text ```` block), so they change without a rebuild.
 
 ## Learning units from the command line

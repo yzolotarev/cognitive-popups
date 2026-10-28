@@ -50,6 +50,7 @@ impl Template {
         if params.is_empty() {
             return Err("нет параметров".into());
         }
+        let check = value["check"].as_str().unwrap_or_default();
         let derived = match &value["derived"] {
             Value::Null => BTreeMap::new(),
             Value::Object(map) => map
@@ -57,7 +58,13 @@ impl Template {
                 .map(|(k, v)| match v {
                     Value::String(s) => Ok((k.clone(), s.clone())),
                     Value::Number(n) => Ok((k.clone(), n.to_string())),
-                    _ => Err(format!("derived.{k} должен быть выражением")),
+                    // Models often describe a derived value like a parameter and
+                    // put its formula into the check: «nm == n - 1».
+                    _ => formula_in_check(check, k)
+                        .map(|f| (k.clone(), f))
+                        .ok_or(format!(
+                            "derived.{k} должен быть формулой (например \"n - 1\"), а не диапазоном"
+                        )),
                 })
                 .collect::<Result<_, _>>()?,
             _ => return Err("derived должен быть объектом".into()),
@@ -210,6 +217,21 @@ impl Template {
     }
 }
 
+/// `name == formula` among the top-level `and` parts of the check.
+fn formula_in_check(check: &str, name: &str) -> Option<String> {
+    check.split(" and ").find_map(|part| {
+        let (left, right) = part.trim().split_once("==")?;
+        let (left, right) = (left.trim(), right.trim());
+        if left == name && !right.contains(name) {
+            Some(right.to_string())
+        } else if right == name && !left.contains(name) {
+            Some(left.to_string())
+        } else {
+            None
+        }
+    })
+}
+
 /// Substitutes `{name}` and `{expression}`; an unknown name is an error.
 fn render(template: &str, names: &HashMap<String, Ratio>) -> Result<String, String> {
     let mut out = String::new();
@@ -331,6 +353,33 @@ mod tests {
     fn powers_are_written_as_a_person_writes_them() {
         assert_eq!(superscripts("(5x^2)′ = 10x^1"), "(5x²)′ = 10x");
         assert_eq!(superscripts("(x+1)^12, 2^3"), "(x+1)¹², 2^3");
+    }
+
+    #[test]
+    fn a_derived_value_described_as_a_range_takes_its_formula_from_the_check() {
+        let t = Template::from_json(&json!({
+            "params":{"c":{"kind":"int","min":2,"max":5},"p":{"kind":"int","min":2,"max":4}},
+            "derived":{"pm":{"kind":"int","min":1,"max":3},"res":{"kind":"int","min":4,"max":60}},
+            "check":"res == c * p and pm == p - 1",
+            "prompt":"({c}x^{p})′","answer":"{res}x^{pm}"}))
+        .unwrap();
+        let expected: Vec<Case> = (2..=5)
+            .flat_map(|c| (2..=4).map(move |p| (c, p)))
+            .map(|(c, p)| Case {
+                prompt: superscripts(&format!("({c}x^{p})′")),
+                answer: superscripts(&format!("{}x^{}", c * p, p - 1)),
+            })
+            .collect();
+        let cases = t.cases(12, 2).unwrap();
+        assert_eq!(cases.len(), 12);
+        for case in cases {
+            assert!(expected.contains(&case), "{case:?}");
+        }
+        let none = Template::from_json(&json!({
+            "params":{"n":{"kind":"int","min":2,"max":9}},
+            "derived":{"m":{"kind":"int","min":1,"max":8}},
+            "check":"m > 0","prompt":"{n}","answer":"{m}"}));
+        assert!(none.unwrap_err().contains("формулой"));
     }
 
     #[test]

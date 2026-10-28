@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use cognitive_exoskeleton_ai::{
-    AiConfig, Client, DEFAULT_GEMINI_MODEL, Priority, PromptStore, ProviderKind, Request,
-    UreqTransport,
+    AiConfig, Client, DEFAULT_GEMINI_FALLBACKS, DEFAULT_GEMINI_MODEL, Priority, PromptStore,
+    ProviderKind, Request, UreqTransport,
 };
 use cognitive_exoskeleton_domain::{LessonId, NewEvent, OperationId, Payload};
 use cognitive_exoskeleton_journal::Journal;
@@ -52,6 +52,8 @@ AI settings (environment):
   COGNITIVE_AI_PROVIDER   gemini (default) | openai_compatible
   COGNITIVE_AI_MODEL      default gemini-flash-lite-latest for gemini
   COGNITIVE_AI_BASE_URL   required for openai_compatible
+  COGNITIVE_AI_FALLBACK_MODELS  comma-separated models of the same provider tried
+                          when the main one is overloaded (Gemini has a default)
   COGNITIVE_AI_KEY_FILE   file with the key; must not be readable by others
   COGNITIVE_AI_KEY        the key itself, if no file is given
 
@@ -203,7 +205,7 @@ fn run_ai(args: &[String]) -> Result<String, String> {
             "Работает · {:.1} с · {} {}",
             started.elapsed().as_secs_f32(),
             provider,
-            client.config().model
+            client.answered_by().unwrap_or_default()
         )),
         Ok(text) => Ok(text),
         Err(error) => Err(format!("{} ({error})", error.user_message(provider))),
@@ -464,6 +466,9 @@ fn run_practice(args: &[String]) -> Result<String, String> {
                         other => other.to_string(),
                     },
                 )?;
+            if let Some(model) = client.answered_by() {
+                eprintln!("ответила модель {model}");
+            }
             serde_json::to_string_pretty(&tree).map_err(|e| e.to_string())
         }
         other => Err(format!("unknown practice command {other}")),
@@ -539,7 +544,17 @@ fn ai_config_from_env() -> Result<AiConfig, String> {
         }
     };
     let base_url = std::env::var("COGNITIVE_AI_BASE_URL").ok();
-    Ok(AiConfig::new(provider, model, base_url).with_key(read_key()?))
+    let fallbacks = match (std::env::var("COGNITIVE_AI_FALLBACK_MODELS"), provider) {
+        (Ok(list), _) => list.split(',').map(str::to_string).collect(),
+        (Err(_), ProviderKind::Gemini) => DEFAULT_GEMINI_FALLBACKS
+            .iter()
+            .map(|m| m.to_string())
+            .collect(),
+        (Err(_), ProviderKind::OpenaiCompatible) => Vec::new(),
+    };
+    Ok(AiConfig::new(provider, model, base_url)
+        .with_fallbacks(fallbacks)
+        .with_key(read_key()?))
 }
 
 /// The key file must be private: a key readable by other users is refused rather

@@ -67,6 +67,7 @@ dependencies = [
  "cognitive-exoskeleton-domain",
  "cognitive-exoskeleton-journal",
  "cognitive-exoskeleton-memory",
+ "cognitive-exoskeleton-nudges",
  "cognitive-exoskeleton-practice",
  "cognitive-exoskeleton-units",
  "serde",
@@ -114,6 +115,15 @@ dependencies = [
  "fsrs",
  "rusqlite",
  "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "cognitive-exoskeleton-nudges"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "serde",
  "thiserror",
 ]
 

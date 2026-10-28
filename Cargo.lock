@@ -33,12 +33,20 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 [[package]]
 name = "cognitive-exoskeleton"
 version = "0.1.0"
+dependencies = [
+ "cognitive-exoskeleton-domain",
+ "cognitive-exoskeleton-journal",
+ "serde",
+ "serde_json",
+ "time",
+]
 
 [[package]]
 name = "cognitive-exoskeleton-domain"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "thiserror",
  "time",
  "uuid",

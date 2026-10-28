@@ -11,6 +11,7 @@ cognitive-exoskeleton-units = { path = "crates/units" }
 cognitive-exoskeleton-memory = { path = "crates/memory" }
 cognitive-exoskeleton-practice = { path = "crates/practice" }
 cognitive-exoskeleton-nudges = { path = "crates/nudges" }
+cognitive-exoskeleton-capture = { path = "crates/capture" }
 cognitive-exoskeleton-domain = { path = "crates/domain" }
 cognitive-exoskeleton-journal = { path = "crates/journal" }
 serde = { workspace = true }

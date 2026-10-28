@@ -147,6 +147,17 @@ Nothing speaks first without consent. Opportunity and Daily share one budget
 and every silence says why. The micro-randomized trial randomizes only meaningful
 moments, keeps engagement apart from the verified result, and the analysis refuses
 a conclusion before an A/A check and enough data.
+## Text capture
+
+```sh
+cargo run -- capture --db journal.db            # the selection, or Ctrl+C with the clipboard put back
+cargo run -- capture --from-clipboard
+```
+
+The selection comes first; if it is empty, an emulated Ctrl+C reads the window
+and the old clipboard (text or image) is put back. Password managers' clipboards
+are never read. Text from terminals, code editors and AI chats is marked and kept
+out of study history. Needs `wl-clipboard` and Hyprland (`hyprctl`) or `wtype`.
 
 ## Requirements baseline (P0)
 

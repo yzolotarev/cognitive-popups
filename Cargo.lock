@@ -64,6 +64,7 @@ name = "cognitive-exoskeleton"
 version = "0.1.0"
 dependencies = [
  "cognitive-exoskeleton-ai",
+ "cognitive-exoskeleton-capture",
  "cognitive-exoskeleton-domain",
  "cognitive-exoskeleton-journal",
  "cognitive-exoskeleton-memory",
@@ -83,6 +84,17 @@ dependencies = [
  "serde_json",
  "thiserror",
  "ureq",
+]
+
+[[package]]
+name = "cognitive-exoskeleton-capture"
+version = "0.1.0"
+dependencies = [
+ "cognitive-exoskeleton-domain",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

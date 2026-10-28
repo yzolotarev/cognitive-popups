@@ -25,23 +25,7 @@ pub fn citable_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
 pub fn render_transcript(events: &[StoredEvent]) -> String {
     let mut lines = Vec::new();
     for stored in citable_events(events) {
-        let event = &stored.event;
-        let body = match event.payload() {
-            Payload::Source(snapshot) => snapshot.text.clone(),
-            Payload::UserText { text } | Payload::AiResponse { text, .. } => text.clone(),
-            Payload::SelfAssessment { unit, value } => {
-                format!(
-                    "отметка «{}» для единицы {}",
-                    assessment(*value),
-                    unit.as_str()
-                )
-            }
-        };
-        let marker = match event.author() {
-            Author::User => USER_MARKER,
-            Author::Ai => AI_MARKER,
-            Author::System => OTHER_MARKER,
-        };
+        let (marker, body) = marked_text(stored);
         lines.push(format!(
             "[e{}] {} {}",
             stored.sequence,
@@ -50,6 +34,28 @@ pub fn render_transcript(events: &[StoredEvent]) -> String {
         ));
     }
     lines.join("\n")
+}
+
+/// Who produced an event and its text, as the transcript shows them.
+pub fn marked_text(stored: &StoredEvent) -> (&'static str, String) {
+    let event = &stored.event;
+    let body = match event.payload() {
+        Payload::Source(snapshot) => snapshot.text.clone(),
+        Payload::UserText { text } | Payload::AiResponse { text, .. } => text.clone(),
+        Payload::SelfAssessment { unit, value } => {
+            format!(
+                "отметка «{}» для единицы {}",
+                assessment(*value),
+                unit.as_str()
+            )
+        }
+    };
+    let marker = match event.author() {
+        Author::User => USER_MARKER,
+        Author::Ai => AI_MARKER,
+        Author::System => OTHER_MARKER,
+    };
+    (marker, body)
 }
 
 fn assessment(value: SelfAssessmentValue) -> &'static str {

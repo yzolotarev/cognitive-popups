@@ -16,8 +16,10 @@ pub mod arith;
 pub mod expr;
 pub mod guidance;
 pub mod numeric;
+pub mod recall;
 
 pub use guidance::{Attempt, CardSession, Guidance, Hint, whole_task_types};
+pub use recall::{DueUnit, EvidenceLine, RecallCard, RecallSet, recall_cards};
 
 use cognitive_exoskeleton_ai::{AiError, Client, Priority, PromptStore, Request, Transport};
 use serde::Serialize;
@@ -81,6 +83,38 @@ pub struct ProbeTree {
     pub groups: Vec<ProbeGroup>,
     /// What the code rejected and why: for the journal and for tuning prompts.
     pub notes: Vec<String>,
+}
+
+/// One tab of the Alt+T tree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "category", rename_all = "snake_case")]
+pub enum Category {
+    Probe(ProbeGroup),
+    /// «Достань из памяти».
+    Recall {
+        cards: Vec<RecallCard>,
+    },
+}
+
+/// The order of categories (B31):
+/// - nothing due → up to three probe categories from the text;
+/// - something due → «Достань из памяти» replaces the third probe category;
+/// - opened from the «FSRS! N» pill → it comes first; without a selected text
+///   it is the only category.
+pub fn arrange(probes: Vec<ProbeGroup>, recall: Vec<RecallCard>, from_pill: bool) -> Vec<Category> {
+    let mut probes: Vec<Category> = probes.into_iter().map(Category::Probe).collect();
+    if recall.is_empty() {
+        probes.truncate(GROUPS);
+        return probes;
+    }
+    probes.truncate(GROUPS - 1);
+    let recall = Category::Recall { cards: recall };
+    if from_pill {
+        probes.insert(0, recall);
+    } else {
+        probes.push(recall);
+    }
+    probes
 }
 
 #[derive(Debug, thiserror::Error)]

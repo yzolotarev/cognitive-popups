@@ -208,3 +208,52 @@ fn a_drill_whose_answer_never_changes_is_not_an_operation() {
     let error = accept(&constant, TEXT, 1).err().unwrap();
     assert!(error.contains("не зависит от данных"), "{error}");
 }
+
+fn group(title: &str) -> ProbeGroup {
+    let card = Card {
+        prompt: "a".into(),
+        answer: "b".into(),
+    };
+    ProbeGroup {
+        title: title.into(),
+        invariant: String::new(),
+        source_span: String::new(),
+        relevance: String::new(),
+        kind: Kind::Drill,
+        example: card.clone(),
+        cards: vec![card],
+        reserve: Vec::new(),
+    }
+}
+
+fn titles(tree: &[Category]) -> Vec<String> {
+    tree.iter()
+        .map(|c| match c {
+            Category::Probe(g) => g.title.clone(),
+            Category::Recall { .. } => "память".into(),
+        })
+        .collect()
+}
+
+#[test]
+fn b31_recall_replaces_the_third_category_or_comes_first_from_the_pill() {
+    let probes = || vec![group("A"), group("B"), group("C")];
+    let due = || {
+        vec![RecallCard {
+            unit: "u1".into(),
+            question: "q".into(),
+            reference: "r s".into(),
+            events: vec![1],
+        }]
+    };
+    assert_eq!(titles(&arrange(probes(), vec![], false)), ["A", "B", "C"]);
+    assert_eq!(
+        titles(&arrange(probes(), due(), false)),
+        ["A", "B", "память"]
+    );
+    assert_eq!(
+        titles(&arrange(probes(), due(), true)),
+        ["память", "A", "B"]
+    );
+    assert_eq!(titles(&arrange(vec![], due(), true)), ["память"]);
+}

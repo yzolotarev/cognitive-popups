@@ -45,11 +45,13 @@ impl Grade {
         }
     }
 
+    /// FSRS names, or the reader's self-check after the reference is shown
+    /// (B27): «✗ Промахнулся» → Again, «½ Частично» → Hard, «✓ Совпало» → Good.
     pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "again" => Some(Grade::Again),
-            "hard" => Some(Grade::Hard),
-            "good" => Some(Grade::Good),
+        match value.to_lowercase().as_str() {
+            "again" | "missed" | "промахнулся" => Some(Grade::Again),
+            "hard" | "partial" | "частично" => Some(Grade::Hard),
+            "good" | "matched" | "совпало" => Some(Grade::Good),
             _ => None,
         }
     }
@@ -257,6 +259,14 @@ mod tests {
             assert!(interval > previous, "{interval} <= {previous}");
             previous = interval;
         }
+    }
+
+    #[test]
+    fn the_self_check_maps_onto_fsrs_grades_without_easy() {
+        assert_eq!(Grade::parse("Промахнулся"), Some(Grade::Again));
+        assert_eq!(Grade::parse("partial"), Some(Grade::Hard));
+        assert_eq!(Grade::parse("совпало"), Some(Grade::Good));
+        assert_eq!(Grade::parse("easy"), None);
     }
 
     #[test]

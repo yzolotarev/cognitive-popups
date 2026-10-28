@@ -474,7 +474,10 @@ impl Memory {
     /// states they had. The merged unit's reviews stay in history.
     pub fn unmerge(&mut self, merged: &str) -> Result<(), MemoryError> {
         let tx = self.connection.transaction()?;
-        tx.execute("UPDATE memory_cards SET retired = 1 WHERE unit_id = ?1", [merged])?;
+        tx.execute(
+            "UPDATE memory_cards SET retired = 1 WHERE unit_id = ?1",
+            [merged],
+        )?;
         tx.execute(
             "UPDATE memory_cards SET suspended_by = NULL WHERE suspended_by = ?1",
             [merged],

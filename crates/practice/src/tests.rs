@@ -146,16 +146,17 @@ fn a_wrong_citation_or_a_false_check_is_asked_for_again_once() {
 }
 
 #[test]
-fn after_one_repair_the_tree_shows_what_survived() {
+fn after_the_repairs_the_tree_shows_what_survived() {
     let client = client(&[
         json!({"groups":[arithmetic_drill(), numeric("r == 0")]}),
         json!({"groups":[numeric("r == 1")]}),
+        json!({"groups":[numeric("r == 2")]}),
     ]);
     let tree = probe_tree(&client, &prompts(), TEXT, Priority::Foreground).unwrap();
     assert_eq!(tree.groups.len(), 1);
     assert_eq!(
         client.transport().calls.get(),
-        2,
+        1 + REPAIR_ROUNDS,
         "only arithmetic left: no verifier call"
     );
 }
@@ -165,6 +166,7 @@ fn reserve_feeds_more_three_and_the_diagnostic() {
     let client = client(&[
         json!({"groups":[numeric("r == a*b")]}),
         json!({"bad":[]}),
+        json!({"groups":[numeric("r == 0")]}),
         json!({"groups":[numeric("r == 0")]}),
     ]);
     let mut tree = probe_tree(&client, &prompts(), TEXT, Priority::Foreground).unwrap();
@@ -375,4 +377,21 @@ fn a_unit_with_a_task_family_gets_a_code_card_without_a_request() {
         "the task can be re-created to grade it"
     );
     assert!(families::check(&task, &card.reference));
+}
+
+#[test]
+fn a_quote_with_a_slip_is_replaced_by_the_text_itself() {
+    let text = "Так же меняются dein, sein и unser: deine Mutter, unsere Stadt.";
+    assert_eq!(
+        verbatim_span(text, "Так же меняются dein, sein und unser").as_deref(),
+        Some("Так же меняются dein, sein и unser")
+    );
+    assert_eq!(
+        verbatim_span(text, "deine  Mutter").as_deref(),
+        Some("deine  Mutter")
+    );
+    assert_eq!(
+        verbatim_span(text, "совсем другое предложение про ранг"),
+        None
+    );
 }

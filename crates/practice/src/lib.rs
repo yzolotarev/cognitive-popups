@@ -39,6 +39,11 @@ pub const GROUPS: usize = 3;
 pub const CARDS: usize = 3;
 /// Cards kept beyond the first three, for [Ещё 3] and the diagnostic case.
 pub const RESERVE: usize = 9;
+/// Rejected branches are asked for again with the reasons, at most this often.
+pub const REPAIR_ROUNDS: usize = 2;
+/// A quote that differs from the text by a slip («und» for «и») is replaced by
+/// the text itself when the two are at least this similar.
+const QUOTE_SIMILARITY: f64 = 0.9;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -170,10 +175,15 @@ fn accept(raw: &Value, text: &str, seed: u64) -> Result<Candidate, String> {
     if title.is_empty() || title.split_whitespace().count() > 6 {
         return Err(format!("«{title}»: название операции — 2–4 слова"));
     }
-    let span = string(&raw["source_span"]);
-    if span.is_empty() || !contains_verbatim(text, &span) {
-        return Err(format!("«{title}»: цитаты «{span}» нет в тексте дословно"));
+    let quoted = string(&raw["source_span"]);
+    let span = if quoted.is_empty() {
+        None
+    } else {
+        verbatim_span(text, &quoted)
     }
+    .ok_or(format!(
+        "«{title}»: цитаты «{quoted}» нет в тексте дословно"
+    ))?;
     let base = ProbeGroup {
         title: title.clone(),
         invariant: string(&raw["invariant"]),
@@ -292,7 +302,7 @@ pub fn probe_tree<T: Transport>(
         json: true,
         priority,
     };
-    for round in 0..2 {
+    for round in 0..REPAIR_ROUNDS + 1 {
         let raw = client.complete_json(&request, schema_check)?;
         let mut fresh: Vec<Candidate> = Vec::new();
         let mut rejected: Vec<String> = Vec::new();
@@ -321,7 +331,7 @@ pub fn probe_tree<T: Transport>(
             }
         }
         tree.notes.extend(rejected.iter().cloned());
-        if tree.groups.len() >= GROUPS || round == 1 {
+        if tree.groups.len() >= GROUPS || round == REPAIR_ROUNDS {
             break;
         }
         let titles: Vec<&str> = tree.groups.iter().map(|g| g.title.as_str()).collect();
@@ -460,8 +470,11 @@ fn verify<T: Transport>(
     Ok(())
 }
 
-/// The citation must be in the text, up to whitespace and quote style.
-fn contains_verbatim(text: &str, span: &str) -> bool {
+/// The quote as it stands in the text. A quote that is in the text up to
+/// whitespace and quote style is kept; one with a small slip is replaced by the
+/// closest passage of the text, so what is shown is always verbatim. None when
+/// nothing in the text is close enough.
+fn verbatim_span(text: &str, quote: &str) -> Option<String> {
     let normalize = |s: &str| {
         s.split_whitespace()
             .collect::<Vec<_>>()
@@ -469,7 +482,57 @@ fn contains_verbatim(text: &str, span: &str) -> bool {
             .replace(['«', '»', '„', '“', '”'], "\"")
             .replace('ё', "е")
     };
-    normalize(text).contains(&normalize(span))
+    if normalize(text).contains(&normalize(quote)) {
+        return Some(quote.to_string());
+    }
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let n = quote.split_whitespace().count();
+    let target = normalize(quote).to_lowercase();
+    let mut best: Option<(f64, String)> = None;
+    for len in [n.saturating_sub(1), n, n + 1] {
+        if len == 0 || len > words.len() {
+            continue;
+        }
+        for window in words.windows(len) {
+            let candidate = window
+                .join(" ")
+                .trim_matches(|c: char| ",;:.".contains(c))
+                .to_string();
+            let score = similarity(&normalize(&candidate).to_lowercase(), &target);
+            if best.as_ref().is_none_or(|(b, _)| score > *b) {
+                best = Some((score, candidate));
+            }
+        }
+    }
+    best.filter(|(score, _)| *score >= QUOTE_SIMILARITY)
+        .map(|(_, passage)| {
+            passage
+                .trim_matches(|c: char| ",;:".contains(c))
+                .to_string()
+        })
+}
+
+/// 1 − edit distance / longer length, over characters.
+fn similarity(a: &str, b: &str) -> f64 {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let longer = a.len().max(b.len());
+    if longer == 0 {
+        return 1.0;
+    }
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut previous = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let current = row[j + 1];
+            row[j + 1] = (previous + usize::from(ca != cb))
+                .min(row[j] + 1)
+                .min(row[j + 1] + 1);
+            previous = current;
+        }
+    }
+    1.0 - row[b.len()] as f64 / longer as f64
 }
 
 fn squash(s: &str) -> String {

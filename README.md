@@ -10,6 +10,9 @@ traceability baseline; the first P2 slice provides the typed event journal with
 provenance and idempotent writes. There is still no working desktop application and no
 GUI framework has been selected. Legacy Python code remains in Git history.
 
+## Пакет v2 (28.10.2026)
+
+Актуальный пакет для разработки — [`docs/v2/`](docs/v2/README.md): спецификация `SPEC.md`, план `ROADMAP.md` (этапы P0–P8, P0 — проба Rust + GTK 4), модель данных, приёмочный день, журнал решений B1–B35, карта 101 функции v1 и промпты v1 для переноса. Где пакет расходится со спецификацией v0.2 ниже, действует пакет; сверка — [`docs/v2/reconcile-rust-spec.md`](docs/v2/reconcile-rust-spec.md). Инструкция для агента — [`CLAUDE.md`](CLAUDE.md).
 ## Journal from the command line
 
 ```sh

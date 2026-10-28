@@ -18,6 +18,7 @@ use cognitive_exoskeleton_memory::{
     DAY, Grade, GradeSource, MIN_REVIEWS_FOR_OWN_PARAMETERS, Memory, Note, OptimizeOutcome,
     ReviewOutcome,
 };
+use cognitive_exoskeleton_notes::Notes;
 use cognitive_exoskeleton_nudges::{
     Consent as NudgeConsent, Context, Kind, Nudges, Response, Slack, card_text,
 };
@@ -70,6 +71,7 @@ usage:
   cognitive-exoskeleton mrt check --db <path> --unit <id> (--correct | --incorrect)
   cognitive-exoskeleton mrt engaged|close|summary --db <path> ...   analysis: tools/mrt_analysis.py
   cognitive-exoskeleton capture [--from-clipboard] [--db <path>]   selection → JSON (S6)
+  cognitive-exoskeleton note add --db <path> [--anchor <selection>] <text…> | list | close <id> [--reopen]
 
 AI settings (environment):
   COGNITIVE_AI_PROVIDER   gemini (default) | openai_compatible
@@ -143,6 +145,7 @@ fn run(args: &[String]) -> Result<String, String> {
         Some("practice") => return run_practice(&args[1..]),
         Some("nudge") | Some("mrt") => return run_nudges(&args[0], &args[1..]),
         Some("capture") => return run_capture(&args[1..]),
+        Some("note") => return run_note(&args[1..]),
         _ => {}
     }
     let (command, rest) = match args {
@@ -818,6 +821,44 @@ fn fresh_roll() -> f64 {
 
 fn json(value: &impl serde::Serialize) -> String {
     serde_json::to_string(value).unwrap_or_default()
+}
+
+/// Notes (Alt+E, F-12) from the command line.
+fn run_note(args: &[String]) -> Result<String, String> {
+    let (command, rest) = args.split_first().ok_or("note needs a command")?;
+    let (options, flags, positional) =
+        parse_options(rest, &["--db", "--anchor", "--now"], &["--reopen"])?;
+    let db = options.get("--db").ok_or("--db is required")?;
+    let at = now(options.get("--now").map(String::as_str))?;
+    let mut notes = Notes::open(db).map_err(|e| e.to_string())?;
+    match command.as_str() {
+        "add" => {
+            let comment = positional.join(" ");
+            let anchor = options.get("--anchor").map(String::as_str).unwrap_or("");
+            match notes.add(&comment, anchor, at).map_err(|e| e.to_string())? {
+                Some(id) => Ok(format!("заметка сохранена ({id})")),
+                None => Ok("пустая заметка — ничего не сохранено".into()),
+            }
+        }
+        "list" => Ok(json(&notes.open_notes().map_err(|e| e.to_string())?)),
+        "close" => {
+            let [id] = positional.as_slice() else {
+                return Err("close needs <note-id> [--reopen]".into());
+            };
+            let id: i64 = id.parse().map_err(|_| "note id is a number")?;
+            let reopen = flags.contains("--reopen");
+            notes
+                .set_closed(id, !reopen, at)
+                .map_err(|e| e.to_string())?;
+            Ok(if reopen {
+                "открыта снова"
+            } else {
+                "закрыта"
+            }
+            .into())
+        }
+        other => Err(format!("unknown note command {other}")),
+    }
 }
 
 /// Text capture (S6): the selection or an emulated Ctrl+C, as JSON. With

@@ -258,3 +258,19 @@ fn the_ring_keeps_twelve_recent_study_snippets() {
         "30 minutes"
     );
 }
+
+#[test]
+fn selection_only_never_touches_the_clipboard() {
+    let fake = Fake {
+        clipboard: RefCell::new(vec![text("text/plain", "old")]),
+        copies: Some(vec![text("text/plain", "new")]),
+        ..Default::default()
+    };
+    assert_eq!(selection(&fake), Err(CaptureError::Nothing));
+    assert_eq!(*fake.clipboard.borrow(), vec![text("text/plain", "old")]);
+    let with = Fake {
+        primary: Some("ранг".into()),
+        ..Default::default()
+    };
+    assert_eq!(selection(&with).unwrap().origin, Origin::Primary);
+}

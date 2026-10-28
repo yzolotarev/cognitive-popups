@@ -170,6 +170,20 @@ pub fn capture(desktop: &impl Desktop, from_clipboard: bool) -> Result<Captured,
     copy_from_window(desktop, window)
 }
 
+/// The selection only, never an emulated Ctrl+C: for windows where an empty
+/// selection is normal (a note without an anchor, F-12) and opening must stay
+/// instant.
+pub fn selection(desktop: &impl Desktop) -> Result<Captured, CaptureError> {
+    if has_password_hint(&desktop.primary_types()) {
+        return Err(CaptureError::Protected);
+    }
+    let text = desktop
+        .primary_text()
+        .filter(|t| !t.trim().is_empty())
+        .ok_or(CaptureError::Nothing)?;
+    Ok(finish(text, Origin::Primary, desktop.active_window()))
+}
+
 /// Ctrl+C into the clipboard, read it, put the old clipboard back.
 fn copy_from_window(
     desktop: &impl Desktop,

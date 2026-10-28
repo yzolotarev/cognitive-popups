@@ -17,9 +17,12 @@ pub mod expr;
 pub mod guidance;
 pub mod numeric;
 pub mod recall;
+pub mod routes;
+pub mod whole;
 
 pub use guidance::{Attempt, CardSession, Guidance, Hint, whole_task_types};
 pub use recall::{DueUnit, EvidenceLine, RecallCard, RecallSet, recall_cards};
+pub use whole::{WholeTask, load_types, whole_task};
 
 use cognitive_exoskeleton_ai::{AiError, Client, Priority, PromptStore, Request, Transport};
 use serde::Serialize;

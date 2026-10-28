@@ -18,7 +18,8 @@ use cognitive_exoskeleton_memory::{
     ReviewOutcome,
 };
 use cognitive_exoskeleton_practice::{
-    DueUnit, EvidenceLine, PracticeError, ProbeTree, RecallSet, arrange, probe_tree, recall_cards,
+    DueUnit, EvidenceLine, PracticeError, ProbeTree, RecallSet, arrange, load_types, probe_tree,
+    recall_cards, whole_task,
 };
 use cognitive_exoskeleton_units::{ExtractError, UnitStore, extract_lesson};
 use serde::Deserialize;
@@ -51,6 +52,8 @@ usage:
   cognitive-exoskeleton practice probes --text <file> --prompts <dir>
   cognitive-exoskeleton practice tree --db <path> --prompts <dir> [--text <file>] [--from-pill]
                                       [--now <t>]   probes + «Достань из памяти»
+  cognitive-exoskeleton practice whole --prompts <dir> (--text <file> | --db <path> --unit <id>)
+                                       [--type 1-10] [--ops \"op1; op2\"]   [Собери вместе]
 
 AI settings (environment):
   COGNITIVE_AI_PROVIDER   gemini (default) | openai_compatible
@@ -453,7 +456,15 @@ fn run_practice(args: &[String]) -> Result<String, String> {
     let (command, rest) = args.split_first().ok_or("practice needs a command")?;
     let (options, flags, _) = parse_options(
         rest,
-        &["--text", "--prompts", "--db", "--now"],
+        &[
+            "--text",
+            "--prompts",
+            "--db",
+            "--now",
+            "--unit",
+            "--type",
+            "--ops",
+        ],
         &["--from-pill"],
     )?;
     let ai_error = |provider: &'static str| {
@@ -495,6 +506,48 @@ fn run_practice(args: &[String]) -> Result<String, String> {
             serde_json::to_string_pretty(&serde_json::json!({"categories": tree, "notes": notes}))
                 .map_err(|e| e.to_string())
         }
+        "whole" => {
+            let dir = options.get("--prompts").ok_or("--prompts is required")?;
+            let prompts = PromptStore::from_dir(dir).map_err(|e| e.to_string())?;
+            let types = load_types(dir).map_err(|e| e.to_string())?;
+            let (material, has_correct) = match (options.get("--text"), options.get("--unit")) {
+                (Some(path), None) => (
+                    std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?,
+                    true,
+                ),
+                (None, Some(unit)) => {
+                    let db = options.get("--db").ok_or("--unit needs --db")?;
+                    unit_material(db, unit)?
+                }
+                _ => return Err("give exactly one of --text or --unit".into()),
+            };
+            let type_id = match options.get("--type") {
+                Some(n) => Some(n.parse().map_err(|_| "--type is 1–10")?),
+                None => None,
+            };
+            let ops: Vec<String> = options
+                .get("--ops")
+                .map(|s| s.split(';').map(|o| o.trim().to_string()).collect())
+                .unwrap_or_default();
+            let config = ai_config_from_env()?;
+            let provider = config.provider_name();
+            let client = Client::new(config, UreqTransport::default());
+            let task = whole_task(
+                &client,
+                &prompts,
+                &types,
+                &material,
+                &ops,
+                type_id,
+                has_correct,
+                Priority::Foreground,
+            )
+            .map_err(ai_error(provider))?;
+            if let Some(model) = client.answered_by() {
+                eprintln!("ответила модель {model}");
+            }
+            serde_json::to_string_pretty(&task).map_err(|e| e.to_string())
+        }
         "probes" => {
             let path = options.get("--text").ok_or("--text is required")?;
             let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
@@ -512,6 +565,27 @@ fn run_practice(args: &[String]) -> Result<String, String> {
         }
         other => Err(format!("unknown practice command {other}")),
     }
+}
+
+/// A unit's own journal text as task material, and whether the reader has
+/// answered it correctly before (otherwise a newcomer, rule 7).
+fn unit_material(db: &str, unit: &str) -> Result<(String, bool), String> {
+    let store = UnitStore::open(db).map_err(|e| e.to_string())?;
+    let journal = Journal::open(db).map_err(|e| e.to_string())?;
+    let memory = Memory::open(db).map_err(|e| e.to_string())?;
+    let sequences = store.events_of(unit).map_err(|e| e.to_string())?;
+    let events = journal
+        .read_sequences(&sequences)
+        .map_err(|e| e.to_string())?;
+    let material: Vec<String> = citable_events(&events)
+        .into_iter()
+        .map(|stored| marked_text(stored).1)
+        .collect();
+    if material.is_empty() {
+        return Err(format!("unit {unit} has no events"));
+    }
+    let has_correct = memory.has_correct_answer(unit).map_err(|e| e.to_string())?;
+    Ok((material.join("\n\n"), has_correct))
 }
 
 /// Due units with their evidence, most overdue first (input of «Достань из памяти»).

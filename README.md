@@ -105,6 +105,15 @@ own journal events, hidden until the reader answers. It replaces the third probe
 category, comes first when opened from the «FSRS! N» pill, and is the only one
 without a text. The reader grades by comparing: промахнулся / частично / совпало.
 
+```sh
+cargo run -- practice whole --prompts docs/v2/port/prompts --text page.txt --ops "Вычесть кратное; Найти множитель"
+cargo run -- practice whole --prompts docs/v2/port/prompts --db journal.db --unit <unit> --type 7
+```
+
+[Собери вместе]: one whole task of the ten v1 types, with a worked solution
+hidden until asked for. A newcomer to the unit gets worked-example types only;
+anchors must be quoted verbatim from the material; plain text, no LaTeX.
+
 ## Requirements baseline (P0)
 
 | Artefact | Purpose |

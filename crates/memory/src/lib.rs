@@ -401,6 +401,16 @@ impl Memory {
         Ok(changed == 1)
     }
 
+    /// Whether the reader has ever answered this unit correctly (Good): until
+    /// then they are a newcomer to it and get worked-example task types only.
+    pub fn has_correct_answer(&self, unit: &str) -> Result<bool, MemoryError> {
+        Ok(self.connection.query_row(
+            "SELECT EXISTS (SELECT 1 FROM memory_reviews WHERE unit_id = ?1 AND rating = 3)",
+            [unit],
+            |r| r.get(0),
+        )?)
+    }
+
     pub fn review_count(&self, unit: &str) -> Result<usize, MemoryError> {
         let count: i64 = self.connection.query_row(
             "SELECT COUNT(*) FROM memory_reviews WHERE unit_id = ?1",

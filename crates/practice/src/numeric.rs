@@ -15,12 +15,72 @@ const SAMPLES: usize = 4_000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Template {
-    params: BTreeMap<String, (i128, i128)>,
+    params: BTreeMap<String, Domain>,
     derived: BTreeMap<String, String>,
     constraints: Vec<String>,
     check: String,
     prompt: String,
     answer: String,
+}
+
+/// The values one parameter may take.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Domain {
+    Range(i128, i128),
+    List(Vec<i128>),
+}
+
+impl Domain {
+    fn size(&self) -> u64 {
+        match self {
+            Domain::Range(lo, hi) => (hi - lo + 1) as u64,
+            Domain::List(values) => values.len() as u64,
+        }
+    }
+
+    fn nth(&self, i: u64) -> i128 {
+        match self {
+            Domain::Range(lo, _) => lo + i as i128,
+            Domain::List(values) => values[i as usize],
+        }
+    }
+
+    /// `{"min":1,"max":9}`, `{"range":[1,9]}` or `{"values":[2,3,5]}`; models
+    /// use all three, and `kind` is often left out.
+    fn from_json(name: &str, spec: &Value) -> Result<Self, String> {
+        if let Some(kind) = spec["kind"].as_str()
+            && !matches!(kind, "int" | "integer")
+        {
+            return Err(format!("параметр {name}: только целые"));
+        }
+        let int = |v: &Value| v.as_i64().map(i128::from);
+        if let Some(values) = spec["values"].as_array() {
+            let values: Option<Vec<i128>> = values.iter().map(int).collect();
+            let mut values = values.ok_or(format!("параметр {name}: values — только целые"))?;
+            values.sort_unstable();
+            values.dedup();
+            if values.is_empty() {
+                return Err(format!("параметр {name}: пустой values"));
+            }
+            return Ok(Domain::List(values));
+        }
+        let (min, max) = match (
+            int(&spec["min"]),
+            int(&spec["max"]),
+            spec["range"].as_array(),
+        ) {
+            (Some(min), Some(max), _) => (min, max),
+            (_, _, Some(range)) if range.len() == 2 => (
+                int(&range[0]).ok_or(format!("параметр {name}: range — целые"))?,
+                int(&range[1]).ok_or(format!("параметр {name}: range — целые"))?,
+            ),
+            _ => return Err(format!("параметр {name}: нужны min и max")),
+        };
+        if min > max {
+            return Err(format!("параметр {name}: min больше max"));
+        }
+        Ok(Domain::Range(min, max))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,19 +93,7 @@ impl Template {
     pub fn from_json(value: &Value) -> Result<Self, String> {
         let mut params = BTreeMap::new();
         for (name, spec) in value["params"].as_object().ok_or("нет params")? {
-            if spec["kind"].as_str() != Some("int") {
-                return Err(format!("параметр {name}: только целые"));
-            }
-            let min = spec["min"]
-                .as_i64()
-                .ok_or(format!("параметр {name}: нет min"))?;
-            let max = spec["max"]
-                .as_i64()
-                .ok_or(format!("параметр {name}: нет max"))?;
-            if min > max {
-                return Err(format!("параметр {name}: min больше max"));
-            }
-            params.insert(name.clone(), (min as i128, max as i128));
+            params.insert(name.clone(), Domain::from_json(name, spec)?);
         }
         if params.is_empty() {
             return Err("нет параметров".into());
@@ -56,7 +104,8 @@ impl Template {
             Value::Object(map) => map
                 .iter()
                 .map(|(k, v)| match v {
-                    Value::String(s) => Ok((k.clone(), s.clone())),
+                    // «{c * x}»: template braces are not part of the expression.
+                    Value::String(s) => Ok((k.clone(), s.replace(['{', '}'], ""))),
                     Value::Number(n) => Ok((k.clone(), n.to_string())),
                     // Models often describe a derived value like a parameter and
                     // put its formula into the check: «nm == n - 1».
@@ -100,18 +149,18 @@ impl Template {
         let total: u64 = self
             .params
             .values()
-            .map(|(lo, hi)| (hi - lo + 1) as u64)
+            .map(Domain::size)
             .try_fold(1u64, |acc, n| acc.checked_mul(n))
             .unwrap_or(u64::MAX);
         let mut assignments: Vec<Vec<i128>> = if total <= ENUMERATE_UP_TO {
             let mut all = vec![Vec::new()];
-            for (lo, hi) in self.params.values() {
+            for domain in self.params.values() {
                 all = all
                     .into_iter()
                     .flat_map(|prefix| {
-                        (*lo..=*hi).map(move |v| {
+                        (0..domain.size()).map(move |i| {
                             let mut next = prefix.clone();
-                            next.push(v);
+                            next.push(domain.nth(i));
                             next
                         })
                     })
@@ -123,7 +172,7 @@ impl Template {
                 .map(|_| {
                     self.params
                         .values()
-                        .map(|(lo, hi)| lo + (rng.next() % ((hi - lo + 1) as u64)) as i128)
+                        .map(|domain| domain.nth(rng.next() % domain.size()))
                         .collect()
                 })
                 .collect()
@@ -380,6 +429,25 @@ mod tests {
             "derived":{"m":{"kind":"int","min":1,"max":8}},
             "check":"m > 0","prompt":"{n}","answer":"{m}"}));
         assert!(none.unwrap_err().contains("формулой"));
+    }
+
+    #[test]
+    fn parameters_may_be_ranges_or_lists_and_derived_braces_are_dropped() {
+        let t = Template::from_json(&json!({
+            "params":{"a":{"range":[2,3]},"b":{"kind":"integer","values":[10,20]}},
+            "derived":{"r":"{a * b}"},
+            "check":"r == a*b","prompt":"{a}·{b}","answer":"{r}"}))
+        .unwrap();
+        let mut cases = t.cases(10, 1).unwrap();
+        cases.sort_by(|x, y| x.prompt.cmp(&y.prompt));
+        let prompts: Vec<&str> = cases.iter().map(|c| c.prompt.as_str()).collect();
+        assert_eq!(prompts, ["2·10", "2·20", "3·10", "3·20"]);
+        assert!(
+            Template::from_json(&json!({"params":{"a":{"kind":"int"}},
+            "check":"a>0","prompt":"{a}","answer":"{a}"}))
+            .unwrap_err()
+            .contains("min и max")
+        );
     }
 
     #[test]

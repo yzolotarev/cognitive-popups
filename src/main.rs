@@ -110,10 +110,29 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(message) => {
-            eprintln!("error: {message}\n\n{USAGE}");
+            if is_usage_error(&message) {
+                eprintln!("error: {message}\n\n{USAGE}");
+            } else {
+                eprintln!("error: {message}");
+            }
             ExitCode::from(2)
         }
     }
+}
+
+/// Errors about the command line get the usage text; errors of the work itself
+/// (capture, AI, database) are shown alone, so the message is not buried.
+fn is_usage_error(message: &str) -> bool {
+    [
+        "unknown ",
+        " is required",
+        " needs ",
+        "give exactly one",
+        "usage",
+    ]
+    .iter()
+    .any(|marker| message.contains(marker))
+        || message.starts_with("--")
 }
 
 fn run(args: &[String]) -> Result<String, String> {
@@ -263,6 +282,13 @@ fn run_units(args: &[String]) -> Result<String, String> {
             let prompts = PromptStore::from_dir(prompts).map_err(|e| e.to_string())?;
             let lesson = options.get("--lesson").ok_or("--lesson is required")?;
             let lesson = LessonId::new(lesson.clone()).map_err(|e| e.to_string())?;
+            if let Some(done) = store.extraction_of(&lesson).map_err(|e| e.to_string())? {
+                return Ok(format!(
+                    "урок уже обработан: {}",
+                    done.notification()
+                        .unwrap_or_else(|| "новых единиц не было".into())
+                ));
+            }
             let config = ai_config_from_env()?;
             let provider = config.provider_name();
             let client = Client::new(config, UreqTransport::default());

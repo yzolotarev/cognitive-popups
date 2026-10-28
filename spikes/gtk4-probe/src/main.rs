@@ -107,6 +107,8 @@ fn build(app: &gtk::Application) -> Probe {
     window.set_keyboard_mode(KeyboardMode::None);
     window.set_anchor(Edge::Top, true);
     window.set_anchor(Edge::Left, true);
+    // Margins count from the monitor edge, not from below a bar's reserved zone.
+    window.set_exclusive_zone(-1);
     window.set_default_size(360, -1);
 
     let css = gtk::CssProvider::new();
@@ -136,7 +138,18 @@ fn build(app: &gtk::Application) -> Probe {
     root.append(&entry);
     window.set_child(Some(&root));
 
-    // Criterion 1: a click turns keyboard input on.
+    // Criterion 1: pointing at the window turns keyboard input on, so the
+    // compositor already sees OnDemand when the click arrives; switching only
+    // on the press is too late (Hyprland decides focus at the press, F7).
+    let hover = gtk::EventControllerMotion::new();
+    let w = window.clone();
+    hover.connect_enter(move |_, _, _| {
+        if w.keyboard_mode() == KeyboardMode::None {
+            w.set_keyboard_mode(KeyboardMode::OnDemand);
+            report("keyboard=on_demand (pointer)");
+        }
+    });
+    window.add_controller(hover);
     let click = gtk::GestureClick::new();
     click.set_propagation_phase(gtk::PropagationPhase::Capture);
     let w = window.clone();
@@ -252,7 +265,9 @@ fn show(received: Instant, mode: KeyboardMode) {
             report("second_show=raised_existing");
             return;
         }
-        let (x, y) = cursor();
+        let (gx, gy) = cursor();
+        let (monitor, x, y) = place(gx, gy);
+        probe.window.set_monitor(monitor.as_ref());
         probe.window.set_margin(Edge::Left, x);
         probe.window.set_margin(Edge::Top, y);
         probe.window.set_keyboard_mode(mode);
@@ -275,12 +290,57 @@ fn show(received: Instant, mode: KeyboardMode) {
             *handler.borrow_mut() = Some(id);
         }
         probe.window.set_visible(true);
-        report(&format!("shown_at={x},{y} keyboard={mode:?}"));
+        report(&format!(
+            "shown_at={x},{y} on={} cursor={gx},{gy} keyboard={mode:?}",
+            monitor
+                .as_ref()
+                .and_then(|m| m.connector())
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "?".into())
+        ));
     });
 }
 
+/// The monitor under the cursor and the window position on it: layer-shell
+/// margins are local to one output, `hyprctl cursorpos` is global (F6). The
+/// window is kept inside that monitor.
+fn place(gx: i32, gy: i32) -> (Option<gdk::Monitor>, i32, i32) {
+    const OFFSET: i32 = 12;
+    const WIDTH: i32 = 360;
+    const HEIGHT: i32 = 160;
+    let monitors = gdk::Display::default()
+        .map(|d| d.monitors())
+        .map(|list| {
+            (0..list.n_items())
+                .filter_map(|i| list.item(i)?.downcast::<gdk::Monitor>().ok())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let hit = monitors.iter().find(|m| {
+        let g = m.geometry();
+        gx >= g.x() && gx < g.x() + g.width() && gy >= g.y() && gy < g.y() + g.height()
+    });
+    match hit.or(monitors.first()) {
+        Some(m) => {
+            let g = m.geometry();
+            let x = (gx - g.x() + OFFSET).clamp(0, (g.width() - WIDTH).max(0));
+            let y = (gy - g.y() + OFFSET).clamp(0, (g.height() - HEIGHT).max(0));
+            (Some(m.clone()), x, y)
+        }
+        None => (None, gx + OFFSET, gy + OFFSET),
+    }
+}
+
 /// Hyprland knows where the cursor is; other compositors do not tell clients.
+/// `PROBE_CURSOR=x,y` stands in for it in tests without Hyprland.
 fn cursor() -> (i32, i32) {
+    let from_env = std::env::var("PROBE_CURSOR").ok().and_then(|s| {
+        let (x, y) = s.split_once(',')?;
+        Some((x.trim().parse::<i32>().ok()?, y.trim().parse::<i32>().ok()?))
+    });
+    if let Some(position) = from_env {
+        return position;
+    }
     let parsed = Command::new("hyprctl")
         .arg("cursorpos")
         .output()
@@ -290,11 +350,8 @@ fn cursor() -> (i32, i32) {
             let (x, y) = s.trim().split_once(',')?;
             Some((x.trim().parse::<i32>().ok()?, y.trim().parse::<i32>().ok()?))
         });
-    match parsed {
-        Some((x, y)) => (x + 12, y + 12),
-        None => {
-            report("cursor=unknown (no hyprctl), placed at 200,150");
-            (200, 150)
-        }
-    }
+    parsed.unwrap_or_else(|| {
+        report("cursor=unknown (no hyprctl), placed at 200,150");
+        (188, 138)
+    })
 }

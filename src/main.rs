@@ -17,6 +17,7 @@ use cognitive_exoskeleton_memory::{
     DAY, Grade, GradeSource, MIN_REVIEWS_FOR_OWN_PARAMETERS, Memory, Note, OptimizeOutcome,
     ReviewOutcome,
 };
+use cognitive_exoskeleton_practice::{PracticeError, probe_tree};
 use cognitive_exoskeleton_units::{ExtractError, UnitStore, extract_lesson};
 use serde::Deserialize;
 use time::OffsetDateTime;
@@ -45,6 +46,7 @@ usage:
                                     --key <k> [--now <t>]
   cognitive-exoskeleton memory goal --db <path> --subject <id> [--deadline <rfc3339>] [--inactive]
   cognitive-exoskeleton memory optimize --db <path> --subject <id> [--now <t>]
+  cognitive-exoskeleton practice probes --text <file> --prompts <dir>
 
 AI settings (environment):
   COGNITIVE_AI_PROVIDER   gemini (default) | openai_compatible
@@ -94,6 +96,7 @@ fn run(args: &[String]) -> Result<String, String> {
         Some("ai") => return run_ai(&args[1..]),
         Some("units") => return run_units(&args[1..]),
         Some("memory") => return run_memory(&args[1..]),
+        Some("practice") => return run_practice(&args[1..]),
         _ => {}
     }
     let (command, rest) = match args {
@@ -436,6 +439,34 @@ fn run_memory(args: &[String]) -> Result<String, String> {
             )),
         },
         other => Err(format!("unknown memory command {other}")),
+    }
+}
+
+/// Alt+T probes for a text, as JSON (S5).
+fn run_practice(args: &[String]) -> Result<String, String> {
+    let (command, rest) = args.split_first().ok_or("practice needs a command")?;
+    let (options, _, _) = parse_options(rest, &["--text", "--prompts"], &[])?;
+    match command.as_str() {
+        "probes" => {
+            let path = options.get("--text").ok_or("--text is required")?;
+            let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+            let prompts = options.get("--prompts").ok_or("--prompts is required")?;
+            let prompts = PromptStore::from_dir(prompts).map_err(|e| e.to_string())?;
+            let config = ai_config_from_env()?;
+            let provider = config.provider_name();
+            let client = Client::new(config, UreqTransport::default());
+            let tree =
+                probe_tree(&client, &prompts, &text, Priority::Foreground).map_err(
+                    |e| match e {
+                        PracticeError::Ai(error) => {
+                            format!("{} ({error})", error.user_message(provider))
+                        }
+                        other => other.to_string(),
+                    },
+                )?;
+            serde_json::to_string_pretty(&tree).map_err(|e| e.to_string())
+        }
+        other => Err(format!("unknown practice command {other}")),
     }
 }
 

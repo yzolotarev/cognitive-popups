@@ -27,6 +27,7 @@ pub const DEFAULT_GEMINI_MODEL: &str = "gemini-flash-lite-latest";
 /// Tried in order when the main model is overloaded (B38). Chosen by a live
 /// check on the probe workload; each has its own rate limit.
 pub const DEFAULT_GEMINI_FALLBACKS: [&str; 3] =
+    ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemma-4-31b-it"]; 3] =
     ["gemini-3.5-flash", "gemini-3.6-flash", "gemma-4-31b-it"];
 
 #[derive(Debug, thiserror::Error)]

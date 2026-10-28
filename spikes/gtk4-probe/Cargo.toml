@@ -1,0 +1,12 @@
+[package]
+name = "gtk4-probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Not part of the workspace: CI (Linux and Windows) does not need GTK.
+[workspace]
+
+[dependencies]
+gtk = { version = "0.11.5", package = "gtk4", features = ["v4_14"] }
+gtk4-layer-shell = "0.8.1"

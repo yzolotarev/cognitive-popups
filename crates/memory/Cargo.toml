@@ -1,0 +1,12 @@
+[package]
+name = "cognitive-exoskeleton-memory"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+publish = false
+
+[dependencies]
+fsrs = "6.6.2"
+rusqlite = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

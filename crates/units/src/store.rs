@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{Extraction, RegistryUnit};
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -25,6 +25,8 @@ pub enum StoreError {
     NotFound(String),
     #[error("link {0} was already separated")]
     AlreadySeparated(String),
+    #[error("a merge needs 2-5 distinct units of one subject")]
+    BadMerge,
 }
 
 /// What the end-of-lesson notification says: «+1 новая · 2 добавлены к существующим».
@@ -148,13 +150,29 @@ impl UnitStore {
                 ",
             )?;
         }
+        if version < 2 {
+            self.connection.execute_batch(
+                "
+                BEGIN IMMEDIATE;
+                CREATE TABLE IF NOT EXISTS merges (
+                    merged_unit TEXT PRIMARY KEY REFERENCES units(unit_id),
+                    parts_json  TEXT NOT NULL,
+                    separated   INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT OR REPLACE INTO units_meta (key, value) VALUES ('schema', 2);
+                COMMIT;
+                ",
+            )?;
+        }
         Ok(())
     }
 
     pub fn registry(&self, subject: &str) -> Result<Vec<RegistryUnit>, StoreError> {
         let mut statement = self.connection.prepare(
-            "SELECT unit_id, title, action, kind, mastered_at IS NOT NULL
-             FROM units WHERE subject_id = ?1 ORDER BY created_at, unit_id",
+            "SELECT u.unit_id, u.title, u.action, u.kind, u.mastered_at IS NOT NULL
+             FROM units u LEFT JOIN merges m ON m.merged_unit = u.unit_id
+             WHERE u.subject_id = ?1 AND COALESCE(m.separated, 0) = 0
+             ORDER BY u.created_at, u.unit_id",
         )?;
         let rows = statement
             .query_map([subject], |row| {
@@ -348,6 +366,95 @@ impl UnitStore {
         Ok(rows)
     }
 
+    /// [Объединить] (B32): the reader joins 2-5 units of one subject into one.
+    /// The parts stay as they are; the merged unit holds the union of their events
+    /// and is not mastered, whatever the parts were. Returns the merged unit id.
+    pub fn merge(
+        &mut self,
+        parts: &[String],
+        title: &str,
+        action: &str,
+        kind: &str,
+    ) -> Result<String, StoreError> {
+        let mut unique = parts.to_vec();
+        unique.sort();
+        unique.dedup();
+        if !(2..=5).contains(&unique.len()) || unique.len() != parts.len() {
+            return Err(StoreError::BadMerge);
+        }
+        let tx = self.connection.transaction()?;
+        let mut subjects = Vec::new();
+        for part in parts {
+            let subject: Option<String> = tx
+                .query_row(
+                    "SELECT subject_id FROM units WHERE unit_id = ?1",
+                    [part],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            subjects.push(subject.ok_or_else(|| StoreError::NotFound(format!("unit {part}")))?);
+        }
+        subjects.dedup();
+        let [subject] = subjects.as_slice() else {
+            return Err(StoreError::BadMerge);
+        };
+        let id = new_id("u");
+        tx.execute(
+            "INSERT INTO units (unit_id, subject_id, title, action, kind) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, subject, title, action, kind],
+        )?;
+        for part in parts {
+            tx.execute(
+                "INSERT OR IGNORE INTO unit_events
+                 SELECT ?1, event_sequence FROM unit_events WHERE unit_id = ?2",
+                params![id, part],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO merges (merged_unit, parts_json) VALUES (?1, ?2)",
+            params![id, serde_json::to_string(parts)?],
+        )?;
+        tx.commit()?;
+        Ok(id)
+    }
+
+    /// [отделить] on a merged unit: the merge is marked undone and its parts are
+    /// returned, so memory can give them back their own schedules.
+    pub fn unmerge(&mut self, merged: &str) -> Result<Vec<String>, StoreError> {
+        let row: Option<(String, bool)> = self
+            .connection
+            .query_row(
+                "SELECT parts_json, separated FROM merges WHERE merged_unit = ?1",
+                [merged],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let (parts, separated) =
+            row.ok_or_else(|| StoreError::NotFound(format!("merge {merged}")))?;
+        if separated {
+            return Err(StoreError::AlreadySeparated(merged.into()));
+        }
+        self.connection.execute(
+            "UPDATE merges SET separated = 1 WHERE merged_unit = ?1",
+            [merged],
+        )?;
+        Ok(serde_json::from_str(&parts)?)
+    }
+
+    /// Every unit with its subject, for enrolling units into memory.
+    pub fn all_units(&self) -> Result<Vec<(String, String)>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT u.unit_id, u.subject_id FROM units u
+             LEFT JOIN merges m ON m.merged_unit = u.unit_id
+             WHERE COALESCE(m.separated, 0) = 0
+             ORDER BY u.created_at, u.unit_id",
+        )?;
+        let rows = statement
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// The reader's own mark (A10). It is never set by the model and never
     /// creates a review (INV-02); it only allows merge candidates.
     pub fn set_mastered(&mut self, unit: &str, mastered: bool) -> Result<(), StoreError> {
@@ -493,6 +600,50 @@ mod tests {
         store.set_mastered(&id, false).unwrap();
         assert!(!store.registry("S").unwrap()[0].mastered);
         assert!(store.set_mastered("u404", true).is_err());
+    }
+
+    #[test]
+    fn a_merge_joins_events_does_not_inherit_mastery_and_can_be_undone() {
+        let mut store = UnitStore::open_in_memory().unwrap();
+        store
+            .apply(
+                "S",
+                &lesson("L1"),
+                &Extraction {
+                    units: vec![proposed("A", vec![1], None), proposed("B", vec![2], None)],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let ids: Vec<String> = store
+            .registry("S")
+            .unwrap()
+            .into_iter()
+            .map(|u| u.id)
+            .collect();
+        for id in &ids {
+            store.set_mastered(id, true).unwrap();
+        }
+        let merged = store
+            .merge(&ids, "A+B", "сделать A и B", "transfer")
+            .unwrap();
+        assert_eq!(store.events_of(&merged).unwrap(), vec![1, 2]);
+        let unit = store
+            .registry("S")
+            .unwrap()
+            .into_iter()
+            .find(|u| u.id == merged)
+            .unwrap();
+        assert!(!unit.mastered);
+        assert_eq!(store.all_units().unwrap().len(), 3);
+        assert_eq!(store.unmerge(&merged).unwrap(), ids);
+        assert_eq!(store.all_units().unwrap().len(), 2);
+        assert_eq!(store.registry("S").unwrap().len(), 2);
+        assert!(store.unmerge(&merged).is_err());
+        assert!(matches!(
+            store.merge(&ids[..1], "x", "y", "z"),
+            Err(StoreError::BadMerge)
+        ));
     }
 
     #[test]

@@ -10,12 +10,23 @@ pub const USER_MARKER: &str = "->user:";
 pub const AI_MARKER: &str = "->ai generated for this task:";
 pub const OTHER_MARKER: &str = "sth else:";
 
+/// Events that may appear in the transcript and therefore may be cited by the
+/// model. Text from development tools and AI chats is stored but never citable.
+pub fn citable_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
+    events
+        .iter()
+        .filter(|stored| match stored.event.payload() {
+            Payload::Source(snapshot) => snapshot.context.is_study(),
+            _ => true,
+        })
+        .collect()
+}
+
 pub fn render_transcript(events: &[StoredEvent]) -> String {
     let mut lines = Vec::new();
-    for stored in events {
+    for stored in citable_events(events) {
         let event = &stored.event;
         let body = match event.payload() {
-            Payload::Source(snapshot) if !snapshot.context.is_study() => continue,
             Payload::Source(snapshot) => snapshot.text.clone(),
             Payload::UserText { text } | Payload::AiResponse { text, .. } => text.clone(),
             Payload::SelfAssessment { unit, value } => {

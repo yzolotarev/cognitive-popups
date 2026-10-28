@@ -7,7 +7,7 @@
 
 mod transcript;
 
-pub use transcript::{AI_MARKER, OTHER_MARKER, USER_MARKER, render_transcript};
+pub use transcript::{AI_MARKER, OTHER_MARKER, USER_MARKER, citable_events, render_transcript};
 
 use cognitive_exoskeleton_domain::{
     Author, DomainError, EventId, LessonId, NewEvent, OperationId, Payload, StoredEvent,

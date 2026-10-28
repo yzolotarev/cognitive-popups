@@ -14,6 +14,7 @@
 
 pub mod arith;
 pub mod expr;
+pub mod families;
 pub mod guidance;
 pub mod numeric;
 pub mod recall;

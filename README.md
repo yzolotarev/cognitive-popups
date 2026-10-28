@@ -123,6 +123,15 @@ with and the feature of the condition that shows it. The criterion is fixed
 before the answer; a named acceptable method is a code-checked success, anything
 else the reader compares with the reference.
 
+```sh
+cargo run -- units family --db journal.db <unit> integer_roots
+cargo run -- practice check --family integer_roots --seed <seed> --answer "−1; 3; 6"
+```
+
+A unit linked to a code-checked family (`integer_roots`, `work_proportion`) gets a
+fresh task instance in «Достань из памяти» without a model request, and the code
+grades the answer (`verified`).
+
 ## Requirements baseline (P0)
 
 | Artefact | Purpose |

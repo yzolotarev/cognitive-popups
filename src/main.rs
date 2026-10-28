@@ -17,6 +17,7 @@ use cognitive_exoskeleton_memory::{
     DAY, Grade, GradeSource, MIN_REVIEWS_FOR_OWN_PARAMETERS, Memory, Note, OptimizeOutcome,
     ReviewOutcome,
 };
+use cognitive_exoskeleton_practice::families::{self, Family};
 use cognitive_exoskeleton_practice::{
     DueUnit, EvidenceLine, PracticeError, ProbeTree, RecallSet, arrange, load_types, method_trails,
     probe_tree, recall_cards, whole_task,
@@ -42,6 +43,7 @@ usage:
   cognitive-exoskeleton units master --db <path> <unit-id> [--undo]
   cognitive-exoskeleton units merge --db <path> --title <t> --action <a> --kind <k> <unit-id>...
   cognitive-exoskeleton units unmerge --db <path> <merged-unit-id>
+  cognitive-exoskeleton units family --db <path> <unit-id> <integer_roots|work_proportion|none>
   cognitive-exoskeleton memory due --db <path> [--now <rfc3339>]
   cognitive-exoskeleton memory review --db <path> <unit-id> <again|hard|good>
                                       --source <verified|self_graded> --key <k> [--now <t>]
@@ -55,6 +57,7 @@ usage:
   cognitive-exoskeleton practice whole --prompts <dir> (--text <file> | --db <path> --unit <id>)
                                        [--type 1-10] [--ops \"op1; op2\"]   [Собери вместе]
   cognitive-exoskeleton practice methods --prompts <dir> --text <file>   trails: choose a method
+  cognitive-exoskeleton practice check --family <name> --seed <n> --answer <text>
 
 AI settings (environment):
   COGNITIVE_AI_PROVIDER   gemini (default) | openai_compatible
@@ -296,6 +299,17 @@ fn run_units(args: &[String]) -> Result<String, String> {
             let unit = store.separate(link).map_err(|e| e.to_string())?;
             Ok(format!("отделена в новую единицу {unit}"))
         }
+        "family" => {
+            let [unit, family] = positional.as_slice() else {
+                return Err("family needs <unit-id> <integer_roots|work_proportion|none>".into());
+            };
+            let family = match family.as_str() {
+                "none" => None,
+                name => Some(Family::parse(name).ok_or("unknown family")?.as_str()),
+            };
+            store.set_family(unit, family).map_err(|e| e.to_string())?;
+            Ok("семейство задач обновлено".into())
+        }
         "master" => {
             let [unit] = positional.as_slice() else {
                 return Err("master needs exactly one unit id".into());
@@ -465,6 +479,9 @@ fn run_practice(args: &[String]) -> Result<String, String> {
             "--unit",
             "--type",
             "--ops",
+            "--family",
+            "--seed",
+            "--answer",
         ],
         &["--from-pill"],
     )?;
@@ -487,7 +504,7 @@ fn run_practice(args: &[String]) -> Result<String, String> {
             let recall = if due.is_empty() {
                 RecallSet::default()
             } else {
-                recall_cards(&client, &prompts, &due, Priority::Foreground)
+                recall_cards(&client, &prompts, &due, at as u64, Priority::Foreground)
                     .map_err(ai_error(provider))?
             };
             let probes = match options.get("--text") {
@@ -506,6 +523,27 @@ fn run_practice(args: &[String]) -> Result<String, String> {
             }
             serde_json::to_string_pretty(&serde_json::json!({"categories": tree, "notes": notes}))
                 .map_err(|e| e.to_string())
+        }
+        "check" => {
+            let family = options
+                .get("--family")
+                .and_then(|f| Family::parse(f))
+                .ok_or("--family is integer_roots or work_proportion")?;
+            let seed: u64 = options
+                .get("--seed")
+                .ok_or("--seed is required")?
+                .parse()
+                .map_err(|_| "--seed is a number")?;
+            let answer = options.get("--answer").ok_or("--answer is required")?;
+            let task = families::generate(family, seed);
+            Ok(if families::check(&task, answer) {
+                "верно · проверено кодом (memory review … good --source verified)".to_string()
+            } else {
+                format!(
+                    "неверно · верный ответ: {} (memory review … again --source verified)",
+                    task.answer
+                )
+            })
         }
         "methods" => {
             let path = options.get("--text").ok_or("--text is required")?;
@@ -631,7 +669,12 @@ fn due_units(db: &str, at: i64) -> Result<Vec<DueUnit>, String> {
                 }
             })
             .collect();
+        let family = store
+            .family(&unit.id)
+            .map_err(|e| e.to_string())?
+            .and_then(|f| Family::parse(&f));
         units.push(DueUnit {
+            family,
             id: unit.id,
             title: unit.title,
             action: unit.action,

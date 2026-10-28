@@ -245,6 +245,8 @@ fn b31_recall_replaces_the_third_category_or_comes_first_from_the_pill() {
             question: "q".into(),
             reference: "r s".into(),
             events: vec![1],
+            family: None,
+            seed: None,
         }]
     };
     assert_eq!(titles(&arrange(probes(), vec![], false)), ["A", "B", "C"]);
@@ -350,4 +352,27 @@ fn needs_context_is_reported_not_invented() {
         }
     );
     assert_eq!(client.transport().calls.get(), 1, "no solution call");
+}
+
+#[test]
+fn a_unit_with_a_task_family_gets_a_code_card_without_a_request() {
+    let unit = DueUnit {
+        id: "u1".into(),
+        title: "Целые корни".into(),
+        action: "находить целые корни".into(),
+        kind: "execute".into(),
+        evidence: Vec::new(),
+        family: Some(families::Family::IntegerRoots),
+    };
+    let client = client(&[]);
+    let set = recall_cards(&client, &prompts(), &[unit], 7, Priority::Foreground).unwrap();
+    assert_eq!(client.transport().calls.get(), 0);
+    let card = &set.cards[0];
+    assert_eq!(card.family, Some(families::Family::IntegerRoots));
+    let task = families::generate(families::Family::IntegerRoots, card.seed.unwrap());
+    assert_eq!(
+        task.prompt, card.question,
+        "the task can be re-created to grade it"
+    );
+    assert!(families::check(&task, &card.reference));
 }

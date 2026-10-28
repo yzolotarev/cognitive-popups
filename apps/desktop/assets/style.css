@@ -1,0 +1,65 @@
+/* Cognitive Popups — the one place for sizes and shapes (DESIGN.md).
+   Colours come from colors-light.css / colors-dark.css. Numbers in comments
+   point to DESIGN.md sections. */
+
+/* §4 material: translucent window; Hyprland blurs it (layerrule = blur). */
+window.cp-popup {
+  background: @cp_material;
+  border-radius: 14px;                       /* §5 window */
+  color: @cp_text;
+  font-family: "Inter", sans-serif;          /* §2 */
+  font-size: 13px;                           /* §2 Body 13/16 */
+}
+
+.cp-root { padding: 16px; }                  /* §5 window margin */
+
+/* §4: no material under content — solid surface. */
+.cp-content {
+  background: @cp_surface;
+  border-radius: 10px;                       /* §5 card */
+  padding: 12px;
+}
+
+.cp-title    { font-size: 17px; font-weight: 600; letter-spacing: -0.43px; } /* Title 2 */
+.cp-headline { font-size: 13px; font-weight: 700; letter-spacing: -0.08px; } /* Headline */
+.cp-callout  { font-size: 12px; }                                             /* Callout */
+.cp-footnote { font-size: 10px; letter-spacing: 0.12px; }                     /* Footnote */
+.cp-secondary { color: @cp_text_secondary; }
+
+/* Quote of the source: a bar on the leading side, Callout size. */
+.cp-quote {
+  border-left: 3px solid @cp_quote_bar;
+  padding: 2px 0 2px 8px;
+  color: @cp_text_secondary;
+  font-size: 12px;
+}
+
+textview.cp-input, textview.cp-input text {
+  background: transparent;
+  color: @cp_text;
+  font-size: 13px;
+}
+
+.cp-placeholder { color: @cp_text_secondary; }
+
+button {
+  border-radius: 7px;                        /* §5 button */
+  padding: 4px 12px;
+  min-height: 24px;
+}
+
+/* §6: one default action per window, accent colour. */
+button.cp-default {
+  background: @cp_accent;
+  color: @cp_on_accent;
+  font-weight: 600;
+}
+
+/* §8: a visible focus ring everywhere. */
+*:focus-visible {
+  outline: 2px solid @cp_focus;
+  outline-offset: 2px;
+}
+
+.cp-success { color: @cp_success; }
+.cp-error   { color: @cp_error; }

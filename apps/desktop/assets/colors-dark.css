@@ -1,0 +1,12 @@
+/* Dark theme. Colours only; layout is in style.css (DESIGN.md §3). */
+@define-color cp_material rgba(40,40,42,0.78);
+@define-color cp_surface #2c2c2e;
+@define-color cp_text rgba(255,255,255,0.92);
+@define-color cp_text_secondary #aeaeb2;
+@define-color cp_accent #1e6ef4;
+@define-color cp_on_accent #ffffff;
+@define-color cp_separator rgba(255,255,255,0.12);
+@define-color cp_focus #5cb8ff;
+@define-color cp_quote_bar #8e8e93;
+@define-color cp_success #4ad968;
+@define-color cp_error #ff6165;

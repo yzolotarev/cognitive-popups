@@ -159,6 +159,24 @@ and the old clipboard (text or image) is put back. Password managers' clipboards
 are never read. Text from terminals, code editors and AI chats is marked and kept
 out of study history. Needs `wl-clipboard` and Hyprland (`hyprctl`) or `wtype`.
 
+## Windows (P7, Linux)
+
+`apps/desktop` is the GTK 4 + layer-shell app; a separate cargo workspace, since
+the core also builds on Windows. One daemon keeps every window ready; a hotkey
+only sends it a signal.
+
+```sh
+cd apps/desktop
+cargo run -- hyprland-config >> ~/.config/hypr/hyprland.conf   # exec-once + binds
+cargo run -- daemon
+cargo run -- signal note                                       # what Alt+E runs
+tools/screenshots.sh shots/                                    # every window, light and dark
+```
+
+Alt+E is a note at the selected text: the selection becomes the quote, Enter
+saves, Shift+Enter is a new line, Esc closes and keeps the draft. Notes also
+work without windows: `cargo run -- note add|list|close`. Needs `gtk4-layer-shell`.
+
 ## Requirements baseline (P0)
 
 | Artefact | Purpose |

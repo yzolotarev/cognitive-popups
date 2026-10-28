@@ -1,0 +1,12 @@
+/* Light theme. Colours only; layout is in style.css (DESIGN.md §3). */
+@define-color cp_material rgba(246,246,248,0.78);
+@define-color cp_surface #ffffff;
+@define-color cp_text rgba(0,0,0,0.88);
+@define-color cp_text_secondary #6e6e73;
+@define-color cp_accent #1e6ef4;
+@define-color cp_on_accent #ffffff;
+@define-color cp_separator rgba(0,0,0,0.10);
+@define-color cp_focus #1e6ef4;
+@define-color cp_quote_bar #8e8e93;
+@define-color cp_success #00893c;
+@define-color cp_error #e9152d;

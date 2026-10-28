@@ -9,6 +9,7 @@ publish = false
 cognitive-exoskeleton-ai = { path = "crates/ai" }
 cognitive-exoskeleton-units = { path = "crates/units" }
 cognitive-exoskeleton-memory = { path = "crates/memory" }
+cognitive-exoskeleton-practice = { path = "crates/practice" }
 cognitive-exoskeleton-domain = { path = "crates/domain" }
 cognitive-exoskeleton-journal = { path = "crates/journal" }
 serde = { workspace = true }

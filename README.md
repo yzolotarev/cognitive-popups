@@ -75,6 +75,21 @@ queue; a removed goal pauses its units. A subject trains its own 21 weights afte
 400 reviews, at most monthly. A merged unit starts from its weakest part; its
 parts wait unchanged until it is undone.
 
+## Practice probes (Alt+T) from the command line
+
+```sh
+cargo run -- practice probes --text crates/practice/fixtures/01-gauss.txt --prompts docs/v2/port/prompts
+```
+
+Three operations found in the text, each with a worked example, three cards
+and a reserve for [Ещё 3] and the diagnostic case after a miss. The model
+proposes, the code decides what is shown: the citation must be verbatim in the
+text; numeric cards are computed by the code from the model's template (exact
+fractions), and a template whose check fails on any case is rejected;
+arithmetic in drill pairs is computed exactly; the meaning of the rest is checked
+by a verifier model that can only remove cards. Rejected branches are asked for
+again once, with the reason.
+
 ## Requirements baseline (P0)
 
 | Artefact | Purpose |

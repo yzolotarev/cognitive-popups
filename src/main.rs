@@ -18,6 +18,9 @@ use cognitive_exoskeleton_memory::{
     DAY, Grade, GradeSource, MIN_REVIEWS_FOR_OWN_PARAMETERS, Memory, Note, OptimizeOutcome,
     ReviewOutcome,
 };
+use cognitive_exoskeleton_nudges::{
+    Consent as NudgeConsent, Context, Kind, Nudges, Response, Slack, card_text,
+};
 use cognitive_exoskeleton_practice::families::{self, Family};
 use cognitive_exoskeleton_practice::{
     DueUnit, EvidenceLine, PracticeError, ProbeTree, RecallSet, arrange, load_types, method_trails,
@@ -59,6 +62,13 @@ usage:
                                        [--type 1-10] [--ops \"op1; op2\"]   [Собери вместе]
   cognitive-exoskeleton practice methods --prompts <dir> --text <file>   trails: choose a method
   cognitive-exoskeleton practice check --family <name> --seed <n> --answer <text>
+  cognitive-exoskeleton nudge consent --db <path> <opportunity|daily|background_recording|experiments> <on|off>
+  cognitive-exoskeleton nudge check --db <path> --kind <opportunity|daily> --topic <t> [--busy] [--media]
+  cognitive-exoskeleton nudge shown --db <path> --kind <k> --topic <t>
+  cognitive-exoskeleton nudge respond --db <path> <show-id> <opened|not_now|ignored>
+  cognitive-exoskeleton mrt decide --db <path> --key <error-event> --unit <id> [--p 0.5] [--aa] [--busy]
+  cognitive-exoskeleton mrt check --db <path> --unit <id> (--correct | --incorrect)
+  cognitive-exoskeleton mrt engaged|close|summary --db <path> ...   analysis: tools/mrt_analysis.py
   cognitive-exoskeleton capture [--from-clipboard] [--db <path>]   selection → JSON (S6)
 
 AI settings (environment):
@@ -112,6 +122,7 @@ fn run(args: &[String]) -> Result<String, String> {
         Some("units") => return run_units(&args[1..]),
         Some("memory") => return run_memory(&args[1..]),
         Some("practice") => return run_practice(&args[1..]),
+        Some("nudge") | Some("mrt") => return run_nudges(&args[0], &args[1..]),
         Some("capture") => return run_capture(&args[1..]),
         _ => {}
     }
@@ -622,6 +633,165 @@ fn run_practice(args: &[String]) -> Result<String, String> {
         }
         other => Err(format!("unknown practice command {other}")),
     }
+}
+
+/// Background mechanisms and the MRT log (P8). Times default to now; the
+/// local midnight comes from `--day-start` (the daemon knows the time zone).
+fn run_nudges(group: &str, args: &[String]) -> Result<String, String> {
+    let (command, rest) = args.split_first().ok_or("needs a command")?;
+    let (options, flags, positional) = parse_options(
+        rest,
+        &[
+            "--db",
+            "--now",
+            "--day-start",
+            "--kind",
+            "--topic",
+            "--key",
+            "--unit",
+            "--roll",
+            "--p",
+        ],
+        &[
+            "--busy",
+            "--media",
+            "--aa",
+            "--correct",
+            "--incorrect",
+            "--engaged",
+        ],
+    )?;
+    let db = options.get("--db").ok_or("--db is required")?;
+    let at = now(options.get("--now").map(String::as_str))?;
+    let mut nudges = Nudges::open(db).map_err(|e| e.to_string())?;
+    let context = Context {
+        slack: if flags.contains("--busy") {
+            Slack::Busy
+        } else {
+            Slack::Free
+        },
+        media: flags.contains("--media"),
+    };
+    let kind = || match options.get("--kind").map(String::as_str) {
+        Some("daily") => Ok(Kind::Daily),
+        Some("opportunity") => Ok(Kind::Opportunity),
+        _ => Err("--kind is opportunity or daily".to_string()),
+    };
+    match (group, command.as_str()) {
+        ("nudge", "consent") => {
+            let [what, value] = positional.as_slice() else {
+                return Err(
+                    "consent <opportunity|daily|background_recording|experiments> <on|off>".into(),
+                );
+            };
+            let what = NudgeConsent::parse(what).ok_or("unknown consent")?;
+            nudges
+                .set_consent(what, value == "on", at)
+                .map_err(|e| e.to_string())?;
+            Ok(format!("согласие {}: {}", what.as_str(), value))
+        }
+        ("nudge", "check") => {
+            let day_start = match options.get("--day-start") {
+                Some(t) => now(Some(t))?,
+                None => at - at.rem_euclid(nudges_day()),
+            };
+            let topic = options.get("--topic").ok_or("--topic is required")?;
+            match nudges
+                .check(kind()?, topic, at, day_start, context)
+                .map_err(|e| e.to_string())?
+            {
+                None => Ok(format!("показать: {}", card_text(kind()?))),
+                Some(silence) => Ok(format!("молчать: {}", json(&silence))),
+            }
+        }
+        ("nudge", "shown") => {
+            let topic = options.get("--topic").ok_or("--topic is required")?;
+            let id = nudges
+                .record_shown(kind()?, topic, at)
+                .map_err(|e| e.to_string())?;
+            Ok(format!("показ {id}"))
+        }
+        ("nudge", "respond") => {
+            let [show, response] = positional.as_slice() else {
+                return Err("respond <show-id> <opened|not_now|ignored>".into());
+            };
+            let show: i64 = show.parse().map_err(|_| "show id is a number")?;
+            let response = Response::parse(response).ok_or("unknown response")?;
+            let first = nudges
+                .record_response(show, response, at)
+                .map_err(|e| e.to_string())?;
+            Ok(if first {
+                "записано"
+            } else {
+                "уже был ответ"
+            }
+            .into())
+        }
+        ("mrt", "decide") => {
+            let key = options
+                .get("--key")
+                .ok_or("--key is required (the error event)")?;
+            let unit = options.get("--unit").ok_or("--unit is required")?;
+            let roll = match options.get("--roll") {
+                Some(r) => r.parse().map_err(|_| "--roll is a number in [0, 1)")?,
+                None => fresh_roll(),
+            };
+            let p = match options.get("--p") {
+                Some(p) => p.parse().map_err(|_| "--p is a probability")?,
+                None => 0.5,
+            };
+            let decision = nudges
+                .decide(key, unit, at, context, roll, p, flags.contains("--aa"))
+                .map_err(|e| e.to_string())?;
+            Ok(json(&decision))
+        }
+        ("mrt", "engaged") => {
+            let [id] = positional.as_slice() else {
+                return Err("engaged <decision-id>".into());
+            };
+            nudges
+                .record_engaged(id.parse().map_err(|_| "id is a number")?, true)
+                .map_err(|e| e.to_string())?;
+            Ok("записано".into())
+        }
+        ("mrt", "check") => {
+            let unit = options.get("--unit").ok_or("--unit is required")?;
+            let correct = match (flags.contains("--correct"), flags.contains("--incorrect")) {
+                (true, false) => true,
+                (false, true) => false,
+                _ => return Err("give --correct or --incorrect".into()),
+            };
+            let n = nudges
+                .record_check(unit, correct, at)
+                .map_err(|e| e.to_string())?;
+            Ok(format!("исходов записано: {n}"))
+        }
+        ("mrt", "close") => {
+            let n = nudges.close_missing(at).map_err(|e| e.to_string())?;
+            Ok(format!("пропусков: {n}"))
+        }
+        ("mrt", "summary") => Ok(json(&nudges.summary().map_err(|e| e.to_string())?)),
+        (group, other) => Err(format!("unknown {group} command {other}")),
+    }
+}
+
+fn nudges_day() -> i64 {
+    cognitive_exoskeleton_nudges::DAY
+}
+
+/// A uniform number in [0, 1) for a live decision; tests pass `--roll`.
+fn fresh_roll() -> f64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64 ^ d.as_secs().rotate_left(17))
+        .unwrap_or(0);
+    let mut x = nanos.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    x ^= x >> 33;
+    (x >> 11) as f64 / (1u64 << 53) as f64
+}
+
+fn json(value: &impl serde::Serialize) -> String {
+    serde_json::to_string(value).unwrap_or_default()
 }
 
 /// Text capture (S6): the selection or an emulated Ctrl+C, as JSON. With

@@ -132,6 +132,21 @@ A unit linked to a code-checked family (`integer_roots`, `work_proportion`) gets
 fresh task instance in «Достань из памяти» without a model request, and the code
 grades the answer (`verified`).
 
+## Background nudges and the MRT log
+
+```sh
+cargo run -- nudge consent --db journal.db opportunity on
+cargo run -- nudge check --db journal.db --kind opportunity --topic hypothesis-17
+cargo run -- mrt decide --db journal.db --key <error-event> --unit <unit>
+cargo run -- mrt check --db journal.db --unit <unit> --correct
+python3 tools/mrt_analysis.py journal.db
+```
+
+Nothing speaks first without consent. Opportunity and Daily share one budget
+(not while busy or watching a video, ≤ 3 a day, 2 h apart, 24 h after «Не сейчас»),
+and every silence says why. The micro-randomized trial randomizes only meaningful
+moments, keeps engagement apart from the verified result, and the analysis refuses
+a conclusion before an A/A check and enough data.
 ## Text capture
 
 ```sh

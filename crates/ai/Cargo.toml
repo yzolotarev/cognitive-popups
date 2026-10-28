@@ -1,0 +1,12 @@
+[package]
+name = "cognitive-exoskeleton-ai"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+ureq = { version = "3.5", default-features = false, features = ["rustls", "platform-verifier", "json"] }

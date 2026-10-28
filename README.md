@@ -24,6 +24,21 @@ cargo run -- log lesson --db /tmp/j.sqlite3 L1
 one line per event, `[e<n>]` id, then `->user:`, `->ai generated for this task:` or
 `sth else:`. Text from development tools and AI chats is stored but never printed.
 
+## AI client from the command line
+
+```sh
+chmod 600 ~/.config/cognitive-popups/ai.key
+export COGNITIVE_AI_KEY_FILE=~/.config/cognitive-popups/ai.key   # Gemini by default
+cargo run -- ai check
+cargo run -- ai ask --prompts docs/v2/port/prompts --prompt seed_system --input-file paragraph.txt --json
+```
+
+Bring your own key: Gemini (default model `gemini-flash-lite-latest`) or any
+OpenAI-compatible service (`COGNITIVE_AI_PROVIDER=openai_compatible`,
+`COGNITIVE_AI_BASE_URL`, `COGNITIVE_AI_MODEL`). Without a key nothing is sent. A key file
+readable by other users is refused. Prompts are read from Markdown files (first
+```` ```text ```` block), so they change without a rebuild.
+
 ## Requirements baseline (P0)
 
 | Artefact | Purpose |

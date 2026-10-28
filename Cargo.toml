@@ -6,6 +6,7 @@ rust-version = "1.90"
 publish = false
 
 [dependencies]
+cognitive-exoskeleton-ai = { path = "crates/ai" }
 cognitive-exoskeleton-domain = { path = "crates/domain" }
 cognitive-exoskeleton-journal = { path = "crates/journal" }
 serde = { workspace = true }

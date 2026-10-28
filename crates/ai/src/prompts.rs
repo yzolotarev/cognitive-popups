@@ -48,7 +48,9 @@ impl PromptStore {
     }
 }
 
+/// Line endings are normalised first: a Windows checkout turns `\n` into `\r\n`.
 fn first_text_block(markdown: &str) -> Option<String> {
+    let markdown = &markdown.replace("\r\n", "\n");
     let start = markdown.find("```text\n")? + "```text\n".len();
     let rest = &markdown[start..];
     let end = rest.find("\n```")?;
@@ -64,6 +66,12 @@ mod tests {
     fn the_first_text_block_is_the_prompt() {
         let md = "# T\n\n- meta\n\n```text\nСистема.\nВторая строка.\n```\n\n```python\nx\n```\n";
         assert_eq!(first_text_block(md).unwrap(), "Система.\nВторая строка.");
+    }
+
+    #[test]
+    fn windows_line_endings_are_accepted() {
+        let md = "# T\r\n\r\n```text\r\nСистема.\r\nВторая.\r\n```\r\n";
+        assert_eq!(first_text_block(md).unwrap(), "Система.\nВторая.");
     }
 
     #[test]

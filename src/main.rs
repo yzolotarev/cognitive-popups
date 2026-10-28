@@ -11,6 +11,7 @@ use cognitive_exoskeleton_ai::{
     AiConfig, Client, DEFAULT_GEMINI_FALLBACKS, DEFAULT_GEMINI_MODEL, Priority, PromptStore,
     ProviderKind, Request, UreqTransport,
 };
+use cognitive_exoskeleton_capture as capture;
 use cognitive_exoskeleton_domain::{LessonId, NewEvent, OperationId, Payload};
 use cognitive_exoskeleton_journal::{Journal, citable_events, marked_text};
 use cognitive_exoskeleton_memory::{
@@ -58,6 +59,7 @@ usage:
                                        [--type 1-10] [--ops \"op1; op2\"]   [Собери вместе]
   cognitive-exoskeleton practice methods --prompts <dir> --text <file>   trails: choose a method
   cognitive-exoskeleton practice check --family <name> --seed <n> --answer <text>
+  cognitive-exoskeleton capture [--from-clipboard] [--db <path>]   selection → JSON (S6)
 
 AI settings (environment):
   COGNITIVE_AI_PROVIDER   gemini (default) | openai_compatible
@@ -110,6 +112,7 @@ fn run(args: &[String]) -> Result<String, String> {
         Some("units") => return run_units(&args[1..]),
         Some("memory") => return run_memory(&args[1..]),
         Some("practice") => return run_practice(&args[1..]),
+        Some("capture") => return run_capture(&args[1..]),
         _ => {}
     }
     let (command, rest) = match args {
@@ -619,6 +622,29 @@ fn run_practice(args: &[String]) -> Result<String, String> {
         }
         other => Err(format!("unknown practice command {other}")),
     }
+}
+
+/// Text capture (S6): the selection or an emulated Ctrl+C, as JSON. With
+/// `--db` a study capture also enters the ring of recent snippets.
+fn run_capture(args: &[String]) -> Result<String, String> {
+    let (options, flags, _) = parse_options(args, &["--db", "--now"], &["--from-clipboard"])?;
+    let captured = capture::capture(&capture::Wayland, flags.contains("--from-clipboard"))
+        .map_err(|e| e.to_string())?;
+    let mut neighbours = Vec::new();
+    if let Some(db) = options.get("--db") {
+        let at = now(options.get("--now").map(String::as_str))?;
+        let mut ring = capture::Ring::open(db).map_err(|e| e.to_string())?;
+        ring.push(&captured, at).map_err(|e| e.to_string())?;
+        neighbours = ring
+            .neighbours(&captured.text, at, 3)
+            .map_err(|e| e.to_string())?;
+    }
+    serde_json::to_string(&serde_json::json!({
+        "captured": captured,
+        "label": captured.origin.label(),
+        "neighbours": neighbours,
+    }))
+    .map_err(|e| e.to_string())
 }
 
 /// A unit's own journal text as task material, and whether the reader has

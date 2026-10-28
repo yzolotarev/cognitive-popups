@@ -132,6 +132,18 @@ A unit linked to a code-checked family (`integer_roots`, `work_proportion`) gets
 fresh task instance in «Достань из памяти» without a model request, and the code
 grades the answer (`verified`).
 
+## Text capture
+
+```sh
+cargo run -- capture --db journal.db            # the selection, or Ctrl+C with the clipboard put back
+cargo run -- capture --from-clipboard
+```
+
+The selection comes first; if it is empty, an emulated Ctrl+C reads the window
+and the old clipboard (text or image) is put back. Password managers' clipboards
+are never read. Text from terminals, code editors and AI chats is marked and kept
+out of study history. Needs `wl-clipboard` and Hyprland (`hyprctl`) or `wtype`.
+
 ## Requirements baseline (P0)
 
 | Artefact | Purpose |

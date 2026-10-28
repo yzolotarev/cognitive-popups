@@ -105,6 +105,33 @@ own journal events, hidden until the reader answers. It replaces the third probe
 category, comes first when opened from the «FSRS! N» pill, and is the only one
 without a text. The reader grades by comparing: промахнулся / частично / совпало.
 
+```sh
+cargo run -- practice whole --prompts docs/v2/port/prompts --text page.txt --ops "Вычесть кратное; Найти множитель"
+cargo run -- practice whole --prompts docs/v2/port/prompts --db journal.db --unit <unit> --type 7
+```
+
+[Собери вместе]: one whole task of the ten v1 types, with a worked solution
+hidden until asked for. A newcomer to the unit gets worked-example types only;
+anchors must be quoted verbatim from the material; plain text, no LaTeX.
+
+```sh
+cargo run -- practice methods --prompts docs/v2/port/prompts --text crates/practice/fixtures/06-methods.txt
+```
+
+Trails: «Выбор метода» and «Различи методы». The reader names the method to start
+with and the feature of the condition that shows it. The criterion is fixed
+before the answer; a named acceptable method is a code-checked success, anything
+else the reader compares with the reference.
+
+```sh
+cargo run -- units family --db journal.db <unit> integer_roots
+cargo run -- practice check --family integer_roots --seed <seed> --answer "−1; 3; 6"
+```
+
+A unit linked to a code-checked family (`integer_roots`, `work_proportion`) gets a
+fresh task instance in «Достань из памяти» without a model request, and the code
+grades the answer (`verified`).
+
 ## Requirements baseline (P0)
 
 | Artefact | Purpose |

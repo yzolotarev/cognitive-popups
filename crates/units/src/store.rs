@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{Extraction, RegistryUnit};
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -163,6 +163,37 @@ impl UnitStore {
                 COMMIT;
                 ",
             )?;
+        }
+        if version < 3 {
+            self.connection.execute_batch(
+                "
+                BEGIN IMMEDIATE;
+                ALTER TABLE units ADD COLUMN family TEXT;
+                INSERT OR REPLACE INTO units_meta (key, value) VALUES ('schema', 3);
+                COMMIT;
+                ",
+            )?;
+        }
+        Ok(())
+    }
+
+    /// A family of code-checked tasks the unit is practised with (B31), if any.
+    pub fn family(&self, unit: &str) -> Result<Option<String>, StoreError> {
+        self.connection
+            .query_row("SELECT family FROM units WHERE unit_id = ?1", [unit], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .ok_or_else(|| StoreError::NotFound(format!("unit {unit}")))
+    }
+
+    pub fn set_family(&mut self, unit: &str, family: Option<&str>) -> Result<(), StoreError> {
+        let changed = self.connection.execute(
+            "UPDATE units SET family = ?2 WHERE unit_id = ?1",
+            params![unit, family],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::NotFound(format!("unit {unit}")));
         }
         Ok(())
     }
@@ -644,6 +675,26 @@ mod tests {
             store.merge(&ids[..1], "x", "y", "z"),
             Err(StoreError::BadMerge)
         ));
+    }
+
+    #[test]
+    fn a_unit_can_be_linked_to_a_task_family() {
+        let mut store = UnitStore::open_in_memory().unwrap();
+        store
+            .apply(
+                "S",
+                &lesson("L1"),
+                &Extraction {
+                    units: vec![proposed("Корни", vec![1], None)],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let id = store.registry("S").unwrap()[0].id.clone();
+        assert_eq!(store.family(&id).unwrap(), None);
+        store.set_family(&id, Some("integer_roots")).unwrap();
+        assert_eq!(store.family(&id).unwrap().as_deref(), Some("integer_roots"));
+        assert!(store.set_family("u404", None).is_err());
     }
 
     #[test]

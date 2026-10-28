@@ -40,6 +40,17 @@ fn inv04_the_same_attempt_twice_is_one_review() {
 }
 
 #[test]
+fn a_reader_is_a_newcomer_until_a_good_answer() {
+    let mut memory = memory_with(&[("u1", "S")]);
+    memory
+        .review("u1", Grade::Again, GradeSource::SelfGraded, "a1", T0)
+        .unwrap();
+    assert!(!memory.has_correct_answer("u1").unwrap());
+    good(&mut memory, "u1", "a2", T0 + 60);
+    assert!(memory.has_correct_answer("u1").unwrap());
+}
+
+#[test]
 fn inv06_inv10_notes_never_move_the_schedule() {
     let mut memory = memory_with(&[("u1", "S")]);
     good(&mut memory, "u1", "a1", T0);

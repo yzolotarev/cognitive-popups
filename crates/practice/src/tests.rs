@@ -5,6 +5,7 @@ use cognitive_exoskeleton_ai::{AiConfig, ProviderKind};
 use serde_json::json;
 
 use super::*;
+use crate::whole;
 
 struct Stub {
     answers: RefCell<Vec<String>>,
@@ -244,6 +245,8 @@ fn b31_recall_replaces_the_third_category_or_comes_first_from_the_pill() {
             question: "q".into(),
             reference: "r s".into(),
             events: vec![1],
+            family: None,
+            seed: None,
         }]
     };
     assert_eq!(titles(&arrange(probes(), vec![], false)), ["A", "B", "C"]);
@@ -256,4 +259,120 @@ fn b31_recall_replaces_the_third_category_or_comes_first_from_the_pill() {
         ["память", "A", "B"]
     );
     assert_eq!(titles(&arrange(vec![], due(), true)), ["память"]);
+}
+
+fn types() -> Vec<whole::TaskType> {
+    load_types(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/v2/port/prompts")).unwrap()
+}
+
+#[test]
+fn a_whole_task_gets_a_condition_and_a_hidden_solution() {
+    let ready = json!({"status":"ready",
+        "condition":"Дана матрица [[2, 1], [6, 5]].\nТребуется: привести её к ступенчатому виду.",
+        "grounding":["R2 − 3·R1", "придумано моделью"],"required_operations":[],
+        "difficulty":"standard","confidence":"medium","payload":{}});
+    let client = client(&[ready]);
+    client
+        .transport()
+        .answers
+        .borrow_mut()
+        .push("R2 − 3·R1 даёт [0, 2].".into());
+    let ops = vec![
+        "Вычесть кратное".to_string(),
+        "Умножить на число".to_string(),
+    ];
+    let task = whole_task(
+        &client,
+        &prompts(),
+        &types(),
+        TEXT,
+        &ops,
+        None,
+        true,
+        Priority::Foreground,
+    )
+    .unwrap();
+    let WholeTask::Ready {
+        type_id,
+        condition,
+        grounding,
+        solution,
+        notes,
+        ..
+    } = task
+    else {
+        panic!("{task:?}");
+    };
+    assert_eq!(type_id, 1);
+    assert!(condition.ends_with("Требуется: привести её к ступенчатому виду."));
+    assert_eq!(grounding, vec!["R2 − 3·R1"]);
+    assert!(notes[0].contains("придумано моделью"));
+    assert!(solution.contains("[0, 2]"));
+    let system = client.transport().inputs.borrow()[0].clone();
+    assert!(system.contains("ТЕКСТ") || system.contains("МАТЕРИАЛ"));
+}
+
+#[test]
+fn a_newcomer_cannot_get_a_hard_type_and_no_request_is_made() {
+    let client = client(&[]);
+    let error = whole_task(
+        &client,
+        &prompts(),
+        &types(),
+        TEXT,
+        &[],
+        Some(5),
+        false,
+        Priority::Foreground,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("новичку"), "{error}");
+    assert_eq!(client.transport().calls.get(), 0);
+}
+
+#[test]
+fn needs_context_is_reported_not_invented() {
+    let client = client(&[json!({"status":"needs_context","reason":"в тексте нет метода"})]);
+    let task = whole_task(
+        &client,
+        &prompts(),
+        &types(),
+        TEXT,
+        &[],
+        Some(7),
+        false,
+        Priority::Foreground,
+    )
+    .unwrap();
+    assert_eq!(
+        task,
+        WholeTask::NeedsContext {
+            type_id: 7,
+            reason: "в тексте нет метода".into()
+        }
+    );
+    assert_eq!(client.transport().calls.get(), 1, "no solution call");
+}
+
+#[test]
+fn a_unit_with_a_task_family_gets_a_code_card_without_a_request() {
+    let unit = DueUnit {
+        id: "u1".into(),
+        title: "Целые корни".into(),
+        action: "находить целые корни".into(),
+        kind: "execute".into(),
+        evidence: Vec::new(),
+        family: Some(families::Family::IntegerRoots),
+    };
+    let client = client(&[]);
+    let set = recall_cards(&client, &prompts(), &[unit], 7, Priority::Foreground).unwrap();
+    assert_eq!(client.transport().calls.get(), 0);
+    let card = &set.cards[0];
+    assert_eq!(card.family, Some(families::Family::IntegerRoots));
+    let task = families::generate(families::Family::IntegerRoots, card.seed.unwrap());
+    assert_eq!(
+        task.prompt, card.question,
+        "the task can be re-created to grade it"
+    );
+    assert!(families::check(&task, &card.reference));
 }

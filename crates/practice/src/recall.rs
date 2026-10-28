@@ -8,6 +8,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::PracticeError;
+use crate::families::{Family, generate};
 
 pub const RECALL_PROMPT: &str = "NEW_recall_cards";
 /// Cards in the category: each one a different unit (B31).
@@ -28,6 +29,8 @@ pub struct DueUnit {
     pub action: String,
     pub kind: String,
     pub evidence: Vec<EvidenceLine>,
+    /// A code-checked task family: the card is built and graded by code.
+    pub family: Option<Family>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -38,6 +41,12 @@ pub struct RecallCard {
     pub reference: String,
     /// Journal sequences the reference is quoted from.
     pub events: Vec<i64>,
+    /// Set when the code grades the answer (`verified`); the reader then does
+    /// not self-check. Re-create the task with `families::generate`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub family: Option<Family>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -140,6 +149,8 @@ pub fn validate(raw: &Value, units: &[DueUnit]) -> RecallSet {
             question,
             reference,
             events: vec![source.sequence],
+            family: None,
+            seed: None,
         });
     }
     for unit in units {
@@ -152,21 +163,45 @@ pub fn validate(raw: &Value, units: &[DueUnit]) -> RecallSet {
     set
 }
 
-/// Cards for up to three due units, most overdue first.
+/// Cards for up to three due units, most overdue first. Units with a task
+/// family get a fresh code-checked instance (`seed` varies per showing) and
+/// cost no model request.
 pub fn recall_cards<T: Transport>(
     client: &Client<T>,
     prompts: &PromptStore,
     units: &[DueUnit],
+    seed: u64,
     priority: Priority,
 ) -> Result<RecallSet, PracticeError> {
-    let units: Vec<DueUnit> = units
+    let chosen: Vec<&DueUnit> = units
         .iter()
-        .filter(|u| !u.evidence.is_empty())
+        .filter(|u| u.family.is_some() || !u.evidence.is_empty())
         .take(RECALL_CARDS)
+        .collect();
+    let mut coded = Vec::new();
+    for (i, unit) in chosen.iter().enumerate() {
+        if let Some(family) = unit.family {
+            let task = generate(family, seed.wrapping_add(i as u64));
+            coded.push(RecallCard {
+                unit: unit.id.clone(),
+                question: task.prompt,
+                reference: task.answer,
+                events: Vec::new(),
+                family: Some(family),
+                seed: Some(task.seed),
+            });
+        }
+    }
+    let units: Vec<DueUnit> = chosen
+        .into_iter()
+        .filter(|u| u.family.is_none())
         .cloned()
         .collect();
     if units.is_empty() {
-        return Ok(RecallSet::default());
+        return Ok(RecallSet {
+            cards: coded,
+            notes: Vec::new(),
+        });
     }
     let request = Request {
         system: prompts
@@ -179,7 +214,9 @@ pub fn recall_cards<T: Transport>(
         priority,
     };
     let raw = client.complete_json(&request, schema_check)?;
-    Ok(validate(&raw, &units))
+    let mut set = validate(&raw, &units);
+    set.cards.splice(0..0, coded);
+    Ok(set)
 }
 
 /// The question gives the answer away when it contains the quote or most of
@@ -242,6 +279,7 @@ mod tests {
                         text: "ранг — это число всех строк".into(),
                     },
                 ],
+                family: None,
             },
             DueUnit {
                 id: "u2".into(),
@@ -253,6 +291,7 @@ mod tests {
                     marker: "sth else:",
                     text: "ставя знак доллара перед буквой и перед номером: $B$3".into(),
                 }],
+                family: None,
             },
         ]
     }

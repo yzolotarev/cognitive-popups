@@ -114,6 +114,15 @@ cargo run -- practice whole --prompts docs/v2/port/prompts --db journal.db --uni
 hidden until asked for. A newcomer to the unit gets worked-example types only;
 anchors must be quoted verbatim from the material; plain text, no LaTeX.
 
+```sh
+cargo run -- practice methods --prompts docs/v2/port/prompts --text crates/practice/fixtures/06-methods.txt
+```
+
+Trails: «Выбор метода» and «Различи методы». The reader names the method to start
+with and the feature of the condition that shows it. The criterion is fixed
+before the answer; a named acceptable method is a code-checked success, anything
+else the reader compares with the reference.
+
 ## Requirements baseline (P0)
 
 | Artefact | Purpose |

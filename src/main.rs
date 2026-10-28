@@ -18,8 +18,8 @@ use cognitive_exoskeleton_memory::{
     ReviewOutcome,
 };
 use cognitive_exoskeleton_practice::{
-    DueUnit, EvidenceLine, PracticeError, ProbeTree, RecallSet, arrange, load_types, probe_tree,
-    recall_cards, whole_task,
+    DueUnit, EvidenceLine, PracticeError, ProbeTree, RecallSet, arrange, load_types, method_trails,
+    probe_tree, recall_cards, whole_task,
 };
 use cognitive_exoskeleton_units::{ExtractError, UnitStore, extract_lesson};
 use serde::Deserialize;
@@ -54,6 +54,7 @@ usage:
                                       [--now <t>]   probes + «Достань из памяти»
   cognitive-exoskeleton practice whole --prompts <dir> (--text <file> | --db <path> --unit <id>)
                                        [--type 1-10] [--ops \"op1; op2\"]   [Собери вместе]
+  cognitive-exoskeleton practice methods --prompts <dir> --text <file>   trails: choose a method
 
 AI settings (environment):
   COGNITIVE_AI_PROVIDER   gemini (default) | openai_compatible
@@ -505,6 +506,21 @@ fn run_practice(args: &[String]) -> Result<String, String> {
             }
             serde_json::to_string_pretty(&serde_json::json!({"categories": tree, "notes": notes}))
                 .map_err(|e| e.to_string())
+        }
+        "methods" => {
+            let path = options.get("--text").ok_or("--text is required")?;
+            let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+            let prompts = options.get("--prompts").ok_or("--prompts is required")?;
+            let prompts = PromptStore::from_dir(prompts).map_err(|e| e.to_string())?;
+            let config = ai_config_from_env()?;
+            let provider = config.provider_name();
+            let client = Client::new(config, UreqTransport::default());
+            let set = method_trails(&client, &prompts, &text, Priority::Foreground)
+                .map_err(ai_error(provider))?;
+            if let Some(model) = client.answered_by() {
+                eprintln!("ответила модель {model}");
+            }
+            serde_json::to_string_pretty(&set).map_err(|e| e.to_string())
         }
         "whole" => {
             let dir = options.get("--prompts").ok_or("--prompts is required")?;

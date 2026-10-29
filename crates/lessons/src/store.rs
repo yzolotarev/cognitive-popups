@@ -411,7 +411,7 @@ impl LessonStore {
     pub fn subjects(&self) -> Result<Vec<Subject>, StoreError> {
         let mut statement = self.connection.prepare(
             "SELECT subject_id, name, goal_text, deadline, status FROM subjects
-             WHERE status != 'removed' ORDER BY created_at DESC",
+             WHERE status != 'removed' ORDER BY created_at DESC, rowid DESC",
         )?;
         let rows = statement.query_map([], subject_row)?;
         Ok(rows.collect::<Result<_, _>>()?)

@@ -78,6 +78,7 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("daemon") => daemon(),
         Some("doctor") => doctor::run(),
+        Some("subjects") => subjects(&args[1..]),
         Some("signal") => signal(
             args.get(1).map(String::as_str),
             args.get(2).map(String::as_str),
@@ -95,8 +96,79 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: cognitive-popups daemon | doctor | signal <{}> | hyprland-config [--classic|--lua]",
+                "usage: cognitive-popups daemon | doctor | signal <{}> | hyprland-config [--classic|--lua] | subjects import <file> [--dry-run] | subjects export",
                 WINDOWS.join("|")
+            );
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// The whole study plan at once (B72): subjects, goals, deadlines and
+/// programs from one text file, and back.
+fn subjects(args: &[String]) -> ExitCode {
+    use cognitive_exoskeleton_lessons::{
+        LessonStore, export_subjects, import_subjects, parse_subjects,
+    };
+    let fail = |message: String| {
+        eprintln!("{message}");
+        ExitCode::from(1)
+    };
+    let mut store = match LessonStore::open(database()) {
+        Ok(store) => store,
+        Err(e) => return fail(format!("база: {e}")),
+    };
+    match (args.first().map(String::as_str), args.get(1)) {
+        (Some("export"), None) => match export_subjects(&store) {
+            Ok(text) => {
+                print!("{text}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail(e.to_string()),
+        },
+        (Some("import"), Some(file)) => {
+            let text = match std::fs::read_to_string(file) {
+                Ok(text) => text,
+                Err(e) => return fail(format!("{file}: {e}")),
+            };
+            let drafts = match parse_subjects(&text) {
+                Ok(drafts) => drafts,
+                Err(e) => return fail(format!("{file}: {e}")),
+            };
+            if args.iter().any(|a| a == "--dry-run") {
+                for draft in &drafts {
+                    println!(
+                        "{} · тем: {}{}",
+                        draft.name,
+                        draft.topics.len(),
+                        draft
+                            .deadline
+                            .as_deref()
+                            .map(|d| format!(" · срок {d}"))
+                            .unwrap_or_default()
+                    );
+                }
+                println!("Проверка прошла, ничего не записано.");
+                return ExitCode::SUCCESS;
+            }
+            match import_subjects(&mut store, &drafts, ctx::now()) {
+                Ok(report) => {
+                    let line = |label: &str, names: &[String]| {
+                        if !names.is_empty() {
+                            println!("{label}: {}", names.join(", "));
+                        }
+                    };
+                    line("Добавлены", &report.added);
+                    line("Обновлены", &report.updated);
+                    line("Без изменений", &report.unchanged);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => fail(e.to_string()),
+            }
+        }
+        _ => {
+            eprintln!(
+                "usage: cognitive-popups subjects import <file> [--dry-run] | subjects export"
             );
             ExitCode::from(2)
         }

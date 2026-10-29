@@ -14,6 +14,7 @@ mod lesson;
 mod math;
 mod note;
 mod notice;
+mod nudge;
 mod pill;
 mod popup;
 mod practice;
@@ -35,7 +36,7 @@ use cognitive_exoskeleton_practice::routes::Route;
 use cognitive_exoskeleton_understand::{self as understand_core, Mechanic};
 use gtk::glib;
 
-const WINDOWS: [&str; 11] = [
+const WINDOWS: [&str; 12] = [
     "note",
     "understand",
     "hypothesis",
@@ -43,6 +44,7 @@ const WINDOWS: [&str; 11] = [
     "lesson",
     "pill",
     "notice",
+    "nudge",
     "hub",
     "resume",
     "help",
@@ -200,6 +202,18 @@ fn daemon() -> ExitCode {
             let hub = hub.clone();
             move || hub.open(None)
         });
+        let nudge = nudge::start(
+            app,
+            ctx.db.clone(),
+            {
+                let lesson = lesson.clone();
+                move || lesson.press(None)
+            },
+            {
+                let practice = practice.clone();
+                move || practice.open(None, None, true)
+            },
+        );
         listen(move |line| {
             let (window, argument) = line.split_once(' ').unwrap_or((line, ""));
             // The selection only: instant, and never a Ctrl+C into our own window.
@@ -241,6 +255,12 @@ fn daemon() -> ExitCode {
                 "pill" => pill.show_count(argument.parse().unwrap_or(0)),
                 // `signal notice <text>`: a quiet notice from a script.
                 "notice" => notice.show("Cognitive Popups", argument),
+                "nudge" if argument == "daily" => {
+                    nudge.preview(cognitive_exoskeleton_nudges::Kind::Daily)
+                }
+                "nudge" if argument == "opportunity" => {
+                    nudge.preview(cognitive_exoskeleton_nudges::Kind::Opportunity)
+                }
                 "hub" => hub.open(Some(argument).filter(|a| !a.is_empty())),
                 "resume" => resume.open(),
                 "help" => help.open(),
@@ -251,6 +271,7 @@ fn daemon() -> ExitCode {
                     practice.hide();
                     lesson.hide();
                     notice.hide();
+                    nudge.hide();
                     pill.hide();
                     hub.hide();
                     resume.hide();

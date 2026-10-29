@@ -119,6 +119,7 @@ pub fn run() -> ExitCode {
         ("wl-copy", "wl-clipboard"),
         ("wl-paste", "wl-clipboard"),
         ("wtype", "wtype"),
+        ("playerctl", "playerctl"),
         ("secret-tool", "libsecret"),
     ] {
         let present = executable(name);

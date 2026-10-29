@@ -166,7 +166,7 @@ the core also builds on Windows. One daemon keeps every window ready; a hotkey
 only sends it a signal.
 
 On Arch Linux install Rust, `gtk4`, `libadwaita`, `gtk4-layer-shell`,
-`wl-clipboard`, and `wtype`, then from the repository root run `make install`.
+`wl-clipboard`, `wtype`, and `playerctl`, then from the repository root run `make install`.
 This installs the app to `~/.local/bin` and prompts and a desktop entry under
 `~/.local/share`. Ensure `~/.local/bin` is on your PATH. Run
 `cognitive-popups doctor` to check your session and dependencies.

@@ -174,7 +174,12 @@ pub fn export(store: &LessonStore) -> Result<String, StoreError> {
     let mut out = String::new();
     let mut subjects = store.subjects()?;
     subjects.reverse();
-    for subject in subjects {
+    for (i, subject) in subjects.into_iter().enumerate() {
+        // A blank line between subjects, none after the last: a plan written
+        // in this format reads back byte for byte.
+        if i > 0 {
+            out.push('\n');
+        }
         out.push_str(&format!("# {}\nЦель: {}\n", subject.name, subject.goal));
         if let Some(deadline) = &subject.deadline {
             out.push_str(&format!("Срок: {deadline}\n"));
@@ -182,7 +187,6 @@ pub fn export(store: &LessonStore) -> Result<String, StoreError> {
         for topic in store.program(&subject.id)? {
             out.push_str(&format!("- {}\n", topic.title));
         }
-        out.push('\n');
     }
     Ok(out)
 }
@@ -278,5 +282,13 @@ mod tests {
         let text = export(&store).unwrap();
         let back = parse(&text).unwrap();
         assert_eq!(back, parse(PLAN).unwrap());
+    }
+
+    #[test]
+    fn a_plan_in_the_export_format_reads_back_byte_for_byte() {
+        let plan = "# A\nЦель: x\nСрок: 2026-12-14\n- t1\n- t2\n\n# B\nЦель: y\n";
+        let mut store = LessonStore::open_in_memory().unwrap();
+        apply(&mut store, &parse(plan).unwrap(), 1).unwrap();
+        assert_eq!(export(&store).unwrap(), plan);
     }
 }

@@ -195,12 +195,16 @@ name = "cognitive-exoskeleton-practice"
 version = "0.1.0"
 dependencies = [
  "cognitive-exoskeleton-ai",
+ "cognitive-exoskeleton-domain",
  "cognitive-exoskeleton-journal",
+ "cognitive-exoskeleton-lessons",
  "cognitive-exoskeleton-memory",
  "cognitive-exoskeleton-units",
+ "rusqlite",
  "serde",
  "serde_json",
  "thiserror",
+ "time",
 ]
 
 [[package]]

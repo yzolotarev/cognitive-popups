@@ -411,6 +411,29 @@ impl Memory {
         )?)
     }
 
+    /// When the reader last answered this unit correctly (Good, by code or by
+    /// their own comparison): the start of the gap the «умение» route looks for.
+    pub fn last_correct_at(&self, unit: &str) -> Result<Option<i64>, MemoryError> {
+        Ok(self.connection.query_row(
+            "SELECT MAX(at) FROM memory_reviews WHERE unit_id = ?1 AND rating = 3",
+            [unit],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Suspended with its goal (Q-48), retired or merged into another unit: not
+    /// offered anywhere until the reader brings it back.
+    pub fn is_paused(&self, unit: &str) -> Result<bool, MemoryError> {
+        self.connection
+            .query_row(
+                "SELECT suspended_by IS NOT NULL OR retired = 1 FROM memory_cards WHERE unit_id = ?1",
+                [unit],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| MemoryError::NotEnrolled(unit.into()))
+    }
+
     pub fn review_count(&self, unit: &str) -> Result<usize, MemoryError> {
         let count: i64 = self.connection.query_row(
             "SELECT COUNT(*) FROM memory_reviews WHERE unit_id = ?1",

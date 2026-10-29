@@ -5,7 +5,7 @@ use std::path::Path;
 
 use cognitive_exoskeleton_journal::{Journal, citable_events, marked_text};
 use cognitive_exoskeleton_memory::Memory;
-use cognitive_exoskeleton_units::UnitStore;
+use cognitive_exoskeleton_units::{RegistryUnit, UnitStore};
 
 use crate::families::Family;
 use crate::recall::{DueUnit, EvidenceLine};
@@ -32,30 +32,39 @@ pub fn due_units(db: impl AsRef<Path>, at: i64) -> Result<Vec<DueUnit>, DueError
         let Some(unit) = registry.into_iter().find(|u| u.id == due.unit) else {
             continue;
         };
-        let sequences = store.events_of(&unit.id)?;
-        let events = journal.read_sequences(&sequences)?;
-        let evidence = citable_events(&events)
-            .into_iter()
-            .map(|stored| {
-                let (marker, text) = marked_text(stored);
-                EvidenceLine {
-                    sequence: stored.sequence,
-                    marker,
-                    text,
-                }
-            })
-            .collect();
-        let family = store.family(&unit.id)?.and_then(|f| Family::parse(&f));
-        units.push(DueUnit {
-            family,
-            id: unit.id,
-            title: unit.title,
-            action: unit.action,
-            kind: unit.kind,
-            evidence,
-        });
+        units.push(load_unit(&store, &journal, unit)?);
     }
     Ok(units)
+}
+
+/// A unit with its evidence from the journal, ready for a recall card.
+pub fn load_unit(
+    store: &UnitStore,
+    journal: &Journal,
+    unit: RegistryUnit,
+) -> Result<DueUnit, DueError> {
+    let sequences = store.events_of(&unit.id)?;
+    let events = journal.read_sequences(&sequences)?;
+    let evidence = citable_events(&events)
+        .into_iter()
+        .map(|stored| {
+            let (marker, text) = marked_text(stored);
+            EvidenceLine {
+                sequence: stored.sequence,
+                marker,
+                text,
+            }
+        })
+        .collect();
+    let family = store.family(&unit.id)?.and_then(|f| Family::parse(&f));
+    Ok(DueUnit {
+        family,
+        id: unit.id,
+        title: unit.title,
+        action: unit.action,
+        kind: unit.kind,
+        evidence,
+    })
 }
 
 /// Every current unit is on the schedule (B35: units always rest on the reader's

@@ -189,6 +189,9 @@ pub fn prompts_dir() -> PathBuf {
         .map(|d| d.join("cognitive-popups/prompts"));
     match installed {
         Some(dir) if dir.is_dir() => dir,
+        _ if PathBuf::from("/usr/share/cognitive-popups/prompts").is_dir() => {
+            PathBuf::from("/usr/share/cognitive-popups/prompts")
+        }
         _ => PathBuf::from(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../docs/v2/port/prompts"

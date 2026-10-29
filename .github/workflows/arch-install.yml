@@ -1,0 +1,46 @@
+name: Arch clean installation
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    timeout-minutes: 40
+    steps:
+      - run: pacman -Syu --noconfirm git rust gtk4 libadwaita gtk4-layer-shell pkgconf wl-clipboard wtype libsecret sway grim dbus ttf-dejavu sudo
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - name: Prepare unprivileged builder
+        run: |
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Build and install the package
+        run: |
+          mkdir -p /tmp/pkgbuild
+          cp packaging/PKGBUILD /tmp/pkgbuild/PKGBUILD
+          sed -i "s|git+https://github.com/yzolotarev/cognitive-popups.git|git+file://$GITHUB_WORKSPACE#commit=$GITHUB_SHA|" /tmp/pkgbuild/PKGBUILD
+          chown -R builder:builder /tmp/pkgbuild
+          cd /tmp/pkgbuild
+          su builder -c 'makepkg -s --noconfirm'
+          pacman -U --noconfirm ./*.pkg.tar.zst
+      - name: Check installed application
+        run: |
+          su builder -c 'cognitive-popups doctor'
+          test -f /usr/share/cognitive-popups/prompts/NEW_formula_rule.md
+      - name: Build screenshot binary
+        run: su builder -c 'cargo build --locked --manifest-path apps/desktop/Cargo.toml'
+      - name: Capture windows
+        run: su builder -c 'dbus-run-session -- apps/desktop/tools/screenshots.sh /tmp/screenshots'
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: arch-install-screenshots
+          path: /tmp/screenshots

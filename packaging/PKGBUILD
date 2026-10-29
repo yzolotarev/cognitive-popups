@@ -1,0 +1,29 @@
+# Maintainer: Cognitive Popups contributors
+pkgname=cognitive-popups-git
+pkgver=0.1.0.r0.g0000000
+pkgrel=1
+pkgdesc='Learning tools and popups for Wayland'
+arch=('x86_64')
+url='https://github.com/yzolotarev/cognitive-popups'
+license=('MIT')
+depends=('gtk4' 'libadwaita' 'gtk4-layer-shell' 'wl-clipboard' 'wtype' 'libsecret')
+makedepends=('git' 'rust' 'pkgconf')
+optdepends=('hyprland: recommended compositor' 'gnome-keyring: Secret Service storage' 'waybar: StatusNotifier tray')
+source=('cognitive-popups::git+https://github.com/yzolotarev/cognitive-popups.git')
+sha256sums=('SKIP')
+
+pkgver() {
+  cd cognitive-popups
+  printf '0.1.0.r%s.g%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  cd cognitive-popups
+  cargo build --release --locked --manifest-path apps/desktop/Cargo.toml
+}
+
+package() {
+  cd cognitive-popups
+  make install PREFIX=/usr DESTDIR="$pkgdir"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

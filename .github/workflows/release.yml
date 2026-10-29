@@ -1,0 +1,22 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    steps:
+      - name: Install dependencies
+        run: pacman -Syu --noconfirm git rust gtk4 libadwaita gtk4-layer-shell pkgconf github-cli
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Build and stage
+        run: |
+          make install PREFIX=/usr DESTDIR="$RUNNER_TEMP/stage"
+          tar -C "$RUNNER_TEMP/stage" -czf cognitive-popups-linux-x86_64.tar.gz usr
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" cognitive-popups-linux-x86_64.tar.gz --generate-notes

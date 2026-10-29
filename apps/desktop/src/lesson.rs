@@ -501,7 +501,13 @@ impl LessonUi {
         let mut rows: Vec<gtk::Widget> = Vec::new();
         if let Ok(Some(bridge)) = store.bridge(now) {
             rows.push(ui::text(&bridge.label, &["cp-footnote", "cp-secondary"]).upcast());
-            rows.push(ui::text(&format!("«{}»", bridge.text), &["cp-quote"]).upcast());
+            rows.push(
+                ui::text(
+                    &format!("«{}»", formula::plain(&bridge.text)),
+                    &["cp-quote"],
+                )
+                .upcast(),
+            );
         }
         rows.push(ui::text(STEP_PROMPT, &["cp-body"]).upcast());
         let entry = ui::field("читаю");
@@ -647,11 +653,12 @@ impl LessonUi {
             .as_deref()
             .and_then(|l| store.items(l).ok())
             .and_then(|items| items.into_iter().find(|i| i.status == ItemStatus::Current))
-            .map(|i| format!(" · {}", i.text))
+            .map(|i| format!(" · {}", formula::plain(&i.text)))
             .unwrap_or_default();
-        self.0
-            .clock_info
-            .set_text(&format!("{progress} · {}{current}", step.text));
+        self.0.clock_info.set_text(&format!(
+            "{progress} · {}{current}",
+            formula::plain(&step.text)
+        ));
         true
     }
 
@@ -702,7 +709,7 @@ impl LessonUi {
             self.end_show(&[
                 header.upcast(),
                 ui::text(&question, &["cp-body"]).upcast(),
-                ui::text(&step.text, &["cp-quote"]).upcast(),
+                ui::text(&formula::plain(&step.text), &["cp-quote"]).upcast(),
                 ui::actions(&buttons).upcast(),
             ]);
         }
@@ -727,7 +734,7 @@ impl LessonUi {
         let worked = gtk::CheckButton::with_label(
             &current
                 .as_ref()
-                .map(|i| format!("Проработал: {}", i.text))
+                .map(|i| format!("Проработал: {}", formula::plain(&i.text)))
                 .unwrap_or_default(),
         );
         if current.is_some() {

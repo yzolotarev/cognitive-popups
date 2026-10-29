@@ -7,10 +7,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use cognitive_exoskeleton_ai::{
-    AiConfig, Client, DEFAULT_GEMINI_FALLBACKS, DEFAULT_GEMINI_MODEL, Priority, PromptStore,
-    ProviderKind, Request, UreqTransport,
-};
+use cognitive_exoskeleton_ai::{AiConfig, Client, Priority, PromptStore, Request, UreqTransport};
 use cognitive_exoskeleton_capture as capture;
 use cognitive_exoskeleton_domain::{LessonId, NewEvent, OperationId, Payload};
 use cognitive_exoskeleton_journal::{Journal, citable_events, marked_text};
@@ -72,6 +69,7 @@ usage:
   cognitive-exoskeleton mrt engaged|close|summary --db <path> ...   analysis: tools/mrt_analysis.py
   cognitive-exoskeleton capture [--from-clipboard] [--db <path>]   selection → JSON (S6)
   cognitive-exoskeleton note add --db <path> [--anchor <selection>] <text…> | list | close <id> [--reopen]
+  cognitive-exoskeleton understand pick|words|explain|example|ladder|character --text <file> --prompts <dir> [--mine <four words>] [--target <text>] [<terms or question>]
 
 AI settings (environment):
   COGNITIVE_AI_PROVIDER   gemini (default) | openai_compatible
@@ -146,6 +144,7 @@ fn run(args: &[String]) -> Result<String, String> {
         Some("nudge") | Some("mrt") => return run_nudges(&args[0], &args[1..]),
         Some("capture") => return run_capture(&args[1..]),
         Some("note") => return run_note(&args[1..]),
+        Some("understand") => return run_understand(&args[1..]),
         _ => {}
     }
     let (command, rest) = match args {
@@ -823,6 +822,66 @@ fn json(value: &impl serde::Serialize) -> String {
     serde_json::to_string(value).unwrap_or_default()
 }
 
+/// Alt+W «помочь понять» (F-02…F-10) without a window.
+fn run_understand(args: &[String]) -> Result<String, String> {
+    use cognitive_exoskeleton_understand as understand;
+    let (command, rest) = args.split_first().ok_or("understand needs a command")?;
+    let (options, _, positional) =
+        parse_options(rest, &["--text", "--prompts", "--mine", "--target"], &[])?;
+    let text = match options.get("--text") {
+        Some(path) => std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?,
+        None => String::new(),
+    };
+    if command == "pick" {
+        let chosen = understand::pick(&[], !text.trim().is_empty(), understand::roll());
+        return Ok(chosen.map_or("нет материала", |m| m.name()).into());
+    }
+    let prompts = options.get("--prompts").ok_or("--prompts is required")?;
+    let prompts = PromptStore::from_dir(prompts).map_err(|e| e.to_string())?;
+    let config = ai_config_from_env()?;
+    let provider = config.provider_name();
+    let client = Client::new(config, UreqTransport::default());
+    let mechanic = understand::Mechanic::parse(command)
+        .ok_or_else(|| format!("unknown understand command {command}"))?;
+    let failed = |e: understand::UnderstandError| e.user_message(mechanic, provider);
+    let input = positional.join(" ");
+    match mechanic {
+        understand::Mechanic::Words => {
+            let cues = understand::words(&client, &prompts, &text, Priority::Foreground)
+                .map_err(failed)?;
+            match options.get("--mine") {
+                Some(mine) => {
+                    let mine = understand::own_words(mine);
+                    let comparison = understand::compare(&mine, &cues);
+                    Ok(json(
+                        &serde_json::json!({"cues": cues, "mine": mine, "comparison": comparison}),
+                    ))
+                }
+                None => Ok(json(&cues)),
+            }
+        }
+        understand::Mechanic::Explain if understand::looks_like_question(&input) => Ok(json(
+            &understand::answer_question(&client, &prompts, &text, &input).map_err(failed)?,
+        )),
+        understand::Mechanic::Explain => Ok(json(
+            &understand::explain_terms(&client, &prompts, &text, &input).map_err(failed)?,
+        )),
+        understand::Mechanic::Example => {
+            let request = (!input.is_empty()).then_some(input.as_str());
+            understand::example(&client, &prompts, &text, request).map_err(failed)
+        }
+        understand::Mechanic::Ladder => {
+            let target = options.get("--target").map(String::as_str).unwrap_or(&text);
+            Ok(json(
+                &understand::ladder(&client, &prompts, target, &text, &[]).map_err(failed)?,
+            ))
+        }
+        understand::Mechanic::Character => Ok(json(
+            &understand::character(&client, &prompts, &text).map_err(failed)?,
+        )),
+    }
+}
+
 /// Notes (Alt+E, F-12) from the command line.
 fn run_note(args: &[String]) -> Result<String, String> {
     let (command, rest) = args.split_first().ok_or("note needs a command")?;
@@ -1004,54 +1063,7 @@ fn parse_options(rest: &[String], valued: &[&str], flags: &[&str]) -> Result<Opt
 }
 
 fn ai_config_from_env() -> Result<AiConfig, String> {
-    let provider = match std::env::var("COGNITIVE_AI_PROVIDER").as_deref() {
-        Err(_) | Ok("gemini") => ProviderKind::Gemini,
-        Ok("openai_compatible") => ProviderKind::OpenaiCompatible,
-        Ok(other) => return Err(format!("unknown COGNITIVE_AI_PROVIDER {other}")),
-    };
-    let model = match (std::env::var("COGNITIVE_AI_MODEL"), provider) {
-        (Ok(model), _) => model,
-        (Err(_), ProviderKind::Gemini) => DEFAULT_GEMINI_MODEL.to_string(),
-        (Err(_), ProviderKind::OpenaiCompatible) => {
-            return Err("COGNITIVE_AI_MODEL is required for openai_compatible".into());
-        }
-    };
-    let base_url = std::env::var("COGNITIVE_AI_BASE_URL").ok();
-    let fallbacks = match (std::env::var("COGNITIVE_AI_FALLBACK_MODELS"), provider) {
-        (Ok(list), _) => list.split(',').map(str::to_string).collect(),
-        (Err(_), ProviderKind::Gemini) => DEFAULT_GEMINI_FALLBACKS
-            .iter()
-            .map(|m| m.to_string())
-            .collect(),
-        (Err(_), ProviderKind::OpenaiCompatible) => Vec::new(),
-    };
-    Ok(AiConfig::new(provider, model, base_url)
-        .with_fallbacks(fallbacks)
-        .with_key(read_key()?))
-}
-
-/// The key file must be private: a key readable by other users is refused rather
-/// than silently used (Q-69 keeps the file only as a fallback to the keyring).
-fn read_key() -> Result<Option<String>, String> {
-    if let Ok(path) = std::env::var("COGNITIVE_AI_KEY_FILE") {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&path)
-                .map_err(|e| format!("key file: {e}"))?
-                .permissions()
-                .mode();
-            if mode & 0o077 != 0 {
-                return Err(format!(
-                    "key file {path} is readable by others; run: chmod 600 {path}"
-                ));
-            }
-        }
-        return std::fs::read_to_string(&path)
-            .map(Some)
-            .map_err(|e| format!("key file: {e}"));
-    }
-    Ok(std::env::var("COGNITIVE_AI_KEY").ok())
+    cognitive_exoskeleton_ai::config_from_env()
 }
 
 fn parse_event(json: &str) -> Result<NewEvent, String> {

@@ -220,6 +220,59 @@ pub fn parse_json_object(text: &str) -> Result<Value, String> {
     Ok(value)
 }
 
+/// The provider, model and key from `COGNITIVE_AI_*` (shared by the CLI and
+/// the desktop app).
+pub fn config_from_env() -> Result<AiConfig, String> {
+    let provider = match std::env::var("COGNITIVE_AI_PROVIDER").as_deref() {
+        Err(_) | Ok("gemini") => ProviderKind::Gemini,
+        Ok("openai_compatible") => ProviderKind::OpenaiCompatible,
+        Ok(other) => return Err(format!("unknown COGNITIVE_AI_PROVIDER {other}")),
+    };
+    let model = match (std::env::var("COGNITIVE_AI_MODEL"), provider) {
+        (Ok(model), _) => model,
+        (Err(_), ProviderKind::Gemini) => DEFAULT_GEMINI_MODEL.to_string(),
+        (Err(_), ProviderKind::OpenaiCompatible) => {
+            return Err("COGNITIVE_AI_MODEL is required for openai_compatible".into());
+        }
+    };
+    let base_url = std::env::var("COGNITIVE_AI_BASE_URL").ok();
+    let fallbacks = match (std::env::var("COGNITIVE_AI_FALLBACK_MODELS"), provider) {
+        (Ok(list), _) => list.split(',').map(str::to_string).collect(),
+        (Err(_), ProviderKind::Gemini) => DEFAULT_GEMINI_FALLBACKS
+            .iter()
+            .map(|m| m.to_string())
+            .collect(),
+        (Err(_), ProviderKind::OpenaiCompatible) => Vec::new(),
+    };
+    Ok(AiConfig::new(provider, model, base_url)
+        .with_fallbacks(fallbacks)
+        .with_key(read_key()?))
+}
+
+/// The key file must be private: a key readable by other users is refused rather
+/// than silently used (Q-69 keeps the file only as a fallback to the keyring).
+pub fn read_key() -> Result<Option<String>, String> {
+    if let Ok(path) = std::env::var("COGNITIVE_AI_KEY_FILE") {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path)
+                .map_err(|e| format!("key file: {e}"))?
+                .permissions()
+                .mode();
+            if mode & 0o077 != 0 {
+                return Err(format!(
+                    "key file {path} is readable by others; run: chmod 600 {path}"
+                ));
+            }
+        }
+        return std::fs::read_to_string(&path)
+            .map(Some)
+            .map_err(|e| format!("key file: {e}"));
+    }
+    Ok(std::env::var("COGNITIVE_AI_KEY").ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

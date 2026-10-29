@@ -2,12 +2,15 @@
 //! signals over a socket.
 //!
 //!   cognitive-popups daemon            start once per session (exec-once)
-//!   cognitive-popups signal <window>   what a hotkey runs; windows: note
+//!   cognitive-popups signal <window> [<mechanic>]   what a hotkey runs; windows: note, understand
 //!   cognitive-popups hyprland-config   the lines for hyprland.conf
 
+mod ctx;
 mod note;
 mod popup;
 mod theme;
+mod ui;
+mod understand;
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -16,9 +19,10 @@ use std::process::{Command, ExitCode};
 
 use adw::prelude::*;
 use cognitive_exoskeleton_capture::{self as capture, Wayland};
+use cognitive_exoskeleton_understand::{self as understand_core, Mechanic};
 use gtk::glib;
 
-const WINDOWS: [&str; 1] = ["note"];
+const WINDOWS: [&str; 3] = ["note", "understand", "hide"];
 
 fn socket() -> PathBuf {
     let dir = std::env::var_os("XDG_RUNTIME_DIR").unwrap_or_else(|| "/tmp".into());
@@ -43,7 +47,10 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("daemon") => daemon(),
-        Some("signal") => signal(args.get(1).map(String::as_str)),
+        Some("signal") => signal(
+            args.get(1).map(String::as_str),
+            args.get(2).map(String::as_str),
+        ),
         Some("hyprland-config") => {
             print!("{}", hyprland_config());
             ExitCode::SUCCESS
@@ -60,13 +67,18 @@ fn main() -> ExitCode {
 
 /// What a hotkey runs. With no daemon the reader gets a system notification
 /// instead of silence (Q-74).
-fn signal(window: Option<&str>) -> ExitCode {
+fn signal(window: Option<&str>, argument: Option<&str>) -> ExitCode {
     let Some(window) = window.filter(|w| WINDOWS.contains(w)) else {
         eprintln!("unknown window; one of: {}", WINDOWS.join(", "));
         return ExitCode::from(2);
     };
-    let sent = UnixStream::connect(socket())
-        .and_then(|mut s| s.write_all(format!("show {window}\n").as_bytes()));
+    let sent = UnixStream::connect(socket()).and_then(|mut s| {
+        let line = match argument {
+            Some(argument) => format!("show {window} {argument}\n"),
+            None => format!("show {window}\n"),
+        };
+        s.write_all(line.as_bytes())
+    });
     if sent.is_err() {
         let _ = Command::new("notify-send")
             .args([
@@ -85,6 +97,7 @@ fn hyprland_config() -> String {
      # A Lua config needs the same commands in its own bind syntax.\n\
      exec-once = cognitive-popups daemon\n\
      bind = ALT, E, exec, cognitive-popups signal note\n\
+     bind = ALT, W, exec, cognitive-popups signal understand\n\
      layerrule = blur, cognitive-.*\n\
      layerrule = ignorezero, cognitive-.*\n"
         .to_string()
@@ -97,11 +110,33 @@ fn daemon() -> ExitCode {
         .build();
     app.connect_activate(|app| {
         theme::install();
-        let note = note::NoteWindow::new(app, database());
-        listen(move |window| {
-            if window == "note" {
-                // The selection only: instant, and never a Ctrl+C into our own window.
-                note.open(capture::selection(&Wayland).ok());
+        let ctx = ctx::Ctx::load(database());
+        let note = note::NoteWindow::new(app, ctx.db.clone());
+        let understand = understand::UnderstandWindow::new(app, ctx.clone());
+        listen(move |line| {
+            let (window, argument) = line.split_once(' ').unwrap_or((line, ""));
+            // The selection only: instant, and never a Ctrl+C into our own window.
+            let selection = || capture::selection(&Wayland).ok();
+            match window {
+                "note" => note.open(selection()),
+                // `signal understand example`: that help, not a weighted pick.
+                // `signal understand own [words…]`: [Сначала сам] at once; the
+                // words, if given, are compared (screenshots without a keyboard).
+                "understand" if argument.starts_with("own") => {
+                    understand.open(selection(), Some(Mechanic::Words));
+                    understand.write_own();
+                    let mine = understand_core::own_words(&argument["own".len()..]);
+                    if !mine.is_empty() {
+                        understand.compare(mine);
+                    }
+                }
+                "understand" => understand.open(selection(), Mechanic::parse(argument)),
+                // `signal hide`: every window away (screenshots, scripts).
+                "hide" => {
+                    note.hide();
+                    understand.hide();
+                }
+                _ => {}
             }
         });
         println!("ready");

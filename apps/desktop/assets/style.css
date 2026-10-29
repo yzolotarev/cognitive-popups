@@ -63,3 +63,38 @@ button.cp-default {
 
 .cp-success { color: @cp_success; }
 .cp-error   { color: @cp_error; }
+
+/* Body text of an answer. */
+.cp-body { font-size: 13px; }
+
+/* §7: a small «ИИ» mark next to every model answer. */
+.cp-badge {
+  font-size: 10px;
+  padding: 0 4px;
+  border: 1px solid @cp_separator;
+  border-radius: 4px;
+  color: @cp_text_secondary;
+}
+
+/* Manual choice inside a window: quiet text buttons; the current one in accent. */
+button.cp-choice {
+  background: transparent;
+  box-shadow: none;
+  padding: 2px 6px;
+  min-height: 20px;
+  font-size: 12px;
+  color: @cp_text_secondary;
+}
+button.cp-choice.cp-current { color: @cp_accent_text; font-weight: 600; }
+
+/* A match found by code (own four words): highlighted, never counted. */
+.cp-match { color: @cp_accent_text; font-weight: 600; }
+
+entry.cp-field {
+  background: @cp_surface;
+  color: @cp_text;
+  border-radius: 7px;
+  min-height: 28px;
+}
+
+separator { background: @cp_separator; min-height: 1px; }

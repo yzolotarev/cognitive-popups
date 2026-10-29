@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Every window in light and dark, on a headless sway: what CI uploads for review.
-# Needs sway, grim, wl-clipboard, dbus. Usage: tools/screenshots.sh <out-dir>
+# The model is replaced by tools/fixture.json. Needs sway, grim, wl-clipboard,
+# dbus. Usage: tools/screenshots.sh <out-dir>
 set -euo pipefail
 out=$(realpath -m "${1:-screenshots}")
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -15,17 +16,39 @@ sway_pid=$!
 trap 'kill $sway_pid 2>/dev/null || true' EXIT
 for _ in $(seq 50); do [ -S "$XDG_RUNTIME_DIR/wayland-1" ] && break; sleep 0.1; done
 
+printf 'Метод Ньютона сходится квадратично, если начальное приближение достаточно близко к корню.' |
+  wl-copy --primary
+
+# name|window|argument
+shots=(
+  "note|note"
+  "understand-words|understand|words"
+  "understand-own|understand|own"
+  "understand-compare|understand|own ранг, ступени, корень, метод"
+  "understand-explain|understand|explain"
+  "understand-example|understand|example"
+  "understand-ladder|understand|ladder"
+  "understand-character|understand|character"
+)
+
 for theme in light dark; do
-  printf 'Метод Ньютона сходится квадратично, если начальное приближение достаточно близко к корню.' |
-    wl-copy --primary
-  COGNITIVE_THEME=$theme COGNITIVE_DB="$out/notes.db" COGNITIVE_CURSOR=300,200 \
+  COGNITIVE_THEME=$theme COGNITIVE_DB="$out/journal-$theme.db" COGNITIVE_CURSOR=300,200 \
+    COGNITIVE_AI_FIXTURE="$here/tools/fixture.json" \
     dbus-run-session "$bin" daemon >"$out/daemon-$theme.log" 2>&1 &
   daemon=$!
   for _ in $(seq 50); do grep -q ready "$out/daemon-$theme.log" && break; sleep 0.1; done
-  "$bin" signal note
-  sleep 1
-  grim -g "250,150 520x330" "$out/note-$theme.png"
-  pkill -P $daemon || true; kill $daemon 2>/dev/null || true
+  sleep 2 # the first window of a fresh process waits for fonts
+  for shot in "${shots[@]}"; do
+    IFS='|' read -r name window argument <<<"$shot"
+    # shellcheck disable=SC2086
+    "$bin" signal $window ${argument:+"$argument"}
+    sleep 1.2
+    grim -g "250,150 640x560" "$out/$name-$theme.png"
+    "$bin" signal hide
+    sleep 0.3
+  done
+  pkill -P $daemon || true
+  kill $daemon 2>/dev/null || true
   wait $daemon 2>/dev/null || true
 done
 echo "screenshots in $out"

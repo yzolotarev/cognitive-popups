@@ -4,6 +4,7 @@
 @define-color cp_text rgba(0,0,0,0.88);
 @define-color cp_text_secondary #6e6e73;
 @define-color cp_accent #1e6ef4;
+@define-color cp_accent_text #1e6ef4;
 @define-color cp_on_accent #ffffff;
 @define-color cp_separator rgba(0,0,0,0.10);
 @define-color cp_focus #1e6ef4;

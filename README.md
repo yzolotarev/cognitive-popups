@@ -174,7 +174,16 @@ tools/screenshots.sh shots/                                    # every window, l
 ```
 
 Alt+E is a note at the selected text: the selection becomes the quote, Enter
-saves, Shift+Enter is a new line, Esc closes and keeps the draft. Notes also
+saves, Shift+Enter is a new line, Esc closes and keeps the draft.
+
+Alt+W helps to understand the selection: four words (70 %), an explanation or an
+answer to a question (10 %), an example (10 %), a step from what you know (5 %)
+or a story by one fixed character (5 %); the row at the bottom switches by hand.
+[Сначала сам] hides the model's four words until you write yours; matches are
+highlighted by code, never scored. Without windows:
+`cargo run -- understand words|explain|example|ladder|character --text <file> --prompts docs/v2/port/prompts`.
+`COGNITIVE_AI_FIXTURE=apps/desktop/tools/fixture.json` replaces the model with
+canned answers (screenshots, demos without a key). Notes also
 work without windows: `cargo run -- note add|list|close`. Needs `gtk4-layer-shell`.
 
 ## Requirements baseline (P0)

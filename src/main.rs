@@ -67,6 +67,7 @@ usage:
                                       unfinished whole tasks («продолжить задачу»)
   cognitive-exoskeleton practice old --db <path> [--text <file>] [--now <t>]   archive fragments for «старый материал»
   cognitive-exoskeleton practice skill --db <path> [--now <t>]   units admitted to «умение», and the refusals
+  cognitive-exoskeleton practice skill list|suspend|resume|retire [<unit>] --db <path>   the reader's pause/снятие (B67)
   cognitive-exoskeleton practice check --family <name> --seed <n> --answer <text>
   cognitive-exoskeleton nudge consent --db <path> <opportunity|daily|background_recording|experiments> <on|off>
   cognitive-exoskeleton nudge check --db <path> --kind <opportunity|daily> --topic <t> [--busy] [--media]
@@ -823,6 +824,22 @@ fn run_practice_stores(
             json(serde_json::json!({"fragments": fragments}))
         }
         // The admission rule per unit: who may be practised and why not the rest.
+        "skill" if !positional.is_empty() => {
+            use cognitive_exoskeleton_practice::standing::{self, Action, SkillStandings};
+            let sub = positional[0].as_str();
+            if sub == "list" {
+                let held = SkillStandings::open(db)
+                    .and_then(|s| s.held())
+                    .map_err(|e| e.to_string())?;
+                return json(serde_json::json!({"held": held}));
+            }
+            let action = Action::parse(sub).ok_or("skill [list|suspend|resume|retire <unit>]")?;
+            let unit = positional
+                .get(1)
+                .ok_or("skill suspend|resume|retire <unit>")?;
+            let change = standing::apply(db, unit, action, at).map_err(|e| e.to_string())?;
+            json(serde_json::json!({"change": change}))
+        }
         "skill" => {
             let survey = skill::survey(db, at).map_err(|e| e.to_string())?;
             let admitted: Vec<_> = survey

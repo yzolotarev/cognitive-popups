@@ -6,11 +6,16 @@
 //! (INV-02). An unfinished lesson is resumed, never silently closed (INV-08).
 
 mod context;
+mod import;
 mod plan;
 mod rules;
 mod store;
 
 pub use context::gather;
+pub use import::{
+    ImportError, Imported, SubjectDraft, apply as import_subjects, export as export_subjects,
+    parse as parse_subjects,
+};
 pub use plan::{
     Context, Criterion, PLAN_PROMPT, Plan, PlanError, PlanItemDraft, ProgramView, generate,
     plan_check, validate,
@@ -20,5 +25,5 @@ pub use rules::{
 };
 pub use store::{
     FeynmanRecord, FeynmanStatus, ItemStatus, Journey, Lesson, LessonStore, Outcome, PlanItem,
-    Step, StoreError, Subject, Topic,
+    Step, StoreError, Subject, Topic, end_of_day,
 };

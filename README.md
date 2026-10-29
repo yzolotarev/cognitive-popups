@@ -221,6 +221,20 @@ When the lesson ends, its events become learning units in the background and a
 notice in the corner says how many. Without windows:
 `cargo run -- subject add|list`, `lesson plan|show|item|close`, `step start|finish|bridge`.
 
+To set up all subjects at once, write them in one text file and run
+`cognitive-popups subjects import plan.md` (check first with `--dry-run`;
+`cognitive-popups subjects export` prints the current plan in the same format):
+
+```text
+# Теория вероятностей
+Цель: решать задачи на Байеса и ЦПТ без подсказок
+Срок: 2026-12-14
+- Комбинаторика
+- Формула Байеса
+```
+
+Importing again keeps your marks and removes nothing.
+
 The hub opens with Alt+S, from the tray icon (or `cognitive-popups signal hub`): AI key,
 provider and model with [Проверить]; subjects and their long-term goals; what
 may appear by itself (all off by default); units with [Освоил], [Объединить]

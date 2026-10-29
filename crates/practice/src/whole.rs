@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use cognitive_exoskeleton_ai::{Client, Priority, PromptStore, Request, Transport};
+use cognitive_exoskeleton_ai::{Client, FORMULA_RULE, Priority, PromptStore, Request, Transport};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -20,6 +20,7 @@ pub const FORM_RULES: &str = "tasks__form_rules";
 pub const DEFAULT_TYPE: u8 = 1;
 const MAX_ANCHOR_WORDS: usize = 12;
 /// The windows show plain text (DESIGN.md): no LaTeX, no Markdown.
+/// Without `NEW_formula_rule.md` (an old prompts folder): plain Unicode.
 pub const PLAIN_TEXT: &str = "Пиши формулы обычным текстом Unicode, как человек от руки: x², 2·3, 12 : 4 = 3, [0, 1]. Без LaTeX (никаких $…$ и \\), без разметки Markdown (никаких **, #, списков со звёздочками).";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,7 +195,7 @@ pub fn whole_task<T: Transport>(
         .replace("{by_topic}", &by_topic)
         .replace("{form}", &format!("\n\n{form}"))
         + "\n\n"
-        + PLAIN_TEXT;
+        + prompts.get(FORMULA_RULE).unwrap_or(PLAIN_TEXT);
     let request = Request {
         system,
         input: format!("МАТЕРИАЛ:\n{material}"),
@@ -235,7 +236,11 @@ pub fn whole_task<T: Transport>(
         .trim()
         .to_string();
     let solution = client.complete(&Request {
-        system: format!("{}\n\n{PLAIN_TEXT}", kind.solution_prompt),
+        system: format!(
+            "{}\n\n{}",
+            kind.solution_prompt,
+            prompts.get(FORMULA_RULE).unwrap_or(PLAIN_TEXT)
+        ),
         input: format!("МАТЕРИАЛ:\n{material}\n\nЗАДАЧА:\n{condition}"),
         max_tokens: 1500,
         json: false,

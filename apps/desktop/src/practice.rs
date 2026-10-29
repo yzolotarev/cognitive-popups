@@ -348,7 +348,7 @@ impl PracticeWindow {
             .as_ref()
             .map(|t| t.prompt.clone())
             .unwrap_or(card.question.clone());
-        content.append(&ui::text(&question, &["cp-body"]));
+        content.append(&ui::rich(&question, &["cp-body"], WIDTH));
         let entry = ui::field("твой ответ");
         content.append(&entry);
         let answer = ui::button("Ответ", &["cp-default"]);
@@ -612,7 +612,7 @@ impl PracticeWindow {
             this.feedback(q.clone(), explanation);
         });
         self.show(&[
-            ui::text(&question.question, &["cp-body"]).upcast(),
+            ui::rich(&question.question, &["cp-body"], WIDTH),
             area.upcast(),
             ui::actions(&[&check]).upcast(),
         ]);
@@ -649,8 +649,11 @@ impl PracticeWindow {
                         line.append(&ui::ai_badge());
                         content.append(&line);
                         for gap in gaps {
-                            content
-                                .append(&ui::text(&format!("• {}", gap.description), &["cp-body"]));
+                            content.append(&ui::rich(
+                                &format!("• {}", gap.description),
+                                &["cp-body"],
+                                WIDTH,
+                            ));
                         }
                         if let Some(q) = follow_up {
                             content.append(&ui::text(&q, &["cp-callout", "cp-secondary"]));
@@ -893,12 +896,12 @@ impl ProbePage {
                             &format!("Целая задача · {type_title}"),
                             &["cp-footnote", "cp-secondary"],
                         ));
-                        content.append(&ui::text(&condition, &["cp-body"]));
+                        content.append(&ui::rich(&condition, &["cp-body"], WIDTH));
                         let show = ui::button("Решение", &[]);
                         let c = content.clone();
                         show.connect_clicked(move |b| {
                             b.set_visible(false);
-                            c.append(&ui::text(&solution, &["cp-callout"]));
+                            c.append(&ui::rich(&solution, &["cp-callout"], WIDTH));
                         });
                         content.append(&ui::actions(&[&show]));
                     }

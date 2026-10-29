@@ -74,6 +74,7 @@ usage:
   cognitive-exoskeleton lesson plan --db <path> --prompts <dir> --subject <id> [--thoughts <text>] [--text <file>] | show | item <id> <status> | close [--remaining <text>]
   cognitive-exoskeleton step start --db <path> [--path 1|3|5|inf] [<minutes> <text>] | finish done|partly|not [--takeaway <text>] | bridge
   cognitive-exoskeleton resume --db <path>
+  cognitive-exoskeleton formula <LaTeX>
   cognitive-exoskeleton understand pick|words|explain|example|ladder|character --text <file> --prompts <dir> [--mine <four words>] [--target <text>] [<terms or question>]
 
 AI settings (environment):
@@ -151,6 +152,7 @@ fn run(args: &[String]) -> Result<String, String> {
         Some("note") => return run_note(&args[1..]),
         Some("understand") => return run_understand(&args[1..]),
         Some("resume") => return run_resume(&args[1..]),
+        Some("formula") => return run_formula(&args[1..]),
         Some("hypothesis") => return run_hypothesis(&args[1..]),
         Some("lesson") | Some("subject") | Some("step") => return run_lesson(&args[0], &args[1..]),
         _ => {}
@@ -828,6 +830,24 @@ fn fresh_roll() -> f64 {
 
 fn json(value: &impl serde::Serialize) -> String {
     serde_json::to_string(value).unwrap_or_default()
+}
+
+/// A formula through the strict parser (B53): Unicode and the Typst source,
+/// or why it is shown as text.
+fn run_formula(args: &[String]) -> Result<String, String> {
+    use cognitive_exoskeleton_formula as formula;
+    let tex = args.join(" ");
+    if tex.trim().is_empty() {
+        return Err("formula needs a LaTeX formula".into());
+    }
+    Ok(match formula::parse(&tex) {
+        Ok(nodes) => format!(
+            "unicode: {}\ntypst:   {}",
+            formula::to_unicode(&nodes),
+            formula::to_typst(&nodes)
+        ),
+        Err(e) => format!("as text: {} ({e})", formula::loose(&tex)),
+    })
 }
 
 /// Alt+B (F-43) without a window: the last place and the reader's last word.

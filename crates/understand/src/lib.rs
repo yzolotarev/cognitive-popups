@@ -146,10 +146,15 @@ pub const MAX_TERMS: usize = 4;
 pub const TERM_WORDS: usize = 80;
 pub const LADDER_KNOWN: usize = 8;
 
-fn system<'a>(prompts: &'a PromptStore, key: &str) -> Result<&'a str, UnderstandError> {
-    prompts
-        .get(key)
-        .map_err(|e| UnderstandError::Prompt(e.to_string()))
+/// The prompt; answers meant for reading get the formula rule (B53), the four
+/// words do not — they are names, not formulas.
+fn system(prompts: &PromptStore, key: &str) -> Result<String, UnderstandError> {
+    let prompt = if key == SEED_PROMPT {
+        prompts.get(key).map(str::to_string)
+    } else {
+        prompts.with_formulas(key)
+    };
+    prompt.map_err(|e| UnderstandError::Prompt(e.to_string()))
 }
 
 fn material(text: &str) -> Result<&str, UnderstandError> {
@@ -214,7 +219,7 @@ pub fn words<T: Transport>(
     priority: Priority,
 ) -> Result<Vec<Cue>, UnderstandError> {
     let text = material(text)?;
-    let mut request = request(system(prompts, SEED_PROMPT)?, text.to_string(), 500);
+    let mut request = request(&system(prompts, SEED_PROMPT)?, text.to_string(), 500);
     request.priority = priority;
     let value = client.complete_json(&request, cues_check)?;
     serde_json::from_value(value["cues"].clone())
@@ -325,7 +330,7 @@ pub fn explain_terms<T: Transport>(
         terms.join(", ")
     );
     let value = client.complete_json(
-        &request(system(prompts, CLARIFY_PROMPT)?, input_text, 800),
+        &request(&system(prompts, CLARIFY_PROMPT)?, input_text, 800),
         clarify_check(&terms),
     )?;
     let mut lines = Vec::new();
@@ -410,7 +415,7 @@ pub fn answer_question<T: Transport>(
         question.trim()
     );
     let value = client.complete_json(
-        &request(system(prompts, QUESTION_PROMPT)?, input, 800),
+        &request(&system(prompts, QUESTION_PROMPT)?, input, 800),
         question_check,
     )?;
     let basis = value["basis"]
@@ -461,7 +466,7 @@ pub fn example<T: Transport>(
     if let Some(r) = user_request {
         input.push_str(&format!("\n<USER_REQUEST>\n{r}\n</USER_REQUEST>"));
     }
-    let mut request = request(system(prompts, EXAMPLE_PROMPT)?, input, 800);
+    let mut request = request(&system(prompts, EXAMPLE_PROMPT)?, input, 800);
     request.json = false;
     let answer = client.complete(&request)?;
     let answer = answer.trim();
@@ -517,7 +522,7 @@ pub fn ladder<T: Transport>(
         known.join("\n")
     );
     let value = client.complete_json(
-        &request(system(prompts, LADDER_PROMPT)?, input, 600),
+        &request(&system(prompts, LADDER_PROMPT)?, input, 600),
         ladder_check,
     )?;
     let field = |n: &str| value[n].as_str().unwrap_or_default().trim().to_string();
@@ -559,7 +564,7 @@ pub fn character<T: Transport>(
     let text = material(text)?;
     let input = format!("<MATERIAL>\n{text}\n</MATERIAL>");
     let value = client.complete_json(
-        &request(system(prompts, CHARACTER_PROMPT)?, input, 900),
+        &request(&system(prompts, CHARACTER_PROMPT)?, input, 900),
         character_check,
     )?;
     let strings = |n: &str| -> Vec<String> {

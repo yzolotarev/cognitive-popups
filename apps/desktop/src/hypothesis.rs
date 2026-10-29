@@ -8,6 +8,7 @@ use std::rc::Rc;
 
 use cognitive_exoskeleton_capture::Captured;
 use cognitive_exoskeleton_domain::OperationId;
+use cognitive_exoskeleton_formula as formula;
 use cognitive_exoskeleton_hypotheses::{
     self as hypotheses, BOLDER, Check, Hypothesis, HypothesisError, Store, Verdict,
 };
@@ -289,7 +290,7 @@ impl HypothesisWindow {
         verdict.append(&ui::ai_badge());
         let content = ui::column(8);
         content.add_css_class("cp-content");
-        content.append(&ui::text(&check.reply, &["cp-body"]));
+        content.append(&ui::rich(&check.reply, &["cp-body"], WIDTH));
         if let Some(quote) = &check.quote {
             content.append(&ui::text(&format!("Опора: «{quote}»"), &["cp-quote"]));
         }
@@ -386,12 +387,18 @@ impl HypothesisWindow {
                 match result {
                     Ok(Some(r)) => {
                         content.append(&ui::markup(
-                            &format!("<b>Другой ракурс.</b> {}", ui::escape(&r.frame)),
+                            &format!(
+                                "<b>Другой ракурс.</b> {}",
+                                ui::escape(&formula::plain(&r.frame))
+                            ),
                             &["cp-body"],
                         ));
                         if !r.implication.is_empty() {
-                            content
-                                .append(&ui::text(&r.implication, &["cp-callout", "cp-secondary"]));
+                            content.append(&ui::rich(
+                                &r.implication,
+                                &["cp-callout", "cp-secondary"],
+                                WIDTH,
+                            ));
                         }
                         if let Some(basis) = &r.basis {
                             content.append(&ui::text(&format!("Опора: «{basis}»"), &["cp-quote"]));

@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use cognitive_exoskeleton_capture::Captured;
 use cognitive_exoskeleton_domain::LessonId;
+use cognitive_exoskeleton_formula as formula;
 use cognitive_exoskeleton_lessons::{
     self as lessons, ItemStatus, Lesson, LessonStore, Outcome, Plan, PlanError, Step, Subject,
 };
@@ -374,20 +375,24 @@ impl LessonUi {
         let content = ui::column(6);
         content.add_css_class("cp-content");
         let goal = ui::row(8);
-        goal.append(&ui::text(&lesson.goal, &["cp-headline"]));
+        goal.append(&ui::rich(&lesson.goal, &["cp-headline"], WIDTH));
         goal.append(&ui::ai_badge());
         content.append(&goal);
         if !lesson.why.is_empty() {
-            content.append(&ui::text(&lesson.why, &["cp-callout", "cp-secondary"]));
+            content.append(&ui::rich(
+                &lesson.why,
+                &["cp-callout", "cp-secondary"],
+                WIDTH,
+            ));
         }
         for criterion in &lesson.criteria {
-            content.append(&ui::text(&format!("• {criterion}"), &["cp-callout"]));
+            content.append(&ui::rich(&format!("• {criterion}"), &["cp-callout"], WIDTH));
         }
         content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         for item in items {
             let row = ui::row(6);
             let label = ui::text(
-                &format!("{} {}", item.status.icon(), item.text),
+                &format!("{} {}", item.status.icon(), formula::plain(&item.text)),
                 &["cp-body"],
             );
             label.set_hexpand(true);

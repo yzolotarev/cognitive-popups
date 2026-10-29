@@ -66,6 +66,7 @@ dependencies = [
  "cognitive-exoskeleton-ai",
  "cognitive-exoskeleton-capture",
  "cognitive-exoskeleton-domain",
+ "cognitive-exoskeleton-formula",
  "cognitive-exoskeleton-hypotheses",
  "cognitive-exoskeleton-journal",
  "cognitive-exoskeleton-lessons",
@@ -111,6 +112,13 @@ dependencies = [
  "thiserror",
  "time",
  "uuid",
+]
+
+[[package]]
+name = "cognitive-exoskeleton-formula"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

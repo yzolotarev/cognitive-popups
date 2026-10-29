@@ -10,6 +10,7 @@ mod help;
 mod hub;
 mod hypothesis;
 mod lesson;
+mod math;
 mod note;
 mod notice;
 mod pill;

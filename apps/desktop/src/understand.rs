@@ -8,6 +8,7 @@ use std::rc::Rc;
 
 use cognitive_exoskeleton_capture::Captured;
 use cognitive_exoskeleton_domain::OperationId;
+use cognitive_exoskeleton_formula as formula;
 use cognitive_exoskeleton_understand::{
     self as understand, Answer, Cache, Cue, Explanation, Known, Mechanic, Monologue, Rung, Store,
     UnderstandError,
@@ -447,7 +448,7 @@ impl UnderstandWindow {
                             &format!(
                                 "<b>{}</b> — {}",
                                 ui::escape(&line.term),
-                                ui::escape(&line.explanation)
+                                ui::escape(&formula::plain(&line.explanation))
                             ),
                             &["cp-body"],
                         )
@@ -492,19 +493,19 @@ impl UnderstandWindow {
             Ok(Outcome::Answer(answer)) => {
                 let mut rows: Vec<gtk::Widget> = vec![
                     ui::text(answer.grounding.label(), &["cp-footnote", "cp-secondary"]).upcast(),
-                    ui::text(&answer.answer, &["cp-body"]).upcast(),
+                    ui::rich(&answer.answer, &["cp-body"], WIDTH),
                 ];
                 if let Some(basis) = &answer.basis {
                     rows.push(ui::text(&format!("Опора: «{basis}»"), &["cp-quote"]).upcast());
                 }
                 self.show(&rows);
             }
-            Ok(Outcome::Example(text)) => self.show(&[ui::text(&text, &["cp-body"]).upcast()]),
+            Ok(Outcome::Example(text)) => self.show(&[ui::rich(&text, &["cp-body"], WIDTH)]),
             Ok(Outcome::Rung(rung)) => self.show_rung(rung),
             Ok(Outcome::Monologue(m)) => {
                 let mut rows: Vec<gtk::Widget> = vec![
                     ui::text(&m.role, &["cp-footnote", "cp-secondary"]).upcast(),
-                    ui::text(&m.monologue, &["cp-body"]).upcast(),
+                    ui::rich(&m.monologue, &["cp-body"], WIDTH),
                 ];
                 for fact in &m.facts {
                     rows.push(ui::text(&format!("Опора: «{fact}»"), &["cp-quote"]).upcast());
@@ -549,7 +550,7 @@ impl UnderstandWindow {
             });
         }
         self.show(&[
-            ui::text(&rung.text, &["cp-body"]).upcast(),
+            ui::rich(&rung.text, &["cp-body"], WIDTH),
             caption.upcast(),
             marks.upcast(),
         ]);

@@ -218,6 +218,11 @@ Alt+B returns you to where you stopped: the last document you selected text in
 refuted guess first. Alt+K lists the keys. Manual end-to-end check:
 [`docs/v2/E2E_P7.md`](docs/v2/E2E_P7.md).
 
+Formulas: the model writes LaTeX between `\( … \)` or `\[ … \]`; a strict parser
+(`crates/formula`) accepts a known subset and Typst, built into the app with its
+fonts, draws it. What does not parse is shown as readable Unicode, never as
+LaTeX source. Check one: `cargo run -- formula '\frac{1}{2x}'`.
+
 `COGNITIVE_AI_FIXTURE=apps/desktop/tools/fixture.json` replaces the model with
 canned answers (screenshots, demos without a key). Notes also
 work without windows: `cargo run -- note add|list|close`. Needs `gtk4-layer-shell`.

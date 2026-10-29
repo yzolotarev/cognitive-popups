@@ -111,10 +111,14 @@ pub struct Check {
 pub const BOLDER: &str = "Смелее: назови, что именно с чем связано и как. \
 Догадка может оказаться неверной — так и узнаем.";
 
-fn system<'a>(prompts: &'a PromptStore, key: &str) -> Result<&'a str, HypothesisError> {
-    prompts
-        .get(key)
-        .map_err(|e| HypothesisError::Prompt(e.to_string()))
+/// Answers meant for reading get the formula rule (B53); the nodes are words.
+fn system(prompts: &PromptStore, key: &str) -> Result<String, HypothesisError> {
+    let prompt = if key == NODES_PROMPT {
+        prompts.get(key).map(str::to_string)
+    } else {
+        prompts.with_formulas(key)
+    };
+    prompt.map_err(|e| HypothesisError::Prompt(e.to_string()))
 }
 
 fn json_request(system: &str, input: String) -> Request {
@@ -157,7 +161,7 @@ pub fn check<T: Transport>(
         if insist { "yes" } else { "no" }
     );
     let value = client.complete_json(
-        &json_request(system(prompts, CHECK_PROMPT)?, input),
+        &json_request(&system(prompts, CHECK_PROMPT)?, input),
         check_shape,
     )?;
     Ok(Check {
@@ -203,7 +207,7 @@ pub fn nodes<T: Transport>(
         used.join(", ")
     );
     let value = client.complete_json(
-        &json_request(system(prompts, NODES_PROMPT)?, input),
+        &json_request(&system(prompts, NODES_PROMPT)?, input),
         nodes_shape,
     )?;
     let words = value["words"]
@@ -256,7 +260,7 @@ pub fn reframe<T: Transport>(
     })
     .to_string();
     let value = client.complete_json(
-        &json_request(system(prompts, REFRAME_PROMPT)?, input),
+        &json_request(&system(prompts, REFRAME_PROMPT)?, input),
         reframe_shape,
     )?;
     if value["status"] != "proposal" {

@@ -102,3 +102,9 @@ separator { background: @cp_separator; min-height: 1px; }
 
 /* The «FSRS! N» pill: quiet, round, the material of every window. */
 window.cp-pill { border-radius: 999px; }
+
+/* Text with drawn formulas: looks like a label, selectable, not editable. */
+textview.cp-rich, textview.cp-rich text {
+  background: transparent;
+  color: @cp_text;
+}

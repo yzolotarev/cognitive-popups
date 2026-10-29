@@ -47,9 +47,10 @@ fn request(system: &str, input: String) -> Request {
     }
 }
 
-fn prompt<'a>(prompts: &'a PromptStore, key: &str) -> Result<&'a str, PracticeError> {
+/// With the formula rule (B53): the question and the gaps are read by a person.
+fn prompt(prompts: &PromptStore, key: &str) -> Result<String, PracticeError> {
     prompts
-        .get(key)
+        .with_formulas(key)
         .map_err(|e| PracticeError::Prompt(e.to_string()))
 }
 
@@ -71,7 +72,7 @@ pub fn question<T: Transport>(
     }
     let value = client.complete_json(
         &request(
-            prompt(prompts, QUESTION_PROMPT)?,
+            &prompt(prompts, QUESTION_PROMPT)?,
             format!("<SOURCE_BUFFER>\n{material}\n</SOURCE_BUFFER>"),
         ),
         question_shape,
@@ -117,7 +118,7 @@ pub fn check<T: Transport>(
         question.rubric
     );
     let value = client.complete_json(
-        &request(prompt(prompts, CHECK_PROMPT)?, input),
+        &request(&prompt(prompts, CHECK_PROMPT)?, input),
         feedback_shape,
     )?;
     if value["status"] == "passed" {

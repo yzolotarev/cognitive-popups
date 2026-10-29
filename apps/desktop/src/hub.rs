@@ -13,6 +13,7 @@ use cognitive_exoskeleton_ai::{
     AiConfig, Client, DEFAULT_GEMINI_FALLBACKS, DEFAULT_GEMINI_MODEL, Priority, ProviderKind,
     Request, UreqTransport,
 };
+use cognitive_exoskeleton_formula as formula;
 use cognitive_exoskeleton_hypotheses as hypotheses;
 use cognitive_exoskeleton_lessons::{LessonStore, Subject};
 use cognitive_exoskeleton_memory::Memory;
@@ -709,7 +710,13 @@ impl Hub {
             let row = adw::ActionRow::builder()
                 .title(glib::markup_escape_text(&format!("{mark} {}", h.text)).as_str())
                 .subtitle(
-                    glib::markup_escape_text(h.reply.as_deref().unwrap_or("не проверена")).as_str(),
+                    glib::markup_escape_text(
+                        &h.reply
+                            .as_deref()
+                            .map(formula::plain)
+                            .unwrap_or_else(|| "не проверена".into()),
+                    )
+                    .as_str(),
                 )
                 .subtitle_lines(2)
                 .build();
@@ -766,7 +773,7 @@ impl Hub {
                 _ => "закрыт".to_string(),
             };
             let row = adw::ActionRow::builder()
-                .title(glib::markup_escape_text(&lesson.goal).as_str())
+                .title(glib::markup_escape_text(&formula::plain(&lesson.goal)).as_str())
                 .subtitle(glib::markup_escape_text(&state).as_str())
                 .build();
             lessons_group.add(&row);

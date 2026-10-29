@@ -6,6 +6,13 @@ use std::process::{Command, Stdio};
 
 use crate::{Desktop, Window};
 
+/// Ctrl+C to the active window: Hyprland 0.56 (Lua) and the classic form. The key
+/// is the keycode (54 = the C key), not the letter: with a Russian layout active
+/// the letter «C» is not found («key not found») and nothing is copied.
+const LUA_COPY: &str =
+    "hl.dsp.send_shortcut({ mods = \"CTRL\", key = \"code:54\", window = \"activewindow\" })";
+const CLASSIC_COPY: &str = "sendshortcut CTRL,code:54,activewindow";
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Wayland;
 
@@ -79,11 +86,19 @@ impl Desktop for Wayland {
     }
 
     fn send_copy(&self) -> Result<(), String> {
-        let hyprland = Command::new("hyprctl")
-            .args(["dispatch", "sendshortcut", "CTRL,C,activewindow"])
-            .stdout(Stdio::null())
-            .status();
-        if hyprland.is_ok_and(|s| s.success()) {
+        // `hyprctl dispatch` exits 0 even when the dispatcher is unknown, so the
+        // answer text is checked: «ok» only. Hyprland 0.56 (Lua) and the classic
+        // syntax differ, both are tried before the `wtype` fallback.
+        let dispatched = |argument: &str| {
+            Command::new("hyprctl")
+                .args(["dispatch", argument])
+                .stderr(Stdio::null())
+                .output()
+                .is_ok_and(|o| {
+                    o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "ok"
+                })
+        };
+        if dispatched(LUA_COPY) || dispatched(CLASSIC_COPY) {
             return Ok(());
         }
         let wtype = Command::new("wtype")

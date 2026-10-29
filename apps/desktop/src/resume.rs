@@ -161,11 +161,15 @@ fn raise(title: &str) -> bool {
         .args(["dispatch", "focuswindow", &pattern])
         .output())
         || ok(Command::new("hyprctl")
-            .args([
-                "dispatch",
-                &format!("hl.dispatch(\"focuswindow\", \"{pattern}\")"),
-            ])
+            .args(["dispatch", &lua_focus(&pattern)])
             .output())
+}
+
+/// The Hyprland 0.56 (Lua) form of `focuswindow`; the pattern sits in a Lua
+/// string, so its backslashes and quotes are escaped once more.
+fn lua_focus(pattern: &str) -> String {
+    let escaped = pattern.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("hl.dsp.focus({{ window = \"{escaped}\" }})")
 }
 
 fn regex_escape(text: &str) -> String {
@@ -215,5 +219,18 @@ mod tests {
         assert_eq!(regex_escape("a (b).pdf"), "a \\(b\\)\\.pdf");
         assert_eq!(encode("Учёба 1"), "%D0%A3%D1%87%D1%91%D0%B1%D0%B0%201");
         assert!(when(1000, 1000 + 3 * 86_400).starts_with("3 "));
+    }
+
+    #[test]
+    fn lua_focus_is_hyprland_056_syntax_with_escaped_pattern() {
+        let pattern = format!("title:^({})$", regex_escape("API keys | Docs"));
+        assert_eq!(
+            lua_focus(&pattern),
+            "hl.dsp.focus({ window = \"title:^(API keys \\\\| Docs)$\" })"
+        );
+        assert_eq!(
+            lua_focus("title:\"x\""),
+            "hl.dsp.focus({ window = \"title:\\\"x\\\"\" })"
+        );
     }
 }

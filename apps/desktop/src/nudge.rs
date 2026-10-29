@@ -129,6 +129,9 @@ impl Card {
     pub fn hide(&self) {
         if self.shown.get().is_some() {
             self.finish(Response::Ignored);
+        } else {
+            // A fixture preview records nothing, but must still go away.
+            popup::hide(&self.window);
         }
     }
 }

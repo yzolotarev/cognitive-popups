@@ -221,7 +221,7 @@ When the lesson ends, its events become learning units in the background and a
 notice in the corner says how many. Without windows:
 `cargo run -- subject add|list`, `lesson plan|show|item|close`, `step start|finish|bridge`.
 
-The hub opens from the tray icon (or `cognitive-popups signal hub`): AI key,
+The hub opens with Alt+S, from the tray icon (or `cognitive-popups signal hub`): AI key,
 provider and model with [Проверить]; subjects and their long-term goals; what
 may appear by itself (all off by default); units with [Освоил], [Объединить]
 and [Отделить]; the history of guesses, notes, lessons and the trial. The key

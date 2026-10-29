@@ -1,4 +1,4 @@
-//! Alt+K — справка (F-46): the seven keys and where the rest lives. The keys
+//! Alt+K — справка (F-46): the eight keys and where the rest lives. The keys
 //! shown are the defaults of `hyprland-config` (Q-50: not read back from the
 //! compositor).
 
@@ -11,7 +11,7 @@ use crate::ui;
 pub const WIDTH: i32 = 420;
 pub const SIZE: (i32, i32) = (WIDTH, 360);
 
-pub const KEYS: [(&str, &str); 7] = [
+pub const KEYS: [(&str, &str); 8] = [
     (
         "Alt+W",
         "помочь понять: 4 слова, объяснение, пример, ступенька, Мужичок",
@@ -24,6 +24,7 @@ pub const KEYS: [(&str, &str); 7] = [
     ("Ctrl+Alt+P", "гипотеза и её проверка по тексту"),
     ("Alt+I", "урок на ~15 минут; во время шага — закончить шаг"),
     ("Alt+B", "продолжить с места, где остановился"),
+    ("Alt+S", "хаб: предметы и цели, единицы, история"),
     ("Alt+K", "эта справка"),
 ];
 

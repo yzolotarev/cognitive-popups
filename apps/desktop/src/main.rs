@@ -142,6 +142,7 @@ fn hyprland_config() -> String {
      bind = ALT, T, exec, cognitive-popups signal practice\n\
      bind = ALT, I, exec, cognitive-popups signal lesson\n\
      bind = ALT, B, exec, cognitive-popups signal resume\n\
+     bind = ALT, S, exec, cognitive-popups signal hub\n\
      bind = ALT, K, exec, cognitive-popups signal help\n\
      layerrule = blur, cognitive-.*\n\
      layerrule = ignorezero, cognitive-.*\n"
@@ -159,6 +160,7 @@ hl.bind("CTRL + ALT + P", hl.dsp.exec_cmd("cognitive-popups signal hypothesis"))
 hl.bind("ALT + T", hl.dsp.exec_cmd("cognitive-popups signal practice"))
 hl.bind("ALT + I", hl.dsp.exec_cmd("cognitive-popups signal lesson"))
 hl.bind("ALT + B", hl.dsp.exec_cmd("cognitive-popups signal resume"))
+hl.bind("ALT + S", hl.dsp.exec_cmd("cognitive-popups signal hub"))
 hl.bind("ALT + K", hl.dsp.exec_cmd("cognitive-popups signal help"))
 hl.layer_rule({ match = { namespace = "cognitive-.*" }, blur = true, ignore_alpha = 0.0 })
 "#

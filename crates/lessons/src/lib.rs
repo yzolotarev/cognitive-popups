@@ -12,12 +12,13 @@ mod store;
 
 pub use context::gather;
 pub use plan::{
-    Context, Criterion, PLAN_PROMPT, Plan, PlanError, PlanItemDraft, generate, plan_check, validate,
+    Context, Criterion, PLAN_PROMPT, Plan, PlanError, PlanItemDraft, ProgramView, generate,
+    plan_check, validate,
 };
 pub use rules::{
     Bridge, CYCLE_GAP, DEFAULT_MINUTES, MAX_MINUTES, READING, SESSION_GAP, parse_step,
 };
 pub use store::{
     FeynmanRecord, FeynmanStatus, ItemStatus, Journey, Lesson, LessonStore, Outcome, PlanItem,
-    Step, StoreError, Subject,
+    Step, StoreError, Subject, Topic,
 };

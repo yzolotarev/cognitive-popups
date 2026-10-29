@@ -250,3 +250,134 @@ fn subjects_can_be_listed_and_removed_without_deleting() {
         .unwrap();
     assert_eq!(rows, 1);
 }
+
+fn titles(topics: &[Topic]) -> Vec<&str> {
+    topics.iter().map(|t| t.title.as_str()).collect()
+}
+
+fn lines(items: &[&str]) -> Vec<String> {
+    items.iter().map(|t| t.to_string()).collect()
+}
+
+#[test]
+fn a_new_program_keeps_done_marks_and_hides_dropped_topics() {
+    let (mut store, subject) = store_with_subject();
+    store
+        .set_program(
+            &subject,
+            &lines(&["Классика", "", "  Геометрия  ", "Условная"]),
+            1,
+        )
+        .unwrap();
+    let program = store.program(&subject).unwrap();
+    assert_eq!(titles(&program), ["Классика", "Геометрия", "Условная"]);
+    store.mark_topic(program[1].id, true, 5).unwrap();
+
+    store
+        .set_program(&subject, &lines(&["Условная", "Геометрия", "Байес"]), 10)
+        .unwrap();
+    let program = store.program(&subject).unwrap();
+    assert_eq!(titles(&program), ["Условная", "Геометрия", "Байес"]);
+    assert_eq!(program[1].done_at, Some(5), "the same title keeps its mark");
+    let removed: i64 = store
+        .connection
+        .query_row(
+            "SELECT COUNT(*) FROM subject_topics WHERE removed = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(removed, 1, "«Классика» is hidden, not deleted");
+
+    store
+        .set_program(&subject, &lines(&["Классика", "Геометрия"]), 20)
+        .unwrap();
+    let program = store.program(&subject).unwrap();
+    assert_eq!(titles(&program), ["Классика", "Геометрия"]);
+    assert_eq!(program[1].done_at, Some(5));
+}
+
+#[test]
+fn next_topics_are_the_first_not_done_in_order_and_marks_are_reversible() {
+    let (mut store, subject) = store_with_subject();
+    store
+        .set_program(&subject, &lines(&["1", "2", "3", "4", "5"]), 1)
+        .unwrap();
+    let program = store.program(&subject).unwrap();
+    store.mark_topic(program[0].id, true, 2).unwrap();
+    store.mark_topic(program[2].id, true, 3).unwrap();
+    store.mark_topic(program[2].id, true, 4).unwrap();
+    assert_eq!(
+        store.topic(program[2].id).unwrap().unwrap().done_at,
+        Some(3)
+    );
+    assert_eq!(
+        titles(&store.next_topics(&subject, 3).unwrap()),
+        ["2", "4", "5"]
+    );
+    store.mark_topic(program[0].id, false, 5).unwrap();
+    assert_eq!(titles(&store.next_topics(&subject, 2).unwrap()), ["1", "2"]);
+    assert!(store.mark_topic(404, true, 6).is_err());
+}
+
+#[test]
+fn a_lesson_remembers_the_topic_that_was_next() {
+    let (mut store, subject) = store_with_subject();
+    let lesson = store
+        .create_lesson(&subject, &plan(&["a", "b"]), "", 1)
+        .unwrap();
+    assert_eq!(lesson.topic, None);
+    store.close_lesson(&lesson.id, "", 2).unwrap();
+    store
+        .set_program(&subject, &lines(&["Классика", "Геометрия"]), 3)
+        .unwrap();
+    let program = store.program(&subject).unwrap();
+    store.mark_topic(program[0].id, true, 4).unwrap();
+    let lesson = store
+        .create_lesson(&subject, &plan(&["a", "b"]), "", 5)
+        .unwrap();
+    assert_eq!(lesson.topic, Some(program[1].id));
+}
+
+#[test]
+fn an_old_lessons_table_gets_the_topic_column_and_keeps_its_rows() {
+    let connection = Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE lessons (
+                 lesson_id TEXT PRIMARY KEY, subject_id TEXT NOT NULL, goal_15min TEXT NOT NULL,
+                 why TEXT NOT NULL, criteria_json TEXT NOT NULL, own_thoughts TEXT NOT NULL,
+                 plan_version INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'open',
+                 created_at INTEGER NOT NULL, closed_at INTEGER, remaining TEXT);
+             INSERT INTO lessons VALUES ('l1', 's1', 'g', 'w', '[]', '', 1, 'closed', 1, 2, NULL);",
+        )
+        .unwrap();
+    let store = LessonStore::from_connection(connection).unwrap();
+    let lesson = store.lesson("l1").unwrap().unwrap();
+    assert_eq!((lesson.goal.as_str(), lesson.topic), ("g", None));
+    assert!(
+        LessonStore::from_connection(store.connection).is_ok(),
+        "the column is added once"
+    );
+}
+
+#[test]
+fn the_program_block_shows_progress_and_what_is_next() {
+    use crate::plan::{Context, ProgramView};
+    assert!(
+        Context::default()
+            .render()
+            .contains("<PROGRAM>\n\n</PROGRAM>")
+    );
+    let context = Context {
+        program: Some(ProgramView {
+            done: 3,
+            total: 22,
+            next: vec!["Формула Байеса".into(), "Схема Бернулли".into()],
+        }),
+        ..Context::default()
+    };
+    assert!(context.render().contains(
+        "<PROGRAM>\nпройдено 3 из 22\nдальше:\n1. Формула Байеса\n2. Схема Бернулли\n</PROGRAM>"
+    ));
+}

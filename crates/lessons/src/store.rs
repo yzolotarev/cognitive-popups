@@ -42,6 +42,24 @@ pub struct Lesson {
     pub status: String,
     pub created_at: i64,
     pub remaining: Option<String>,
+    /// The program topic that was next when the plan was made.
+    pub topic: Option<i64>,
+}
+
+/// One topic of a subject's program, in the course's order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Topic {
+    pub id: i64,
+    pub position: i64,
+    pub title: String,
+    /// Set only by the reader, never by the plan.
+    pub done_at: Option<i64>,
+}
+
+impl Topic {
+    pub fn done(&self) -> bool {
+        self.done_at.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -274,8 +292,24 @@ impl LessonStore {
                  answer TEXT,
                  updated_at INTEGER NOT NULL,
                  FOREIGN KEY(journey_id) REFERENCES journeys(journey_id)
+             );
+             CREATE TABLE IF NOT EXISTS subject_topics (
+                 topic_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                 subject_id TEXT NOT NULL,
+                 position   INTEGER NOT NULL,
+                 title      TEXT NOT NULL,
+                 added_at   INTEGER NOT NULL,
+                 done_at    INTEGER,
+                 removed    INTEGER NOT NULL DEFAULT 0
              );",
         )?;
+        // Lessons written before the program have no topic column.
+        let has_topic = connection
+            .prepare("SELECT 1 FROM pragma_table_info('lessons') WHERE name = 'topic_id'")?
+            .exists([])?;
+        if !has_topic {
+            connection.execute_batch("ALTER TABLE lessons ADD COLUMN topic_id INTEGER;")?;
+        }
         Ok(Self { connection })
     }
 
@@ -333,6 +367,104 @@ impl LessonStore {
         Ok(self.subjects()?.into_iter().find(|s| s.id == id))
     }
 
+    // ---------- the subject's program ----------
+
+    /// The reader's list replaces the order. A title already there keeps its
+    /// row and its mark; a title no longer listed is hidden, never deleted
+    /// (INV-12), and comes back with its mark if listed again.
+    pub fn set_program(
+        &mut self,
+        subject: &str,
+        titles: &[String],
+        now: i64,
+    ) -> Result<(), StoreError> {
+        let mut wanted: Vec<&str> = Vec::new();
+        for title in titles.iter().map(|t| t.trim()).filter(|t| !t.is_empty()) {
+            if !wanted.contains(&title) {
+                wanted.push(title);
+            }
+        }
+        let tx = self.connection.transaction()?;
+        let existing: Vec<(i64, String)> = {
+            let mut statement = tx.prepare(
+                "SELECT topic_id, title FROM subject_topics WHERE subject_id = ?1
+                 ORDER BY removed, topic_id",
+            )?;
+            let rows = statement.query_map([subject], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        tx.execute(
+            "UPDATE subject_topics SET removed = 1 WHERE subject_id = ?1",
+            [subject],
+        )?;
+        for (position, title) in wanted.iter().enumerate() {
+            match existing.iter().find(|(_, t)| t == title) {
+                Some((id, _)) => tx.execute(
+                    "UPDATE subject_topics SET position = ?2, removed = 0 WHERE topic_id = ?1",
+                    params![id, position as i64],
+                )?,
+                None => tx.execute(
+                    "INSERT INTO subject_topics (subject_id, position, title, added_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![subject, position as i64, title, now],
+                )?,
+            };
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The program in order, without removed topics.
+    pub fn program(&self, subject: &str) -> Result<Vec<Topic>, StoreError> {
+        let mut statement = self.connection.prepare(&format!(
+            "{TOPIC} WHERE subject_id = ?1 AND removed = 0 ORDER BY position"
+        ))?;
+        let rows = statement.query_map([subject], topic_row)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    pub fn topic(&self, id: i64) -> Result<Option<Topic>, StoreError> {
+        Ok(self
+            .connection
+            .query_row(&format!("{TOPIC} WHERE topic_id = ?1"), [id], topic_row)
+            .optional()?)
+    }
+
+    /// The reader's mark, reversible. Marking a done topic done again keeps
+    /// the first time (INV-04).
+    pub fn mark_topic(&mut self, id: i64, done: bool, now: i64) -> Result<(), StoreError> {
+        if self.topic(id)?.is_none() {
+            return Err(StoreError::NotFound(id.to_string()));
+        }
+        if done {
+            self.connection.execute(
+                "UPDATE subject_topics SET done_at = ?2 WHERE topic_id = ?1 AND done_at IS NULL",
+                params![id, now],
+            )?;
+        } else {
+            self.connection.execute(
+                "UPDATE subject_topics SET done_at = NULL WHERE topic_id = ?1",
+                [id],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The rule (INV-11): what comes next is the first topics not marked done,
+    /// in the program's order. The code picks, not the model.
+    pub fn next_topics(&self, subject: &str, n: usize) -> Result<Vec<Topic>, StoreError> {
+        let mut statement = self.connection.prepare(&format!(
+            "{TOPIC} WHERE subject_id = ?1 AND removed = 0 AND done_at IS NULL
+             ORDER BY position LIMIT ?2"
+        ))?;
+        let rows = statement.query_map(params![subject, n as i64], topic_row)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    fn next_topic_id(&self, subject: &str) -> Result<Option<i64>, StoreError> {
+        Ok(self.next_topics(subject, 1)?.first().map(|t| t.id))
+    }
+
     // ---------- lessons and plans ----------
 
     pub fn create_lesson(
@@ -343,10 +475,11 @@ impl LessonStore {
         now: i64,
     ) -> Result<Lesson, StoreError> {
         let id = new_id("l");
+        let topic = self.next_topic_id(subject)?;
         let tx = self.connection.transaction()?;
         tx.execute(
-            "INSERT INTO lessons (lesson_id, subject_id, goal_15min, why, criteria_json, own_thoughts, plan_version, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7)",
+            "INSERT INTO lessons (lesson_id, subject_id, goal_15min, why, criteria_json, own_thoughts, plan_version, created_at, topic_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8)",
             params![
                 id,
                 subject,
@@ -355,7 +488,8 @@ impl LessonStore {
                 serde_json::to_string(&plan.criteria.iter().map(|c| &c.text).collect::<Vec<_>>())
                     .unwrap_or_default(),
                 own_thoughts.trim(),
-                now
+                now,
+                topic
             ],
         )?;
         insert_items(&tx, &id, 1, plan)?;
@@ -369,16 +503,18 @@ impl LessonStore {
             .lesson(lesson)?
             .ok_or_else(|| StoreError::NotFound(lesson.into()))?;
         let version = current.plan_version + 1;
+        let topic = self.next_topic_id(&current.subject)?;
         let tx = self.connection.transaction()?;
         tx.execute(
-            "UPDATE lessons SET goal_15min = ?2, why = ?3, criteria_json = ?4, plan_version = ?5 WHERE lesson_id = ?1",
+            "UPDATE lessons SET goal_15min = ?2, why = ?3, criteria_json = ?4, plan_version = ?5, topic_id = ?6 WHERE lesson_id = ?1",
             params![
                 lesson,
                 plan.goal,
                 plan.why,
                 serde_json::to_string(&plan.criteria.iter().map(|c| &c.text).collect::<Vec<_>>())
                     .unwrap_or_default(),
-                version
+                version,
+                topic
             ],
         )?;
         insert_items(&tx, lesson, version, plan)?;
@@ -740,7 +876,8 @@ fn insert_items(
     Ok(())
 }
 
-const LESSON: &str = "SELECT lesson_id, subject_id, goal_15min, why, criteria_json, own_thoughts, plan_version, status, created_at, remaining FROM lessons";
+const LESSON: &str = "SELECT lesson_id, subject_id, goal_15min, why, criteria_json, own_thoughts, plan_version, status, created_at, remaining, topic_id FROM lessons";
+const TOPIC: &str = "SELECT topic_id, position, title, done_at FROM subject_topics";
 const JOURNEY: &str =
     "SELECT journey_id, target_steps, completed, started_at, closed_at FROM journeys";
 const STEP: &str = "SELECT step_id, lesson_id, journey_id, text, minutes, started_at, deadline, outcome, takeaway, finished_at FROM steps";
@@ -757,6 +894,16 @@ fn lesson_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Lesson> {
         status: row.get(7)?,
         created_at: row.get(8)?,
         remaining: row.get(9)?,
+        topic: row.get(10)?,
+    })
+}
+
+fn topic_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Topic> {
+    Ok(Topic {
+        id: row.get(0)?,
+        position: row.get(1)?,
+        title: row.get(2)?,
+        done_at: row.get(3)?,
     })
 }
 

@@ -1,5 +1,5 @@
 //! Demo data for the screenshots (`tools/screenshots.sh`): a subject with a
-//! unit that was answered correctly 12 days ago, an old fragment in the
+//! short program, a unit that was answered correctly 12 days ago, an old fragment in the
 //! journal and a whole task left with a draft, so that the routes that come
 //! from the stores have something to show. Only with the AI fixture, like the
 //! nudge previews: a real database is never filled with demo data.
@@ -47,6 +47,32 @@ pub fn demo(db: &Path, now: i64) -> Result<(), String> {
             )
             .map_err(|x| e(&x))?,
     };
+    // B71: a short course program, two topics already marked by the reader.
+    if lessons.program(&subject).map_err(|x| e(&x))?.is_empty() {
+        let program: Vec<String> = [
+            "Погрешности и обусловленность",
+            "Метод бисекции",
+            "Метод Ньютона",
+            "Метод простой итерации",
+            "Интерполяция многочленами",
+            "Численное интегрирование",
+        ]
+        .map(String::from)
+        .into();
+        lessons
+            .set_program(&subject, &program, now - 30 * DAY)
+            .map_err(|x| e(&x))?;
+        for topic in lessons
+            .program(&subject)
+            .map_err(|x| e(&x))?
+            .into_iter()
+            .take(2)
+        {
+            lessons
+                .mark_topic(topic.id, true, now - 20 * DAY)
+                .map_err(|x| e(&x))?;
+        }
+    }
 
     let mut journal = Journal::open(db).map_err(|x| e(&x))?;
     let own = NewEvent::user_text(

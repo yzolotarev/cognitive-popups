@@ -18,6 +18,7 @@ mod pill;
 mod popup;
 mod practice;
 mod resume;
+mod scale;
 mod theme;
 mod tray;
 mod ui;
@@ -163,6 +164,7 @@ fn daemon() -> ExitCode {
         .build();
     app.connect_activate(|app| {
         theme::install();
+        scale::install();
         let ctx = ctx::Ctx::load(database());
         let note = note::NoteWindow::new(app, ctx.db.clone());
         let understand = understand::UnderstandWindow::new(app, ctx.clone());

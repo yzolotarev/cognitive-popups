@@ -417,6 +417,30 @@ impl LessonStore {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// What Alt+I offers for a new lesson: goals being pursued (`active`,
+    /// `maintaining`; all others only if none is), the subject of the latest
+    /// lesson first, then the rest in the order they were set up.
+    pub fn lesson_subjects(&self) -> Result<Vec<Subject>, StoreError> {
+        let mut subjects = self.subjects()?;
+        subjects.reverse();
+        if subjects
+            .iter()
+            .any(|s| matches!(s.status.as_str(), "active" | "maintaining"))
+        {
+            subjects.retain(|s| matches!(s.status.as_str(), "active" | "maintaining"));
+        }
+        let last: std::collections::HashMap<String, i64> = {
+            let mut statement = self
+                .connection
+                .prepare("SELECT subject_id, MAX(created_at) FROM lessons GROUP BY subject_id")?;
+            let rows = statement.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        // Stable: subjects without lessons keep their setup order.
+        subjects.sort_by_key(|s| std::cmp::Reverse(last.get(&s.id).copied()));
+        Ok(subjects)
+    }
+
     pub fn subject(&self, id: &str) -> Result<Option<Subject>, StoreError> {
         Ok(self.subjects()?.into_iter().find(|s| s.id == id))
     }

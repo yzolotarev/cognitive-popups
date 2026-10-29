@@ -458,3 +458,36 @@ fn deadlines_are_read_as_whole_days() {
     assert_eq!(end_of_day("завтра"), None);
     assert_eq!(end_of_day("2026-13-01"), None);
 }
+
+#[test]
+fn alt_i_offers_pursued_goals_with_the_latest_lesson_first() {
+    let mut store = LessonStore::open_in_memory().unwrap();
+    let a = store.add_subject("A", "g", None, 1).unwrap();
+    let b = store.add_subject("B", "g", None, 1).unwrap();
+    let c = store.add_subject("C", "g", None, 1).unwrap();
+    let names = |store: &LessonStore| -> Vec<String> {
+        store
+            .lesson_subjects()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect()
+    };
+    assert_eq!(
+        names(&store),
+        ["A", "B", "C"],
+        "setup order, not newest first"
+    );
+    let mut paused = store.subject(&c).unwrap().unwrap();
+    paused.status = "paused".into();
+    store.update_subject(&paused).unwrap();
+    store.create_lesson(&b, &plan(&["1", "2"]), "", 5).unwrap();
+    assert_eq!(names(&store), ["B", "A"]);
+    let mut only = store.subject(&a).unwrap().unwrap();
+    only.status = "achieved".into();
+    store.update_subject(&only).unwrap();
+    let mut other = store.subject(&b).unwrap().unwrap();
+    other.status = "achieved".into();
+    store.update_subject(&other).unwrap();
+    assert_eq!(names(&store).len(), 3, "nothing pursued: all are offered");
+}

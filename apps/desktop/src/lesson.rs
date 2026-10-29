@@ -207,8 +207,14 @@ impl LessonUi {
                 drop(store);
                 self.press(None);
             }
+            // `generate [subject]`: the named subject, else the one Alt+I
+            // offers first, as a reader pressing Enter gets.
             "generate" => {
-                if let Some(subject) = store.subjects().ok().and_then(|s| s.into_iter().next()) {
+                if let Some(subject) = store
+                    .lesson_subjects()
+                    .ok()
+                    .and_then(|s| s.into_iter().find(|s| rest.is_empty() || s.name == rest))
+                {
                     popup::show(&self.0.window, SIZE, Opened::ByKey);
                     self.generate(subject, String::new(), None);
                 }
@@ -216,6 +222,19 @@ impl LessonUi {
             "step" => {
                 popup::show(&self.0.window, SIZE, Opened::ByKey);
                 self.start_step(rest, Some(3));
+            }
+            // `close`: the end-of-lesson form; `close done`: the reader
+            // closes it; `close passed`: ticks «Тема … пройдена» first.
+            "close" => {
+                if let Ok(Some(lesson)) = store.open_lesson() {
+                    drop(store);
+                    popup::show(&self.0.window, SIZE, Opened::ByKey);
+                    let (passed, close) = self.close_form_widgets(lesson.id);
+                    passed.set_active(rest == "passed");
+                    if matches!(rest, "done" | "passed") {
+                        close.emit_clicked();
+                    }
+                }
             }
             _ => {}
         }
@@ -376,6 +395,8 @@ impl LessonUi {
                     match saved {
                         Ok(lesson) => {
                             this.set_lesson(Some(&lesson));
+                            // The chooser is gone: the header names the subject.
+                            this.0.subject.set_text(&subject.name);
                             let operation = ctx::operation();
                             let own = (!thoughts.trim().is_empty()).then_some(thoughts.as_str());
                             let items: Vec<String> =
@@ -831,18 +852,26 @@ impl LessonUi {
     /// The program topic is marked only by the reader, never by the lesson
     /// itself: a finished step is not mastery (B71, INV-02).
     fn close_form(&self, lesson: String) {
+        self.close_form_widgets(lesson);
+    }
+
+    fn close_form_widgets(&self, lesson: String) -> (gtk::CheckButton, gtk::Button) {
         let entry = ui::field("что осталось — можно пропустить");
         let close = ui::button("Закончить урок", &["cp-default"]);
         let topic = open_store(&self.0.ctx).and_then(|store| {
             let id = store.lesson(&lesson).ok()??.topic?;
             store.topic(id).ok()?.filter(|t| !t.done())
         });
-        let passed = gtk::CheckButton::with_label(
+        // A long course topic wraps instead of widening the window.
+        let passed = gtk::CheckButton::new();
+        let label = ui::text(
             &topic
                 .as_ref()
                 .map(|t| format!("Тема «{}» пройдена", t.title))
                 .unwrap_or_default(),
+            &[],
         );
+        passed.set_child(Some(&label));
         let this = self.clone();
         let submit = {
             let (entry, passed) = (entry.clone(), passed.clone());
@@ -862,6 +891,7 @@ impl LessonUi {
         let s = submit.clone();
         entry.connect_activate(move |_| s());
         close.connect_clicked(move |_| submit());
+        let widgets = (passed.clone(), close.clone());
         let mut rows: Vec<gtk::Widget> = vec![
             ui::text(
                 "Что осталось на следующий раз? Одной строкой, можно пропустить.",
@@ -876,6 +906,7 @@ impl LessonUi {
         rows.push(ui::actions(&[&close]).upcast());
         self.show(&rows);
         entry.grab_focus();
+        widgets
     }
 
     /// A fixed path closes with one integrative Feynman question (F-30).

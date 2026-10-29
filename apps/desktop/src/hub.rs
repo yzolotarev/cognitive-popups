@@ -154,6 +154,14 @@ impl Hub {
             });
         }
         self.0.window.present();
+        if tab.starts_with("subjects") {
+            // GTK focuses the first subject's name with its text selected:
+            // one keystroke would replace it. Nothing is typed into until chosen.
+            let window = self.0.window.clone();
+            glib::idle_add_local_once(move || {
+                GtkWindowExt::set_focus(&window, None::<&gtk::Widget>)
+            });
+        }
     }
 
     pub fn hide(&self) {

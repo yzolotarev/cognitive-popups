@@ -204,8 +204,15 @@ pub fn rich(content: &str, classes: &[&str], window_width: i32) -> gtk::Widget {
         let (y, h) = v.line_yrange(&buffer.end_iter());
         let height = y + h;
         if height > 0 && f.min_content_height() != height {
-            f.set_min_content_height(height);
-            f.set_max_content_height(height);
+            // GTK warns when min would exceed max, so the bound that moves
+            // away from the other goes first.
+            if height > f.max_content_height() {
+                f.set_max_content_height(height);
+                f.set_min_content_height(height);
+            } else {
+                f.set_min_content_height(height);
+                f.set_max_content_height(height);
+            }
         }
         gtk::glib::ControlFlow::Continue
     });

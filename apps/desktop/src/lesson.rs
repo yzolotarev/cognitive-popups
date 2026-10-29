@@ -229,9 +229,16 @@ impl LessonUi {
         let name = ui::field("Предмет: тервер, линал, немецкий…");
         let goal = ui::field("Долгосрочная цель");
         let deadline = ui::field("Срок, если есть: 2026-11-20");
+        let daily = gtk::CheckButton::with_label("Предлагать начать учёбу в свободное время");
+        daily.set_visible(
+            Nudges::open(&self.0.ctx.db)
+                .and_then(|n| n.consent_asked(Consent::Daily))
+                .map(|asked| !asked)
+                .unwrap_or(false),
+        );
         let save = ui::button("Сохранить", &["cp-default"]);
         let this = self.clone();
-        let (n, g, d) = (name.clone(), goal.clone(), deadline.clone());
+        let (n, g, d, daily_choice) = (name.clone(), goal.clone(), deadline.clone(), daily.clone());
         save.connect_clicked(move |_| {
             let (name, goal) = (n.text().trim().to_string(), g.text().trim().to_string());
             if name.is_empty() || goal.is_empty() {
@@ -241,7 +248,14 @@ impl LessonUi {
             let saved = LessonStore::open(&this.0.ctx.db)
                 .and_then(|mut s| s.add_subject(&name, &goal, Some(&deadline), ctx::now()));
             match saved {
-                Ok(_) => this.main(),
+                Ok(_) => {
+                    if daily_choice.is_visible() {
+                        let _ = Nudges::open(&this.0.ctx.db).and_then(|mut n| {
+                            n.set_consent(Consent::Daily, daily_choice.is_active(), ctx::now())
+                        });
+                    }
+                    this.main()
+                }
                 Err(e) => eprintln!("lessons: {e}"),
             }
         });
@@ -254,6 +268,7 @@ impl LessonUi {
             name.clone().upcast(),
             goal.upcast(),
             deadline.upcast(),
+            daily.upcast(),
             ui::actions(&[&save]).upcast(),
         ]);
         name.grab_focus();

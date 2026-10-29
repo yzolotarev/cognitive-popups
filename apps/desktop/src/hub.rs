@@ -341,12 +341,23 @@ impl Hub {
         let deadline = adw::EntryRow::builder()
             .title("Срок, если есть (ГГГГ-ММ-ДД)")
             .build();
+        let daily = adw::SwitchRow::builder()
+            .title("Приглашение на день")
+            .subtitle("Предлагать начать учёбу в свободное время")
+            .build();
+        daily.set_visible(
+            Nudges::open(&self.0.ctx.db)
+                .and_then(|n| n.consent_asked(Consent::Daily))
+                .map(|asked| !asked)
+                .unwrap_or(false),
+        );
         let create = gtk::Button::with_label("Добавить");
         create.set_halign(gtk::Align::End);
         create.set_margin_top(8);
         add.add(&name);
         add.add(&goal);
         add.add(&deadline);
+        add.add(&daily);
         add.add(&create);
         let this = self.clone();
         create.connect_clicked(move |_| {
@@ -358,8 +369,12 @@ impl Hub {
                 return;
             }
             let d = deadline.text().to_string();
-            if let Ok(mut store) = LessonStore::open(&this.0.ctx.db) {
-                let _ = store.add_subject(&n, &g, Some(&d), ctx::now());
+            if let Ok(mut store) = LessonStore::open(&this.0.ctx.db)
+                && store.add_subject(&n, &g, Some(&d), ctx::now()).is_ok()
+                && daily.is_visible()
+            {
+                let _ = Nudges::open(&this.0.ctx.db)
+                    .and_then(|mut n| n.set_consent(Consent::Daily, daily.is_active(), ctx::now()));
             }
             this.open(Some("subjects"));
         });

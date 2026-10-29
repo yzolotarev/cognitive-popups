@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cognitive_exoskeleton_ai::{
     AiConfig, Client, PromptStore, ProviderKind, Transport, UreqTransport,
@@ -17,6 +18,11 @@ use gtk::{gio, glib};
 use serde_json::Value;
 
 pub type Ai = Client<AnyTransport>;
+static BACKGROUND_WORK: AtomicUsize = AtomicUsize::new(0);
+
+pub fn background_busy() -> bool {
+    BACKGROUND_WORK.load(Ordering::SeqCst) != 0
+}
 
 #[derive(Clone)]
 pub struct Ctx {
@@ -170,7 +176,17 @@ pub fn background<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
     done: impl FnOnce(T) + 'static,
 ) {
-    let handle = gio::spawn_blocking(work);
+    BACKGROUND_WORK.fetch_add(1, Ordering::SeqCst);
+    let handle = gio::spawn_blocking(move || {
+        struct Done;
+        impl Drop for Done {
+            fn drop(&mut self) {
+                BACKGROUND_WORK.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        let _done = Done;
+        work()
+    });
     glib::spawn_future_local(async move {
         if let Ok(value) = handle.await {
             done(value);

@@ -45,6 +45,8 @@ shots=(
   "resume|resume|"
   "pill|pill|3"
   "notice|notice|+2 новые · 1 добавлена к существующим"
+  "nudge-daily|nudge|daily"
+  "nudge-opportunity|nudge|opportunity"
   "hypothesis-answer|hypothesis|чем ближе старт к корню, тем быстрее сходится"
 )
 

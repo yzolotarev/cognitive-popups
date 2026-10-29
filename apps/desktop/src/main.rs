@@ -75,12 +75,19 @@ fn main() -> ExitCode {
             args.get(2).map(String::as_str),
         ),
         Some("hyprland-config") => {
-            print!("{}", hyprland_config());
+            match args.get(1).map(String::as_str) {
+                None | Some("--classic") => print!("{}", hyprland_config()),
+                Some("--lua") => print!("{}", hyprland_config_lua()),
+                Some(_) => {
+                    eprintln!("usage: cognitive-popups hyprland-config [--classic|--lua]");
+                    return ExitCode::from(2);
+                }
+            }
             ExitCode::SUCCESS
         }
         _ => {
             eprintln!(
-                "usage: cognitive-popups daemon | signal <{}> | hyprland-config",
+                "usage: cognitive-popups daemon | signal <{}> | hyprland-config [--classic|--lua]",
                 WINDOWS.join("|")
             );
             ExitCode::from(2)
@@ -117,7 +124,7 @@ fn signal(window: Option<&str>, argument: Option<&str>) -> ExitCode {
 
 fn hyprland_config() -> String {
     "# Cognitive Popups — classic hyprland.conf syntax.\n\
-     # A Lua config needs the same commands in its own bind syntax.\n\
+     # For Hyprland Lua use: cognitive-popups hyprland-config --lua\n\
      exec-once = cognitive-popups daemon\n\
      bind = ALT, E, exec, cognitive-popups signal note\n\
      bind = ALT, W, exec, cognitive-popups signal understand\n\
@@ -129,6 +136,22 @@ fn hyprland_config() -> String {
      layerrule = blur, cognitive-.*\n\
      layerrule = ignorezero, cognitive-.*\n"
         .to_string()
+}
+
+fn hyprland_config_lua() -> &'static str {
+    r#"-- Cognitive Popups — Hyprland 0.56 Lua syntax.
+hl.on("hyprland.start", function()
+  hl.exec_cmd("cognitive-popups daemon")
+end)
+hl.bind("ALT + E", hl.dsp.exec_cmd("cognitive-popups signal note"))
+hl.bind("ALT + W", hl.dsp.exec_cmd("cognitive-popups signal understand"))
+hl.bind("CTRL + ALT + P", hl.dsp.exec_cmd("cognitive-popups signal hypothesis"))
+hl.bind("ALT + T", hl.dsp.exec_cmd("cognitive-popups signal practice"))
+hl.bind("ALT + I", hl.dsp.exec_cmd("cognitive-popups signal lesson"))
+hl.bind("ALT + B", hl.dsp.exec_cmd("cognitive-popups signal resume"))
+hl.bind("ALT + K", hl.dsp.exec_cmd("cognitive-popups signal help"))
+hl.layer_rule({ match = { namespace = "cognitive-.*" }, blur = true, ignore_alpha = 0.0 })
+"#
 }
 
 fn daemon() -> ExitCode {
@@ -316,5 +339,31 @@ impl Receiver {
             }
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn both_configs_cover_the_same_hotkey_actions() {
+        let classic = hyprland_config();
+        let lua = hyprland_config_lua();
+        for action in [
+            "note",
+            "understand",
+            "hypothesis",
+            "practice",
+            "lesson",
+            "resume",
+            "help",
+        ] {
+            let command = format!("cognitive-popups signal {action}");
+            assert!(classic.contains(&command));
+            assert!(lua.contains(&command));
+        }
+        assert!(lua.contains("hl.on(\"hyprland.start\""));
+        assert!(lua.contains("hl.layer_rule("));
     }
 }

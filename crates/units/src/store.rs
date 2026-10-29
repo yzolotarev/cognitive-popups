@@ -165,14 +165,26 @@ impl UnitStore {
             )?;
         }
         if version < 3 {
-            self.connection.execute_batch(
+            // A database written by an earlier build can already have the column
+            // while still being marked as version 2: adding it again would fail
+            // every open of the store.
+            let has_family = self
+                .connection
+                .prepare("SELECT 1 FROM pragma_table_info('units') WHERE name = 'family'")?
+                .exists([])?;
+            let add_column = if has_family {
+                ""
+            } else {
+                "ALTER TABLE units ADD COLUMN family TEXT;"
+            };
+            self.connection.execute_batch(&format!(
                 "
                 BEGIN IMMEDIATE;
-                ALTER TABLE units ADD COLUMN family TEXT;
+                {add_column}
                 INSERT OR REPLACE INTO units_meta (key, value) VALUES ('schema', 3);
                 COMMIT;
-                ",
-            )?;
+                "
+            ))?;
         }
         Ok(())
     }
@@ -606,6 +618,27 @@ mod tests {
             same_as: same_as.map(str::to_string),
             why: "w".into(),
         }
+    }
+
+    #[test]
+    fn a_database_marked_version_2_that_already_has_family_still_opens() {
+        // Found in the live run: the column was there, the mark said 2, and the
+        // hub's «Единицы» page was empty because every open failed.
+        let store = UnitStore::open_in_memory().unwrap();
+        store
+            .connection
+            .execute("UPDATE units_meta SET value = 2 WHERE key = 'schema'", [])
+            .unwrap();
+        store.migrate().unwrap();
+        let version: i64 = store
+            .connection
+            .query_row(
+                "SELECT value FROM units_meta WHERE key = 'schema'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
     }
 
     #[test]

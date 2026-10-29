@@ -69,6 +69,7 @@ usage:
   cognitive-exoskeleton mrt engaged|close|summary --db <path> ...   analysis: tools/mrt_analysis.py
   cognitive-exoskeleton capture [--from-clipboard] [--db <path>]   selection → JSON (S6)
   cognitive-exoskeleton note add --db <path> [--anchor <selection>] <text…> | list | close <id> [--reopen]
+  cognitive-exoskeleton hypothesis check --db <path> --prompts <dir> --text <file> [--insist] <guess…> | list --db <path>
   cognitive-exoskeleton understand pick|words|explain|example|ladder|character --text <file> --prompts <dir> [--mine <four words>] [--target <text>] [<terms or question>]
 
 AI settings (environment):
@@ -145,6 +146,7 @@ fn run(args: &[String]) -> Result<String, String> {
         Some("capture") => return run_capture(&args[1..]),
         Some("note") => return run_note(&args[1..]),
         Some("understand") => return run_understand(&args[1..]),
+        Some("hypothesis") => return run_hypothesis(&args[1..]),
         _ => {}
     }
     let (command, rest) = match args {
@@ -879,6 +881,57 @@ fn run_understand(args: &[String]) -> Result<String, String> {
         understand::Mechanic::Character => Ok(json(
             &understand::character(&client, &prompts, &text).map_err(failed)?,
         )),
+    }
+}
+
+/// Ctrl+Alt+P (F-13): written down first, then checked.
+fn run_hypothesis(args: &[String]) -> Result<String, String> {
+    use cognitive_exoskeleton_hypotheses as hypotheses;
+    let (command, rest) = args.split_first().ok_or("hypothesis needs a command")?;
+    let (options, flags, positional) = parse_options(
+        rest,
+        &["--db", "--prompts", "--text", "--now"],
+        &["--insist"],
+    )?;
+    let db = options.get("--db").ok_or("--db is required")?;
+    let at = now(options.get("--now").map(String::as_str))?;
+    let mut store = hypotheses::Store::open(db).map_err(|e| e.to_string())?;
+    match command.as_str() {
+        "list" => Ok(json(&store.recent(50).map_err(|e| e.to_string())?)),
+        "check" => {
+            let path = options.get("--text").ok_or("--text is required")?;
+            let material = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+            let prompts = options.get("--prompts").ok_or("--prompts is required")?;
+            let prompts = PromptStore::from_dir(prompts).map_err(|e| e.to_string())?;
+            let Some(id) = store
+                .add(&positional.join(" "), &material, at)
+                .map_err(|e| format!("Гипотеза не записана в журнал: {e}"))?
+            else {
+                return Ok("пустая гипотеза — ничего не сохранено".into());
+            };
+            let config = ai_config_from_env()?;
+            let provider = config.provider_name();
+            let client = Client::new(config, UreqTransport::default());
+            let result = hypotheses::check(
+                &client,
+                &prompts,
+                &positional.join(" "),
+                &material,
+                flags.contains("--insist"),
+            )
+            .map_err(|e| {
+                format!(
+                    "Гипотеза сохранена ({id}). Проверить не удалось: {}",
+                    e.user_message(provider)
+                )
+            })?;
+            if result.vague && !flags.contains("--insist") {
+                return Ok(format!("{}\n(повтори с --insist)", hypotheses::BOLDER));
+            }
+            store.set_check(id, &result).map_err(|e| e.to_string())?;
+            Ok(json(&result))
+        }
+        other => Err(format!("unknown hypothesis command {other}")),
     }
 }
 

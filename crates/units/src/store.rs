@@ -333,6 +333,32 @@ impl UnitStore {
         Ok(summary)
     }
 
+    /// A unit made outside a lesson by a rule of the code, not by the model:
+    /// a refuted hypothesis becomes one (S4 rule 9). Needs at least one event.
+    pub fn add_unit(
+        &mut self,
+        subject: &str,
+        title: &str,
+        action: &str,
+        kind: &str,
+        events: &[i64],
+    ) -> Result<String, StoreError> {
+        let tx = self.connection.transaction()?;
+        let id = new_id("u");
+        tx.execute(
+            "INSERT INTO units (unit_id, subject_id, title, action, kind) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, subject, title, action, kind],
+        )?;
+        for seq in events {
+            tx.execute(
+                "INSERT OR IGNORE INTO unit_events VALUES (?1, ?2)",
+                params![id, seq],
+            )?;
+        }
+        tx.commit()?;
+        Ok(id)
+    }
+
     /// «Отделить»: the link's events leave the unit they were added to and form
     /// a new unit with the title the model had given them. Returns the new unit id.
     pub fn separate(&mut self, link: &str) -> Result<String, StoreError> {

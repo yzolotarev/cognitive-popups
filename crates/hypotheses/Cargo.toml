@@ -1,0 +1,16 @@
+[package]
+name = "cognitive-exoskeleton-hypotheses"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+publish = false
+
+[dependencies]
+cognitive-exoskeleton-ai = { path = "../ai" }
+cognitive-exoskeleton-memory = { path = "../memory" }
+cognitive-exoskeleton-understand = { path = "../understand" }
+cognitive-exoskeleton-units = { path = "../units" }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

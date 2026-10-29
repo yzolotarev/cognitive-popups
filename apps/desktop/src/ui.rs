@@ -84,3 +84,35 @@ pub fn actions(buttons: &[&gtk::Button]) -> gtk::Box {
     }
     line
 }
+
+/// A multi-line field on a solid surface, with a placeholder that hides as
+/// soon as there is text.
+pub fn text_area(placeholder: &str, min_height: i32) -> (gtk::Box, gtk::TextView) {
+    let content = column(0);
+    content.add_css_class("cp-content");
+    let overlay = gtk::Overlay::new();
+    let input = gtk::TextView::new();
+    input.add_css_class("cp-input");
+    input.set_wrap_mode(gtk::WrapMode::WordChar);
+    input.set_accepts_tab(false);
+    input.set_size_request(-1, min_height);
+    let hint = gtk::Label::new(Some(placeholder));
+    hint.add_css_class("cp-placeholder");
+    hint.set_halign(gtk::Align::Start);
+    hint.set_valign(gtk::Align::Start);
+    hint.set_can_target(false);
+    overlay.set_child(Some(&input));
+    overlay.add_overlay(&hint);
+    input
+        .buffer()
+        .connect_changed(move |b| hint.set_visible(b.char_count() == 0));
+    content.append(&overlay);
+    (content, input)
+}
+
+pub fn buffer_text(input: &gtk::TextView) -> String {
+    let buffer = input.buffer();
+    buffer
+        .text(&buffer.start_iter(), &buffer.end_iter(), false)
+        .to_string()
+}

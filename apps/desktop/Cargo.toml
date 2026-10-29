@@ -17,5 +17,6 @@ cognitive-exoskeleton-ai = { path = "../../crates/ai" }
 cognitive-exoskeleton-domain = { path = "../../crates/domain" }
 cognitive-exoskeleton-journal = { path = "../../crates/journal" }
 cognitive-exoskeleton-understand = { path = "../../crates/understand" }
+cognitive-exoskeleton-hypotheses = { path = "../../crates/hypotheses" }
 serde_json = "1.0"
 time = "0.3"

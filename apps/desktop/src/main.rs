@@ -6,6 +6,7 @@
 //!   cognitive-popups hyprland-config   the lines for hyprland.conf
 
 mod ctx;
+mod hypothesis;
 mod note;
 mod popup;
 mod theme;
@@ -22,7 +23,7 @@ use cognitive_exoskeleton_capture::{self as capture, Wayland};
 use cognitive_exoskeleton_understand::{self as understand_core, Mechanic};
 use gtk::glib;
 
-const WINDOWS: [&str; 3] = ["note", "understand", "hide"];
+const WINDOWS: [&str; 4] = ["note", "understand", "hypothesis", "hide"];
 
 fn socket() -> PathBuf {
     let dir = std::env::var_os("XDG_RUNTIME_DIR").unwrap_or_else(|| "/tmp".into());
@@ -98,6 +99,7 @@ fn hyprland_config() -> String {
      exec-once = cognitive-popups daemon\n\
      bind = ALT, E, exec, cognitive-popups signal note\n\
      bind = ALT, W, exec, cognitive-popups signal understand\n\
+     bind = CTRL ALT, P, exec, cognitive-popups signal hypothesis\n\
      layerrule = blur, cognitive-.*\n\
      layerrule = ignorezero, cognitive-.*\n"
         .to_string()
@@ -113,6 +115,7 @@ fn daemon() -> ExitCode {
         let ctx = ctx::Ctx::load(database());
         let note = note::NoteWindow::new(app, ctx.db.clone());
         let understand = understand::UnderstandWindow::new(app, ctx.clone());
+        let hypothesis = hypothesis::HypothesisWindow::new(app, ctx.clone());
         listen(move |line| {
             let (window, argument) = line.split_once(' ').unwrap_or((line, ""));
             // The selection only: instant, and never a Ctrl+C into our own window.
@@ -132,9 +135,17 @@ fn daemon() -> ExitCode {
                 }
                 "understand" => understand.open(selection(), Mechanic::parse(argument)),
                 // `signal hide`: every window away (screenshots, scripts).
+                // `signal hypothesis [guess…]`: a given guess is checked at once.
+                "hypothesis" => {
+                    hypothesis.open(selection());
+                    if !argument.is_empty() {
+                        hypothesis.submit_text(argument);
+                    }
+                }
                 "hide" => {
                     note.hide();
                     understand.hide();
+                    hypothesis.hide();
                 }
                 _ => {}
             }

@@ -63,13 +63,17 @@ impl Ctx {
     /// Writes what happened in one operation: the source, the reader's words,
     /// the model's answer (S1; INV-01 keeps them apart). A failed write is
     /// logged, never shown over the help itself.
+    /// Writes what happened in one operation: the source, the reader's words,
+    /// the model's answer (S1; INV-01 keeps them apart). Returns the journal
+    /// sequences of the reader's words and the answer. A failed write is
+    /// logged, never shown over the help itself.
     pub fn record(
         &self,
         operation: &OperationId,
         source: Option<&Captured>,
         user: Option<&str>,
         ai: Option<&str>,
-    ) {
+    ) -> Vec<i64> {
         let at = time::OffsetDateTime::now_utc();
         let key = |part: &str| format!("{}:{part}", operation.as_str());
         let mut events = Vec::new();
@@ -83,9 +87,11 @@ impl Ctx {
             };
             events.extend(NewEvent::source(operation.clone(), at, key("source"), snapshot).ok());
         }
+        let mut keys = Vec::new();
         if let Some(text) = user {
+            keys.push(key(&format!("user:{text}")));
             events.extend(
-                NewEvent::user_text(operation.clone(), at, key(&format!("user:{text}")), text).ok(),
+                NewEvent::user_text(operation.clone(), at, keys[keys.len() - 1].clone(), text).ok(),
             );
         }
         if let Some(text) = ai {
@@ -93,11 +99,12 @@ impl Ctx {
                 .ai
                 .answered_by()
                 .unwrap_or_else(|| self.ai.config().model.clone());
+            keys.push(key(&format!("ai:{text}")));
             events.extend(
                 NewEvent::ai_response(
                     operation.clone(),
                     at,
-                    key(&format!("ai:{}", text.len())),
+                    keys[keys.len() - 1].clone(),
                     self.provider,
                     model,
                     text,
@@ -112,11 +119,20 @@ impl Ctx {
                 .collect();
         }
         if events.is_empty() {
-            return;
+            return Vec::new();
         }
-        if let Err(e) = Journal::open(&self.db).and_then(|mut j| j.append(&events)) {
+        let written = Journal::open(&self.db).and_then(|mut journal| {
+            journal.append(&events)?;
+            let mut sequences = Vec::new();
+            for key in &keys {
+                sequences.extend(journal.find_by_key(key)?);
+            }
+            Ok(sequences)
+        });
+        written.unwrap_or_else(|e| {
             eprintln!("journal: {e}");
-        }
+            Vec::new()
+        })
     }
 }
 

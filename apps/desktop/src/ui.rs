@@ -164,7 +164,16 @@ pub fn rich(content: &str, classes: &[&str], window_width: i32) -> gtk::Widget {
                         buffer.insert(&mut end, "\n");
                     }
                     let anchor = buffer.create_child_anchor(&mut buffer.end_iter());
-                    anchors.push((anchor, crate::math::picture(&drawn)));
+                    // Inline: lower the formula so its baseline is the text's.
+                    let lowered = (!display).then(|| {
+                        let tag = gtk::TextTag::new(None);
+                        buffer.tag_table().add(&tag);
+                        let mut start = buffer.end_iter();
+                        start.backward_char();
+                        buffer.apply_tag(&tag, &start, &buffer.end_iter());
+                        tag
+                    });
+                    anchors.push((anchor, crate::math::picture(&drawn, lowered)));
                     if display {
                         buffer.insert(&mut buffer.end_iter(), "\n");
                         previous_display = true;

@@ -80,6 +80,8 @@ usage:
   cognitive-exoskeleton note add --db <path> [--anchor <selection>] <text…> | list | close <id> [--reopen]
   cognitive-exoskeleton hypothesis check --db <path> --prompts <dir> --text <file> [--insist] <guess…> | list --db <path>
   cognitive-exoskeleton subject add --db <path> [--deadline YYYY-MM-DD] <name> <long-term goal> | list
+  cognitive-exoskeleton subject program --db <path> --subject <id> [--file <txt>]   the course program, one topic per line (B71)
+  cognitive-exoskeleton subject topic --db <path> <topic-id> done|todo   the reader's mark on a topic
   cognitive-exoskeleton lesson plan --db <path> --prompts <dir> --subject <id> [--thoughts <text>] [--text <file>] | show | item <id> <status> | close [--remaining <text>]
   cognitive-exoskeleton step start --db <path> [--path 1|3|5|inf] [<minutes> <text>] | finish done|partly|not [--takeaway <text>] | bridge
   cognitive-exoskeleton resume --db <path>
@@ -1218,6 +1220,7 @@ fn run_lesson(group: &str, args: &[String]) -> Result<String, String> {
             "--path",
             "--takeaway",
             "--remaining",
+            "--file",
         ],
         &[],
     )?;
@@ -1234,6 +1237,44 @@ fn run_lesson(group: &str, args: &[String]) -> Result<String, String> {
             store.add_subject(name, goal, deadline, at).map_err(e)
         }
         ("subject", "list") => Ok(json(&store.subjects().map_err(e)?)),
+        ("subject", "program") => {
+            let subject = options.get("--subject").ok_or("--subject is required")?;
+            store
+                .subject(subject)
+                .map_err(e)?
+                .ok_or(format!("нет предмета {subject}"))?;
+            if let Some(path) = options.get("--file") {
+                let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+                let titles: Vec<String> = text.lines().map(str::to_string).collect();
+                store.set_program(subject, &titles, at).map_err(e)?;
+            }
+            let program = store.program(subject).map_err(e)?;
+            let next = store.next_topics(subject, 3).map_err(e)?;
+            Ok(json(&serde_json::json!({
+                "done": program.iter().filter(|t| t.done()).count(),
+                "total": program.len(),
+                "next": next,
+                "topics": program,
+            })))
+        }
+        ("subject", "topic") => {
+            let [topic, mark] = positional.as_slice() else {
+                return Err("subject topic needs <topic-id> done|todo".into());
+            };
+            let topic: i64 = topic.parse().map_err(|_| "topic id is a number")?;
+            let done = match mark.as_str() {
+                "done" => true,
+                "todo" => false,
+                _ => return Err("subject topic needs <topic-id> done|todo".into()),
+            };
+            store.mark_topic(topic, done, at).map_err(e)?;
+            Ok(if done {
+                "пройдена"
+            } else {
+                "не пройдена"
+            }
+            .into())
+        }
         ("lesson", "plan") => {
             if let Some(lesson) = store.open_lesson().map_err(e)? {
                 return Ok(format!(

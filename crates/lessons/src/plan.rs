@@ -39,6 +39,30 @@ pub struct Context {
     pub due: Vec<(String, String)>,
     /// One old mistake at most (B21).
     pub gap: Option<String>,
+    /// The subject's program, if it has one (B71).
+    pub program: Option<ProgramView>,
+}
+
+/// Where the reader is in the course: the code picks what is next (INV-11).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProgramView {
+    pub done: usize,
+    pub total: usize,
+    /// The first ≤3 topics not marked done, in order.
+    pub next: Vec<String>,
+}
+
+impl ProgramView {
+    pub fn render(&self) -> String {
+        let mut out = format!("пройдено {} из {}", self.done, self.total);
+        if !self.next.is_empty() {
+            out.push_str("\nдальше:");
+            for (n, title) in self.next.iter().enumerate() {
+                out.push_str(&format!("\n{}. {title}", n + 1));
+            }
+        }
+        out
+    }
 }
 
 impl Context {
@@ -61,6 +85,13 @@ impl Context {
         out.push_str(&block(
             "MATERIAL",
             self.material.chars().take(6000).collect(),
+        ));
+        out.push_str(&block(
+            "PROGRAM",
+            self.program
+                .as_ref()
+                .map(ProgramView::render)
+                .unwrap_or_default(),
         ));
         out.push_str(&block("RECENT", self.recent.join("\n")));
         out.push_str(&block(

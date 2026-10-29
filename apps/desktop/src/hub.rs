@@ -15,7 +15,7 @@ use cognitive_exoskeleton_ai::{
 };
 use cognitive_exoskeleton_formula as formula;
 use cognitive_exoskeleton_hypotheses as hypotheses;
-use cognitive_exoskeleton_lessons::{LessonStore, Subject};
+use cognitive_exoskeleton_lessons::{LessonStore, Subject, Topic};
 use cognitive_exoskeleton_memory::Memory;
 use cognitive_exoskeleton_notes::Notes;
 use cognitive_exoskeleton_nudges::{Consent, Nudges};
@@ -28,6 +28,7 @@ use cognitive_exoskeleton_units::UnitStore;
 use gtk::glib;
 
 use crate::ctx::{self, Ctx};
+use crate::ui;
 
 const STATUSES: [(&str, &str); 4] = [
     ("active", "идёт"),
@@ -446,6 +447,7 @@ impl Hub {
             group.add(row);
         }
         group.add(&status);
+        group.add(&self.program_expander(&subject));
         group.add(&self.goal_routes_expander(&subject));
         let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         buttons.set_halign(gtk::Align::End);
@@ -490,6 +492,119 @@ impl Hub {
             );
         });
         group
+    }
+
+    /// B71: the course program. Alt+I takes the first topic not marked; only
+    /// the reader marks a topic, and a line taken out is hidden, not deleted.
+    fn program_expander(&self, subject: &Subject) -> adw::ExpanderRow {
+        let topics = LessonStore::open(&self.0.ctx.db)
+            .and_then(|s| s.program(&subject.id))
+            .unwrap_or_default();
+        let expander = adw::ExpanderRow::new();
+        let title = {
+            let expander = expander.clone();
+            move |topics: &[Topic]| {
+                let done = topics.iter().filter(|t| t.done()).count();
+                if topics.is_empty() {
+                    expander.set_title("Программа");
+                    expander.set_subtitle(
+                        "Темы курса по порядку: урок Alt+I берёт первую непройденную.",
+                    );
+                } else {
+                    expander.set_title(&format!("Программа · {done} из {}", topics.len()));
+                    expander.set_subtitle(
+                        &topics
+                            .iter()
+                            .find(|t| !t.done())
+                            .map(|t| format!("Дальше: {}", t.title))
+                            .unwrap_or_else(|| "Все темы пройдены".into()),
+                    );
+                }
+            }
+        };
+        title(&topics);
+
+        for topic in &topics {
+            let check = gtk::CheckButton::new();
+            check.set_active(topic.done());
+            check.set_valign(gtk::Align::Center);
+            let row = adw::ActionRow::builder()
+                .title(&topic.title)
+                .activatable_widget(&check)
+                .build();
+            row.add_prefix(&check);
+            let (db, topic_id, subject_id, title) = (
+                self.0.ctx.db.clone(),
+                topic.id,
+                subject.id.clone(),
+                title.clone(),
+            );
+            check.connect_toggled(move |c| {
+                let marked = LessonStore::open(&db).and_then(|mut s| {
+                    s.mark_topic(topic_id, c.is_active(), ctx::now())?;
+                    s.program(&subject_id)
+                });
+                match marked {
+                    Ok(topics) => title(&topics),
+                    Err(e) => eprintln!("subject program: {e}"),
+                }
+            });
+            expander.add_row(&row);
+        }
+
+        let editor = ui::column(8);
+        editor.set_margin_top(12);
+        editor.set_margin_bottom(12);
+        editor.set_margin_start(12);
+        editor.set_margin_end(12);
+        let caption = ui::text("По строке на тему", &["cp-callout", "cp-secondary"]);
+        let (area, input) = ui::text_area("Классическая вероятность\nУсловная вероятность", 120);
+        area.add_css_class("cp-outlined");
+        input.buffer().set_text(
+            &topics
+                .iter()
+                .map(|t| t.title.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        let save = gtk::Button::with_label("Сохранить");
+        editor.append(&caption);
+        editor.append(&area);
+        editor.append(&ui::actions(&[&save]));
+        let row = gtk::ListBoxRow::builder()
+            .activatable(false)
+            .selectable(false)
+            .child(&editor)
+            .build();
+        expander.add_row(&row);
+
+        let (this, id) = (self.clone(), subject.id.clone());
+        let before: Vec<String> = topics.iter().map(|t| t.title.clone()).collect();
+        save.connect_clicked(move |_| {
+            let lines: Vec<String> = ui::buffer_text(&input)
+                .lines()
+                .map(str::to_string)
+                .collect();
+            let saved = LessonStore::open(&this.0.ctx.db)
+                .and_then(|mut s| s.set_program(&id, &lines, ctx::now()));
+            this.open(Some("subjects"));
+            match saved {
+                Ok(()) => {
+                    let (this2, id, before) = (this.clone(), id.clone(), before.clone());
+                    this.toast(
+                        "Программа сохранена",
+                        Some(Box::new(move || {
+                            if let Ok(mut store) = LessonStore::open(&this2.0.ctx.db) {
+                                let _ = store.set_program(&id, &before, ctx::now());
+                            }
+                            this2.open(Some("subjects"));
+                        })),
+                    );
+                }
+                Err(e) => this.toast(&format!("Программа не сохранена: {e}"), None),
+            }
+        });
+        expander
     }
 
     /// B68: what falls out by Alt+T for this goal. The state «Как у всех»

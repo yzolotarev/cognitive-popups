@@ -6,7 +6,7 @@ use cognitive_exoskeleton_hypotheses::{self as hypotheses, Verdict};
 use cognitive_exoskeleton_memory::Memory;
 use cognitive_exoskeleton_units::UnitStore;
 
-use crate::plan::Context;
+use crate::plan::{Context, ProgramView};
 use crate::store::{LessonStore, StoreError, Subject};
 
 /// Missing tables or a failed read leave that part empty: the plan is still
@@ -36,6 +36,20 @@ pub fn gather(
         }
         recent.push(line);
     }
+    let topics = lessons.program(&subject.id)?;
+    let program = if topics.is_empty() {
+        None
+    } else {
+        Some(ProgramView {
+            done: topics.iter().filter(|t| t.done()).count(),
+            total: topics.len(),
+            next: lessons
+                .next_topics(&subject.id, 3)?
+                .into_iter()
+                .map(|t| t.title)
+                .collect(),
+        })
+    };
     let registry = UnitStore::open(db)
         .and_then(|s| s.registry(&subject.id))
         .unwrap_or_default();
@@ -71,5 +85,6 @@ pub fn gather(
         units,
         due,
         gap,
+        program,
     })
 }

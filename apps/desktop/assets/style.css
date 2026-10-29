@@ -98,6 +98,9 @@ entry.cp-field {
   min-height: 28px;
 }
 
+/* A multi-line field inside a list (the hub): its own edge on the row. */
+.cp-content.cp-outlined { border: 1px solid @cp_separator; }
+
 separator { background: @cp_separator; min-height: 1px; }
 
 /* The «FSRS! N» pill: quiet, round, the material of every window. */

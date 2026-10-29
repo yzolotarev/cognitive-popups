@@ -828,13 +828,33 @@ impl LessonUi {
     }
 
     /// F-30: «что осталось» in the reader's words, then units (S3).
+    /// The program topic is marked only by the reader, never by the lesson
+    /// itself: a finished step is not mastery (B71, INV-02).
     fn close_form(&self, lesson: String) {
         let entry = ui::field("что осталось — можно пропустить");
         let close = ui::button("Закончить урок", &["cp-default"]);
+        let topic = open_store(&self.0.ctx).and_then(|store| {
+            let id = store.lesson(&lesson).ok()??.topic?;
+            store.topic(id).ok()?.filter(|t| !t.done())
+        });
+        let passed = gtk::CheckButton::with_label(
+            &topic
+                .as_ref()
+                .map(|t| format!("Тема «{}» пройдена", t.title))
+                .unwrap_or_default(),
+        );
         let this = self.clone();
         let submit = {
-            let entry = entry.clone();
+            let (entry, passed) = (entry.clone(), passed.clone());
+            let topic = topic.as_ref().map(|t| t.id);
             move || {
+                if let Some(topic) = topic
+                    && passed.is_active()
+                    && let Some(mut store) = open_store(&this.0.ctx)
+                    && let Err(e) = store.mark_topic(topic, true, ctx::now())
+                {
+                    eprintln!("lessons: {e}");
+                }
                 let remaining = entry.text().trim().to_string();
                 this.finish_lesson(&lesson, &remaining);
             }
@@ -842,15 +862,19 @@ impl LessonUi {
         let s = submit.clone();
         entry.connect_activate(move |_| s());
         close.connect_clicked(move |_| submit());
-        self.show(&[
+        let mut rows: Vec<gtk::Widget> = vec![
             ui::text(
                 "Что осталось на следующий раз? Одной строкой, можно пропустить.",
                 &["cp-body"],
             )
             .upcast(),
             entry.clone().upcast(),
-            ui::actions(&[&close]).upcast(),
-        ]);
+        ];
+        if topic.is_some() {
+            rows.push(passed.upcast());
+        }
+        rows.push(ui::actions(&[&close]).upcast());
+        self.show(&rows);
         entry.grab_focus();
     }
 

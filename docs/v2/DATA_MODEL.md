@@ -40,7 +40,8 @@
 | `competencies` | `competency_id`, `subject_id`, `text`, `kind` (8 видов), `confirmed`, `removed` | v1; B28 |
 | `mechanism_switches` | `subject_id`, `mechanism`, `enabled` | Q-49 |
 | `journeys` | `journey_id`, `target_steps` (NULL = ∞), `completed`, `finale_state` | v1 `step_journeys` |
-| `lessons` | `lesson_id`, `subject_id`, `goal_15min`, `why`, `criteria_json`, `own_thoughts`, `plan_version`, `status` (`open`/`paused`/`closed`), `created_at` | v1 `learning_lessons`; B20, B25 |
+| `lessons` | `lesson_id`, `subject_id`, `goal_15min`, `why`, `criteria_json`, `own_thoughts`, `plan_version`, `status` (`open`/`paused`/`closed`), `created_at`, `topic_id` NULL (тема программы, которая была следующей при составлении плана) | v1 `learning_lessons`; B20, B25, B71 |
+| `subject_topics` | `topic_id`, `subject_id`, `position`, `title`, `added_at`, `done_at` NULL (отметка пользователя), `removed` (скрыта, не удалена) | B71 |
 | `plan_items` | `item_id`, `lesson_id`, `plan_version`, `n`, `text`, `status` (`pending`/`current`/`worked`/`skipped`), `memory_unit_id` NULL, `why_included` | A6, B20 |
 | `steps` | `step_id`, `lesson_id`, `journey_id`, `text`, `minutes`, `started_at`, `deadline`, `outcome` (`done`/`partly`/`not`/NULL), `takeaway` | v1 `steps` |
 | `journey_feynman` | `journey_id`, `status` (`unverified`/`checked`), `question`, `answer`, `updated_at` | F-30 integrative question for a fixed path; `checked` means the formative response completed, never a learning grade |

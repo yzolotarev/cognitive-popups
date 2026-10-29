@@ -38,6 +38,7 @@ shots=(
   "lesson-plan|lesson|generate"
   "lesson-clock|lesson|step 20 сделаю три шага для √2"
   "lesson-end|lesson|"
+  "lesson-feynman|lesson|feynman"
   "hub-ai|hub|ai"
   "hub-subjects|hub|subjects"
   "hub-history|hub|history"

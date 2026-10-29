@@ -424,3 +424,34 @@ fn feynman_keeps_at_most_two_gaps_and_skips_an_empty_explanation() {
         other => panic!("{other:?}"),
     }
 }
+
+#[test]
+fn fixed_path_feynman_uses_the_integrative_prompt_and_rejects_unusable_questions() {
+    use crate::feynman;
+    let reply = json!({
+        "question": "Как различие рангов показывает, можно ли решить систему?",
+        "rubric": "связать условие совместности с рангами",
+        "coverage": {"covered": ["сравнить ранги"], "unverified": []},
+        "quality": {"single": true, "integrative": true, "no_hints": true}
+    });
+    let c = client(std::slice::from_ref(&reply));
+    let meaning_map = r#"[{"step":"сравнить ранги","takeaway":"решает число строк"}]"#;
+    let question = feynman::integrative_question(&c, &prompts(), meaning_map).unwrap();
+    assert!(question.question.starts_with("Как различие"));
+    assert!(question.rubric.contains("совместности"));
+    let input = &c.transport().inputs.borrow()[0];
+    assert!(input.contains("<MEANING_MAP>"));
+    assert!(input.contains("сравнить ранги"));
+    assert!(
+        prompts()
+            .get(feynman::INTEGRATIVE_PROMPT)
+            .unwrap()
+            .contains("ОДИН итоговый вопрос")
+    );
+
+    let mut bad = reply;
+    bad["quality"]["no_hints"] = json!(false);
+    let c = client(&[bad.clone(), bad]);
+    assert!(feynman::integrative_question(&c, &prompts(), meaning_map).is_err());
+    assert_eq!(c.transport().calls.get(), 2, "bad JSON is retried once");
+}

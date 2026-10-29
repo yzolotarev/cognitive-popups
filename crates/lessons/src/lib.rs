@@ -18,5 +18,6 @@ pub use rules::{
     Bridge, CYCLE_GAP, DEFAULT_MINUTES, MAX_MINUTES, READING, SESSION_GAP, parse_step,
 };
 pub use store::{
-    ItemStatus, Journey, Lesson, LessonStore, Outcome, PlanItem, Step, StoreError, Subject,
+    FeynmanRecord, FeynmanStatus, ItemStatus, Journey, Lesson, LessonStore, Outcome, PlanItem,
+    Step, StoreError, Subject,
 };

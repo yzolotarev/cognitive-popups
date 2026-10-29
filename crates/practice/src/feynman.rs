@@ -10,6 +10,7 @@ use serde_json::Value;
 use crate::PracticeError;
 
 pub const QUESTION_PROMPT: &str = "question_system";
+pub const INTEGRATIVE_PROMPT: &str = "integrative_compose_system";
 pub const CHECK_PROMPT: &str = "feynman_system";
 /// F-17: no more than two «•».
 pub const MAX_GAPS: usize = 2;
@@ -88,6 +89,43 @@ pub fn question<T: Transport>(
             .unwrap_or_default()
             .trim()
             .to_string(),
+    })
+}
+
+/// F-30: compose one integrative question from a fixed path's step summaries.
+/// The steps are passed as data, separate from the system instructions.
+pub fn integrative_question<T: Transport>(
+    client: &Client<T>,
+    prompts: &PromptStore,
+    meaning_map: &str,
+) -> Result<Question, PracticeError> {
+    if meaning_map.trim().is_empty() {
+        return Err(PracticeError::EmptyText);
+    }
+    let system = prompt(prompts, INTEGRATIVE_PROMPT)?;
+    let value = client.complete_json(
+        &request(
+            &system,
+            format!("<MEANING_MAP>\n{meaning_map}\n</MEANING_MAP>"),
+        ),
+        |value| {
+            if value["question"].as_str().unwrap_or("").trim().is_empty() {
+                return Err("question пусто".into());
+            }
+            if value["rubric"].as_str().unwrap_or("").trim().is_empty() {
+                return Err("rubric пусто".into());
+            }
+            for quality in ["single", "integrative", "no_hints"] {
+                if value["quality"][quality] != true {
+                    return Err(format!("quality.{quality} должен быть true"));
+                }
+            }
+            Ok(())
+        },
+    )?;
+    Ok(Question {
+        question: value["question"].as_str().unwrap().trim().to_string(),
+        rubric: value["rubric"].as_str().unwrap().trim().to_string(),
     })
 }
 

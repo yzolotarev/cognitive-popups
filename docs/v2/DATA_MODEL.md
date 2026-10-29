@@ -43,6 +43,7 @@
 | `lessons` | `lesson_id`, `subject_id`, `goal_15min`, `why`, `criteria_json`, `own_thoughts`, `plan_version`, `status` (`open`/`paused`/`closed`), `created_at` | v1 `learning_lessons`; B20, B25 |
 | `plan_items` | `item_id`, `lesson_id`, `plan_version`, `n`, `text`, `status` (`pending`/`current`/`worked`/`skipped`), `memory_unit_id` NULL, `why_included` | A6, B20 |
 | `steps` | `step_id`, `lesson_id`, `journey_id`, `text`, `minutes`, `started_at`, `deadline`, `outcome` (`done`/`partly`/`not`/NULL), `takeaway` | v1 `steps` |
+| `journey_feynman` | `journey_id`, `status` (`unverified`/`checked`), `question`, `answer`, `updated_at` | F-30 integrative question for a fixed path; `checked` means the formative response completed, never a learning grade |
 | `closures` | `journey_id`, `remaining`, `closed_at`, `reason` | F-30 |
 
 ## 5. Учебные единицы и память (S3, S4)

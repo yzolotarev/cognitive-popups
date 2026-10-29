@@ -251,6 +251,7 @@ fn daemon() -> ExitCode {
                     practice.open(selection(), route, argument == "pill");
                 }
                 "lesson" if argument.is_empty() => lesson.press(selection()),
+                "lesson" if argument == "feynman" => lesson.preview_feynman(),
                 "lesson" => lesson.script(argument),
                 "pill" => pill.show_count(argument.parse().unwrap_or(0)),
                 // `signal notice <text>`: a quiet notice from a script.

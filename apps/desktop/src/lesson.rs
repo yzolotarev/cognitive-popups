@@ -14,7 +14,8 @@ use cognitive_exoskeleton_capture::Captured;
 use cognitive_exoskeleton_domain::LessonId;
 use cognitive_exoskeleton_formula as formula;
 use cognitive_exoskeleton_lessons::{
-    self as lessons, ItemStatus, Lesson, LessonStore, Outcome, Plan, PlanError, Step, Subject,
+    self as lessons, FeynmanStatus, ItemStatus, Lesson, LessonStore, Outcome, Plan, PlanError,
+    Step, Subject,
 };
 use cognitive_exoskeleton_nudges::{Consent, Nudges};
 use cognitive_exoskeleton_units::{UnitStore, extract_lesson};
@@ -26,6 +27,7 @@ use crate::notice::Notice;
 use crate::pill::Pill;
 use crate::popup::{self, Opened};
 use crate::ui;
+use cognitive_exoskeleton_practice::feynman::{self, Feedback, Question};
 
 pub const WIDTH: i32 = 440;
 pub const SIZE: (i32, i32) = (WIDTH, 520);
@@ -125,6 +127,26 @@ impl LessonUi {
     pub fn hide(&self) {
         popup::hide(&self.0.window);
         popup::hide(&self.0.end);
+    }
+
+    /// A fixture-only visual sample for the fixed-path Feynman close-out.
+    pub fn preview_feynman(&self) {
+        if std::env::var_os("COGNITIVE_AI_FIXTURE").is_none() {
+            return;
+        }
+        let (area, _) = ui::text_area("Объясни своими словами…", 80);
+        let save = ui::button("Сохранить ответ", &["cp-default"]);
+        let skip = ui::button("Пропустить вопрос", &[]);
+        self.show(&[
+            ui::rich(
+                "Как связаны ранг расширенной матрицы и возможность решить систему?",
+                &["cp-body"],
+                WIDTH,
+            ),
+            area.upcast(),
+            ui::actions(&[&save, &skip]).upcast(),
+        ]);
+        popup::show(&self.0.window, SIZE, Opened::ByKey);
     }
 
     /// At daemon start: an open lesson owns new events again; a running step
@@ -753,7 +775,8 @@ impl LessonUi {
         let Some(store) = open_store(&self.0.ctx) else {
             return;
         };
-        let journey = store.journey(journey).ok().flatten();
+        let journey_id = journey;
+        let journey = store.journey(journey_id).ok().flatten();
         let finished = journey.as_ref().is_some_and(|j| j.finished());
         let progress = journey.map(|j| j.progress()).unwrap_or_default();
         let lesson = store.open_lesson().ok().flatten();
@@ -774,7 +797,7 @@ impl LessonUi {
             popup::hide(&this.0.end);
             if let Some(id) = &id {
                 popup::show(&this.0.window, SIZE, Opened::ByKey);
-                this.close_form(id.clone());
+                this.close_or_feynman(id.clone(), journey_id);
             }
         });
         let mut buttons = vec![&pause];
@@ -822,6 +845,228 @@ impl LessonUi {
             ui::actions(&[&close]).upcast(),
         ]);
         entry.grab_focus();
+    }
+
+    /// A fixed path closes with one integrative Feynman question (F-30).
+    /// Open-ended paths keep the ordinary close form.
+    fn close_or_feynman(&self, lesson: String, journey_id: i64) {
+        let Some(store) = open_store(&self.0.ctx) else {
+            return self.close_form(lesson);
+        };
+        let journey = store.journey(journey_id).ok().flatten();
+        let steps = store.steps_for_journey(journey_id).unwrap_or_default();
+        if journey.is_none_or(|j| j.target.is_none()) || steps.is_empty() {
+            return self.close_form(lesson);
+        }
+        let meaning_map = serde_json::to_string(
+            &steps
+                .iter()
+                .map(|step| {
+                    serde_json::json!({
+                        "step": step.text,
+                        "reader_takeaway": step.takeaway,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_default();
+        let operation = ctx::operation();
+        let skip = ui::button("Пропустить вопрос", &[]);
+        self.show(&[
+            ui::text("Собираю итоговый вопрос по твоим шагам…", &["cp-body"]).upcast(),
+            ui::actions(&[&skip]).upcast(),
+        ]);
+        let cancelled = Rc::new(std::cell::Cell::new(false));
+        let this = self.clone();
+        let lesson_for_skip = lesson.clone();
+        let cancelled_for_skip = cancelled.clone();
+        skip.connect_clicked(move |_| {
+            cancelled_for_skip.set(true);
+            this.record_feynman(journey_id, FeynmanStatus::Unverified, None, None);
+            this.final_unverified(lesson_for_skip.clone(), "Итоговый цикл не проверен.");
+        });
+        let (ai, prompts) = (self.0.ctx.ai(), self.0.ctx.prompts.clone());
+        let provider = self.0.ctx.provider();
+        let this = self.clone();
+        let map_for_worker = meaning_map.clone();
+        ctx::background(
+            move || feynman::integrative_question(&ai, &prompts, &map_for_worker),
+            move |result| {
+                if cancelled.get() {
+                    return;
+                }
+                match result {
+                    Ok(question) => this.integrative_answer(
+                        lesson,
+                        journey_id,
+                        meaning_map,
+                        operation,
+                        question,
+                    ),
+                    Err(error) => {
+                        this.record_feynman(journey_id, FeynmanStatus::Unverified, None, None);
+                        this.final_unverified(
+                            lesson,
+                            &format!(
+                                "Итоговый цикл не проверен: {}",
+                                error.user_message(provider)
+                            ),
+                        );
+                    }
+                }
+            },
+        );
+    }
+
+    fn integrative_answer(
+        &self,
+        lesson: String,
+        journey_id: i64,
+        meaning_map: String,
+        operation: cognitive_exoskeleton_domain::OperationId,
+        question: Question,
+    ) {
+        self.record_feynman(
+            journey_id,
+            FeynmanStatus::Unverified,
+            Some(&question.question),
+            None,
+        );
+        self.0.ctx.record(
+            &operation,
+            None,
+            None,
+            Some(&format!("Итоговый вопрос: {}", question.question)),
+        );
+        let (area, input) = ui::text_area("Объясни своими словами…", 80);
+        let check = ui::button("Сохранить ответ", &["cp-default"]);
+        let skip = ui::button("Пропустить вопрос", &[]);
+        let this = self.clone();
+        let i = input.clone();
+        let q = question.clone();
+        let map = meaning_map.clone();
+        let lesson_for_check = lesson.clone();
+        check.connect_clicked(move |button| {
+            let answer = ui::buffer_text(&i).trim().to_string();
+            if answer.is_empty() {
+                return;
+            }
+            button.set_sensitive(false);
+            this.record_feynman(
+                journey_id,
+                FeynmanStatus::Unverified,
+                Some(&q.question),
+                Some(&answer),
+            );
+            this.0.ctx.record(&operation, None, Some(&answer), None);
+            this.show(&[ui::waiting("Сверяю объяснение с шагами…").upcast()]);
+            let (ai, prompts) = (this.0.ctx.ai(), this.0.ctx.prompts.clone());
+            let provider = this.0.ctx.provider();
+            let this2 = this.clone();
+            let lesson = lesson_for_check.clone();
+            let q = q.clone();
+            let map = map.clone();
+            let answer = answer.clone();
+            let q_for_worker = q.clone();
+            let map_for_worker = map.clone();
+            let answer_for_worker = answer.clone();
+            ctx::background(
+                move || {
+                    feynman::check(
+                        &ai,
+                        &prompts,
+                        &map_for_worker,
+                        &q_for_worker,
+                        &answer_for_worker,
+                    )
+                },
+                move |result| match result {
+                    Ok(Some(feedback)) => {
+                        this2.record_feynman(
+                            journey_id,
+                            FeynmanStatus::Checked,
+                            Some(&q.question),
+                            Some(&answer),
+                        );
+                        let mut widgets = vec![
+                            ui::text(
+                                "Ответ сохранён. Подсказки модели — не оценка.",
+                                &["cp-body"],
+                            )
+                            .upcast(),
+                        ];
+                        if let Feedback::NeedsRetry { gaps, follow_up } = feedback {
+                            widgets.extend(gaps.into_iter().map(|gap| {
+                                ui::text(
+                                    &format!("Возможно, осталось: {}", gap.description),
+                                    &["cp-callout"],
+                                )
+                                .upcast()
+                            }));
+                            if let Some(follow_up) = follow_up {
+                                widgets.push(ui::text(&follow_up, &["cp-body"]).upcast());
+                            }
+                        }
+                        this2.final_continue(lesson, widgets);
+                    }
+                    Ok(None) => this2.final_unverified(
+                        lesson,
+                        "Итоговый цикл не проверен: объяснение пропущено.",
+                    ),
+                    Err(error) => this2.final_unverified(
+                        lesson,
+                        &format!(
+                            "Итоговый цикл не проверен: {}",
+                            error.user_message(provider)
+                        ),
+                    ),
+                },
+            );
+        });
+        let this = self.clone();
+        let lesson_for_skip = lesson.clone();
+        let question_for_skip = question.question.clone();
+        skip.connect_clicked(move |_| {
+            this.record_feynman(
+                journey_id,
+                FeynmanStatus::Unverified,
+                Some(&question_for_skip),
+                None,
+            );
+            this.final_unverified(lesson_for_skip.clone(), "Итоговый цикл не проверен.");
+        });
+        self.show(&[
+            ui::rich(&question.question, &["cp-body"], WIDTH),
+            area.upcast(),
+            ui::actions(&[&check, &skip]).upcast(),
+        ]);
+        input.grab_focus();
+    }
+
+    fn record_feynman(
+        &self,
+        journey: i64,
+        status: FeynmanStatus,
+        question: Option<&str>,
+        answer: Option<&str>,
+    ) {
+        if let Some(mut store) = open_store(&self.0.ctx)
+            && let Err(error) = store.record_feynman(journey, status, question, answer, ctx::now())
+        {
+            eprintln!("lessons: {error}");
+        }
+    }
+
+    fn final_unverified(&self, lesson: String, message: &str) {
+        self.final_continue(lesson, vec![ui::text(message, &["cp-body"]).upcast()]);
+    }
+
+    fn final_continue(&self, lesson: String, mut widgets: Vec<gtk::Widget>) {
+        let next = ui::button("К закрытию урока", &["cp-default"]);
+        let this = self.clone();
+        next.connect_clicked(move |_| this.close_form(lesson.clone()));
+        widgets.push(ui::actions(&[&next]).upcast());
+        self.show(&widgets);
     }
 
     fn finish_lesson(&self, lesson: &str, remaining: &str) {

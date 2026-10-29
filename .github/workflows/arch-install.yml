@@ -12,7 +12,9 @@ jobs:
     container: archlinux:base-devel
     timeout-minutes: 40
     steps:
-      - run: pacman -Syu --noconfirm git rust gtk4 libadwaita gtk4-layer-shell pkgconf wl-clipboard wtype libsecret sway grim dbus ttf-dejavu sudo
+      - run: |
+          pacman -Syu --noconfirm git rust gtk4 libadwaita gtk4-layer-shell pkgconf wl-clipboard wtype libsecret sway grim dbus ttf-dejavu sudo libcap
+          setcap -r /usr/bin/sway
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
@@ -35,8 +37,10 @@ jobs:
         run: |
           su builder -c 'cognitive-popups doctor'
           test -f /usr/share/cognitive-popups/prompts/NEW_formula_rule.md
-      - name: Build screenshot binary
-        run: su builder -c 'cargo build --locked --manifest-path apps/desktop/Cargo.toml'
+      - name: Use the installed binary for screenshots
+        run: |
+          mkdir -p apps/desktop/target/debug
+          cp /usr/bin/cognitive-popups apps/desktop/target/debug/cognitive-popups
       - name: Capture windows
         run: su builder -c 'dbus-run-session -- apps/desktop/tools/screenshots.sh /tmp/screenshots'
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

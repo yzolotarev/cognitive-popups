@@ -21,6 +21,7 @@ pub enum Opened {
 pub fn new(app: &adw::Application, namespace: &str, width: i32) -> gtk::ApplicationWindow {
     let window = gtk::ApplicationWindow::new(app);
     window.add_css_class("cp-popup");
+    crate::scale::attach(&window);
     window.init_layer_shell();
     window.set_layer(Layer::Overlay);
     window.set_namespace(Some(namespace));
@@ -57,6 +58,18 @@ pub fn corner(
     window.set_margin(Edge::Right, OFFSET);
     window.set_margin(Edge::Top, top);
     window
+}
+
+/// Keep large text reachable on short displays.
+pub fn set_scrollable_child(window: &gtk::ApplicationWindow, child: &impl IsA<gtk::Widget>) {
+    let scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .propagate_natural_height(true)
+        .max_content_height(500)
+        .child(child)
+        .build();
+    window.set_child(Some(&scroller));
 }
 
 /// Shows a corner window on the monitor under the cursor. One that opened by

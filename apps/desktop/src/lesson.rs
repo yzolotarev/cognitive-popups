@@ -74,7 +74,7 @@ impl LessonUi {
         root.append(&header);
         let body = ui::column(8);
         root.append(&body);
-        window.set_child(Some(&root));
+        popup::set_scrollable_child(&window, &root);
 
         let clock = popup::corner(app, "cognitive-clock", CLOCK_WIDTH, 12);
         let clock_root = ui::column(2);

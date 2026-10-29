@@ -84,6 +84,7 @@ impl Hub {
             .default_height(600)
             .hide_on_close(true)
             .build();
+        crate::scale::attach(&window);
         let stack = adw::ViewStack::new();
         let switcher = adw::ViewSwitcher::builder()
             .stack(&stack)
@@ -182,18 +183,20 @@ impl Hub {
             .title("Адрес (для OpenAI-совместимого)")
             .text(current.base_url.as_deref().unwrap_or(""))
             .build();
-        let key = adw::PasswordEntryRow::builder()
-            .title(if current.key().is_some() {
-                "Ключ сохранён — вставь новый, чтобы заменить"
-            } else {
-                "Ключ"
-            })
-            .build();
+        let key = adw::PasswordEntryRow::builder().title("Ключ").build();
         group.add(&provider);
         group.add(&model);
         group.add(&base);
         group.add(&key);
         page.add(&group);
+
+        if current.key().is_some() {
+            let hint = gtk::Label::new(Some("Ключ сохранён. Чтобы заменить его, введи новый."));
+            hint.set_wrap(true);
+            hint.set_xalign(0.0);
+            hint.add_css_class("dim-label");
+            page.column.append(&hint);
+        }
 
         let sharing = adw::PreferencesGroup::new();
         let line = gtk::Label::new(Some(&format!(

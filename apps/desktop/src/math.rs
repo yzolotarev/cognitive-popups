@@ -155,8 +155,19 @@ pub fn picture(drawn: &Drawn) -> gtk::DrawingArea {
     area.set_content_height(drawn.height);
     area.set_halign(gtk::Align::Start);
     area.set_valign(gtk::Align::Center);
+    let (base_width, base_height) = (drawn.width, drawn.height);
+    area.add_tick_callback(move |area, _| {
+        let scale = crate::scale::factor(area);
+        let width = (f64::from(base_width) * scale).round() as i32;
+        let height = (f64::from(base_height) * scale).round() as i32;
+        if area.content_width() != width || area.content_height() != height {
+            area.set_content_width(width);
+            area.set_content_height(height);
+        }
+        gtk::glib::ControlFlow::Continue
+    });
     let drawn = drawn.clone();
-    area.set_draw_func(move |_, cr, _, _| {
+    area.set_draw_func(move |_, cr, width, height| {
         let (w, h) = drawn.raster;
         let Ok(surface) = gtk::cairo::ImageSurface::create_for_data(
             drawn.pixels.as_ref().clone(),
@@ -167,7 +178,10 @@ pub fn picture(drawn: &Drawn) -> gtk::DrawingArea {
         ) else {
             return;
         };
-        cr.scale(1.0 / f64::from(OVERSAMPLE), 1.0 / f64::from(OVERSAMPLE));
+        cr.scale(
+            f64::from(width) / f64::from(w),
+            f64::from(height) / f64::from(h),
+        );
         let _ = cr.set_source_surface(&surface, 0.0, 0.0);
         let _ = cr.paint();
     });

@@ -62,7 +62,7 @@ impl Help {
         line.append(&note);
         line.append(&hub);
         root.append(&line);
-        window.set_child(Some(&root));
+        popup::set_scrollable_child(&window, &root);
         let keys = gtk::EventControllerKey::new();
         let w = window.clone();
         keys.connect_key_pressed(move |_, key, _, _| {

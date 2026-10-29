@@ -41,6 +41,8 @@ shots=(
   "hub-ai|hub|ai"
   "hub-subjects|hub|subjects"
   "hub-history|hub|history"
+  "help|help|"
+  "resume|resume|"
   "pill|pill|3"
   "notice|notice|+2 новые · 1 добавлена к существующим"
   "hypothesis-answer|hypothesis|чем ближе старт к корню, тем быстрее сходится"

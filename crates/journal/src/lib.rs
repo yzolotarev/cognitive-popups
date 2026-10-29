@@ -194,6 +194,16 @@ impl Journal {
         self.read_where(&format!("sequence IN ({})", list.join(",")), [])
     }
 
+    /// The last `limit` source snapshots (what was selected, where), oldest
+    /// first: Alt+B looks for the last place of study among them.
+    pub fn recent_sources(&self, limit: usize) -> Result<Vec<StoredEvent>, JournalError> {
+        self.read_where(
+            "kind = 'source' AND sequence IN
+             (SELECT sequence FROM events WHERE kind = 'source' ORDER BY sequence DESC LIMIT ?1)",
+            [limit as i64],
+        )
+    }
+
     /// The lesson as text for the end-of-lesson model call: one line per event,
     /// marked by who produced it. Text from development tools and AI chats is left out.
     pub fn lesson_transcript(&self, lesson: &LessonId) -> Result<String, JournalError> {

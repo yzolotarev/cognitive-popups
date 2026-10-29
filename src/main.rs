@@ -73,6 +73,7 @@ usage:
   cognitive-exoskeleton subject add --db <path> [--deadline YYYY-MM-DD] <name> <long-term goal> | list
   cognitive-exoskeleton lesson plan --db <path> --prompts <dir> --subject <id> [--thoughts <text>] [--text <file>] | show | item <id> <status> | close [--remaining <text>]
   cognitive-exoskeleton step start --db <path> [--path 1|3|5|inf] [<minutes> <text>] | finish done|partly|not [--takeaway <text>] | bridge
+  cognitive-exoskeleton resume --db <path>
   cognitive-exoskeleton understand pick|words|explain|example|ladder|character --text <file> --prompts <dir> [--mine <four words>] [--target <text>] [<terms or question>]
 
 AI settings (environment):
@@ -149,6 +150,7 @@ fn run(args: &[String]) -> Result<String, String> {
         Some("capture") => return run_capture(&args[1..]),
         Some("note") => return run_note(&args[1..]),
         Some("understand") => return run_understand(&args[1..]),
+        Some("resume") => return run_resume(&args[1..]),
         Some("hypothesis") => return run_hypothesis(&args[1..]),
         Some("lesson") | Some("subject") | Some("step") => return run_lesson(&args[0], &args[1..]),
         _ => {}
@@ -826,6 +828,24 @@ fn fresh_roll() -> f64 {
 
 fn json(value: &impl serde::Serialize) -> String {
     serde_json::to_string(value).unwrap_or_default()
+}
+
+/// Alt+B (F-43) without a window: the last place and the reader's last word.
+fn run_resume(args: &[String]) -> Result<String, String> {
+    use cognitive_exoskeleton_resume as resume;
+    let (options, _, _) = parse_options(args, &["--db"], &[])?;
+    let db = options.get("--db").ok_or("--db is required")?;
+    let journal = Journal::open(db).map_err(|e| e.to_string())?;
+    let Some(place) = resume::last_place(&journal) else {
+        return Ok("Пока нечего продолжать".into());
+    };
+    let hint = resume::hint(std::path::Path::new(db), &place);
+    let okular = (place.app == resume::App::Okular)
+        .then(|| resume::okular_position(&resume::okular_docdata_dirs(), &place.document))
+        .flatten();
+    Ok(json(
+        &serde_json::json!({"place": place, "hint": hint, "okular": okular}),
+    ))
 }
 
 /// Alt+W «помочь понять» (F-02…F-10) without a window.

@@ -267,3 +267,88 @@ fn b68_a_goal_profile_overrides_the_global_switch_and_inherit_returns_to_it() {
     );
     assert!(shares(&routes).is_empty());
 }
+
+fn task_save(db: &Path, class: Option<&str>) {
+    let mut args = vec![
+        "practice",
+        "task",
+        "save",
+        "--key",
+        "whole:op-1:1",
+        "--type",
+        "1",
+        "--title",
+        "Отработка метода",
+        "--condition",
+        "Дано: x² = 2.\nТребуется: два шага Ньютона.",
+        "--solution",
+        "1,5; 1,4167",
+        "--draft",
+        "x1 = 1,5",
+        "--now",
+        NOW,
+    ];
+    if let Some(class) = class {
+        args.extend(["--class", class]);
+    }
+    run(db, &args);
+}
+
+#[test]
+fn b69_a_task_made_in_another_window_is_deferred_with_the_reason() {
+    let db = fresh("ctx-task");
+    task_save(&db, Some("okular"));
+
+    let same = json(
+        &db,
+        &["practice", "routes", "--class", "okular", "--now", NOW],
+    );
+    assert_eq!(shares(&same), vec!["continue_task"]);
+    assert!(same["deferred"].as_array().unwrap().is_empty());
+
+    let away = json(
+        &db,
+        &["practice", "routes", "--class", "firefox", "--now", NOW],
+    );
+    assert!(shares(&away).is_empty(), "left out of the draw");
+    assert_eq!(away["deferred"][0]["route"], "continue_task");
+    assert!(
+        away["deferred"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("Контекст изменился")
+    );
+
+    // Window unknown: as before.
+    let unknown = json(&db, &["practice", "routes", "--now", NOW]);
+    assert_eq!(shares(&unknown), vec!["continue_task"]);
+}
+
+#[test]
+fn b69_old_fragments_from_another_window_are_deferred_and_unknown_task_class_is_not() {
+    let db = fresh("ctx-old");
+    let body = r#"{"operation":"op-a","key":"a","at":"2026-10-30T09:00:00Z","event":{"payload":"source","kind":"selection","text":"Ранг матрицы равен числу ненулевых строк ступенчатого вида. a","application":"okular","window_title":null,"context":"study"}}"#;
+    run(&db, &["log", "add", "--json", body]);
+
+    let away = json(
+        &db,
+        &["practice", "routes", "--class", "firefox", "--now", NOW],
+    );
+    assert!(shares(&away).is_empty());
+    assert_eq!(away["deferred"][0]["route"], "old_material");
+
+    let here = json(
+        &db,
+        &["practice", "routes", "--class", "Okular", "--now", NOW],
+    );
+    assert_eq!(shares(&here), vec!["old_material"]);
+
+    // a task with no remembered window is never held back
+    task_save(&db, None);
+    let both = json(
+        &db,
+        &["practice", "routes", "--class", "firefox", "--now", NOW],
+    );
+    assert_eq!(shares(&both), vec!["continue_task"]);
+    assert_eq!(both["deferred"][0]["route"], "old_material");
+}

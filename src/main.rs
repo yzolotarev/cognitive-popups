@@ -59,7 +59,7 @@ usage:
   cognitive-exoskeleton practice whole --prompts <dir> (--text <file> | --db <path> --unit <id>)
                                        [--type 1-10] [--ops \"op1; op2\"]   [Собери вместе]
   cognitive-exoskeleton practice methods --prompts <dir> --text <file>   trails: choose a method
-  cognitive-exoskeleton practice routes --db <path> [--text <file>] [--goal <id|name>] [--now <t>]   what Alt+T can draw, and why not
+  cognitive-exoskeleton practice routes --db <path> [--text <file>] [--class <window class>] [--goal <id|name>] [--now <t>]   what Alt+T can draw, and why not (a changed window defers saved material)
   cognitive-exoskeleton practice route <name> <on|off> --db <path> [--goal <id|name>; also inherit]   take a route out of the draw (Q-49, B68)
   cognitive-exoskeleton practice task save --db <path> --key <k> --type <n> --title <t> --condition <c>
                                       --solution <s> [--ops \"a; b\"] [--draft <d>]
@@ -547,6 +547,7 @@ fn run_practice(args: &[String]) -> Result<String, String> {
             "--title",
             "--condition",
             "--solution",
+            "--class",
             "--draft",
             "--id",
         ],
@@ -739,7 +740,9 @@ fn run_practice_stores(
                 Some(goal) => Some(resolve_goal(db, goal)?),
                 None => availability::current_goal(db),
             };
-            let availability = availability::compute_for(db, at, &read("--text")?, goal.as_deref());
+            let window = availability::Window::known(options.get("--class").map(String::as_str));
+            let availability =
+                availability::compute_with(db, at, &read("--text")?, &window, goal.as_deref());
             let shares: Vec<_> = routes::shares(&availability.excluded())
                 .into_iter()
                 .map(|(route, share)| {
@@ -753,9 +756,16 @@ fn run_practice_stores(
                     serde_json::json!({"route": route.name(), "why": why, "reason": why.reason()})
                 })
                 .collect();
+            let deferred: Vec<_> = availability
+                .deferred
+                .iter()
+                .map(|(route, why)| {
+                    serde_json::json!({"route": route.name(), "why": why, "reason": why.reason()})
+                })
+                .collect();
             let off: Vec<_> = availability.switched_off.iter().map(|r| r.name()).collect();
             json(
-                serde_json::json!({"shares": shares, "unavailable": unavailable, "switched_off": off, "goal": goal}),
+                serde_json::json!({"shares": shares, "unavailable": unavailable, "deferred": deferred, "switched_off": off, "goal": goal}),
             )
         }
         // `route <name> <on|off>`: the reader's global switch (Q-49); `off` removes it from the draw.
@@ -827,7 +837,13 @@ fn run_practice_stores(
                     };
                     let draft = options.get("--draft").map(String::as_str).unwrap_or("");
                     let id = store
-                        .save(&need("--key")?, &task, draft, at)
+                        .save_in(
+                            &need("--key")?,
+                            &task,
+                            draft,
+                            at,
+                            options.get("--class").map(String::as_str),
+                        )
                         .map_err(|e| e.to_string())?;
                     Ok(format!("task {id}"))
                 }

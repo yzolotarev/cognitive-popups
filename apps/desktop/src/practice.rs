@@ -14,7 +14,7 @@ use cognitive_exoskeleton_memory::{Grade, GradeSource, Memory, Note};
 use cognitive_exoskeleton_practice::{
     self as practice, Card, CardSession, Category, Guidance, Help, Hint, MethodItem, MethodSet,
     PracticeError, ProbeGroup, RecallCard, WholeTask,
-    availability::{self, Availability},
+    availability::{self, Availability, Window},
     families,
     feynman::{self, Feedback, Question},
     revisit,
@@ -167,14 +167,22 @@ impl PracticeWindow {
     /// Reads the stores and tells the manual row what is out and why. A route
     /// that is out stays clickable: the click explains instead of faking.
     fn refresh_availability(&self) -> Rc<Availability> {
-        let text = self.0.state.borrow().text.clone();
         // B68: the profile of the goal of the open lesson, global when unknown.
-        let goal = availability::current_goal(&self.0.ctx.db);
-        let avail = Rc::new(availability::compute_for(
+        let (text, window) = {
+            let state = self.0.state.borrow();
+            // An archive fragment is not the window the reader is in.
+            let window = match &state.captured {
+                Some(c) if c.origin != Origin::Archive => Window::known(c.window_class.as_deref()),
+                _ => Window::unknown(),
+            };
+            (state.text.clone(), window)
+        };
+        let avail = Rc::new(availability::compute_with(
             &self.0.ctx.db,
             ctx::now(),
             &text,
-            goal.as_deref(),
+            &window,
+            availability::current_goal(&self.0.ctx.db).as_deref(),
         ));
         for (route, button) in &self.0.choices {
             match avail.reason(*route).filter(|_| *route != Route::Probes) {
@@ -186,7 +194,9 @@ impl PracticeWindow {
                 None => {
                     button.remove_css_class("cp-unavailable");
                     button.set_opacity(1.0);
-                    button.set_tooltip_text(None);
+                    // Held back by the context check: still clickable (B69).
+                    let held = avail.deferred_reason(*route).map(|d| d.reason());
+                    button.set_tooltip_text(held.as_deref());
                 }
             }
         }
@@ -705,15 +715,24 @@ impl PracticeWindow {
                 state.wholes
             )
         };
+        // The window the task is made in, for the context check (B69).
+        let class = self
+            .0
+            .state
+            .borrow()
+            .captured
+            .as_ref()
+            .and_then(|c| c.window_class.clone());
         // `force`: the reader asked; otherwise only a draft is worth keeping.
         let save = {
-            let (db, id, closed, input, task, key) = (
+            let (db, id, closed, input, task, key, class) = (
                 db.clone(),
                 id.clone(),
                 closed.clone(),
                 input.clone(),
                 task.clone(),
                 key,
+                class,
             );
             Rc::new(move |force: bool| {
                 if closed.get() {
@@ -726,7 +745,7 @@ impl PracticeWindow {
                 let at = ctx::now();
                 let saved = TaskStore::open(&db).and_then(|mut store| match id.get() {
                     Some(known) => store.set_draft(known, &draft, at).map(|()| known),
-                    None => store.save(&key, &task, &draft, at),
+                    None => store.save_in(&key, &task, &draft, at, class.as_deref()),
                 });
                 match saved {
                     Ok(known) => id.set(Some(known)),

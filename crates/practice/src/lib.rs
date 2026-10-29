@@ -24,6 +24,7 @@ pub mod recall;
 pub mod revisit;
 pub mod routes;
 pub mod skill;
+pub mod standing;
 pub mod switches;
 pub mod tasks;
 pub mod trails;

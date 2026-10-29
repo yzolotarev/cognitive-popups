@@ -7,6 +7,9 @@ publish = false
 
 [dependencies]
 cognitive-exoskeleton-ai = { path = "../ai" }
+cognitive-exoskeleton-journal = { path = "../journal" }
+cognitive-exoskeleton-memory = { path = "../memory" }
+cognitive-exoskeleton-units = { path = "../units" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

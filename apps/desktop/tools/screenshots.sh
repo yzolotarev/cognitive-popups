@@ -30,6 +30,9 @@ shots=(
   "understand-ladder|understand|ladder"
   "understand-character|understand|character"
   "hypothesis|hypothesis|"
+  "practice|practice|probes"
+  "practice-methods|practice|methods"
+  "practice-feynman|practice|feynman"
   "hypothesis-answer|hypothesis|чем ближе старт к корню, тем быстрее сходится"
 )
 
@@ -45,7 +48,7 @@ for theme in light dark; do
     # shellcheck disable=SC2086
     "$bin" signal $window ${argument:+"$argument"}
     sleep 1.2
-    grim -g "250,150 640x560" "$out/$name-$theme.png"
+    grim -g "250,0 680x800" "$out/$name-$theme.png"
     "$bin" signal hide
     sleep 0.3
   done

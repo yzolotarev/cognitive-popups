@@ -48,13 +48,13 @@ pub fn new(app: &adw::Application, namespace: &str, width: i32) -> gtk::Applicat
 }
 
 /// Shows the window next to the cursor, or raises it if it is already open.
-pub fn show(window: &gtk::ApplicationWindow, width: i32, opened: Opened) {
+pub fn show(window: &gtk::ApplicationWindow, size: (i32, i32), opened: Opened) {
     let mode = match opened {
         Opened::ByKey => KeyboardMode::OnDemand,
         Opened::ByItself => KeyboardMode::None,
     };
     if !window.is_visible() {
-        let (monitor, x, y) = place(cursor(), width);
+        let (monitor, x, y) = place(cursor(), size);
         window.set_monitor(monitor.as_ref());
         window.set_margin(Edge::Left, x);
         window.set_margin(Edge::Top, y);
@@ -70,8 +70,7 @@ pub fn hide(window: &gtk::ApplicationWindow) {
 
 /// The monitor under the cursor and the window position on it (layer-shell
 /// margins are local to one output; the cursor position is global).
-fn place((gx, gy): (i32, i32), width: i32) -> (Option<gdk::Monitor>, i32, i32) {
-    const HEIGHT: i32 = 240;
+fn place((gx, gy): (i32, i32), (width, height): (i32, i32)) -> (Option<gdk::Monitor>, i32, i32) {
     let monitors = gdk::Display::default()
         .map(|d| d.monitors())
         .map(|list| {
@@ -88,7 +87,7 @@ fn place((gx, gy): (i32, i32), width: i32) -> (Option<gdk::Monitor>, i32, i32) {
         Some(m) => {
             let g = m.geometry();
             let x = (gx - g.x() + OFFSET).clamp(0, (g.width() - width).max(0));
-            let y = (gy - g.y() + OFFSET).clamp(0, (g.height() - HEIGHT).max(0));
+            let y = (gy - g.y() + OFFSET).clamp(0, (g.height() - height).max(0));
             (Some(m.clone()), x, y)
         }
         None => (None, gx + OFFSET, gy + OFFSET),

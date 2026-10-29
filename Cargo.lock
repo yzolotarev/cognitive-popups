@@ -170,6 +170,9 @@ name = "cognitive-exoskeleton-practice"
 version = "0.1.0"
 dependencies = [
  "cognitive-exoskeleton-ai",
+ "cognitive-exoskeleton-journal",
+ "cognitive-exoskeleton-memory",
+ "cognitive-exoskeleton-units",
  "serde",
  "serde_json",
  "thiserror",

@@ -19,6 +19,8 @@ use crate::popup::{self, Opened};
 use crate::ui;
 
 pub const WIDTH: i32 = 420;
+/// Width and the tallest it usually gets: keeps it on screen near the cursor.
+pub const SIZE: (i32, i32) = (WIDTH, 420);
 const PROMPT: &str = "Сформулируй одну конкретную гипотезу о связи между объектами.";
 
 #[derive(Default)]
@@ -112,7 +114,7 @@ impl HypothesisWindow {
     /// Ctrl+Alt+P. A second press raises the open window; the draft stays.
     pub fn open(&self, selection: Option<Captured>) {
         if self.0.window.is_visible() {
-            popup::show(&self.0.window, WIDTH, Opened::ByKey);
+            popup::show(&self.0.window, SIZE, Opened::ByKey);
             return;
         }
         let material = selection
@@ -133,7 +135,7 @@ impl HypothesisWindow {
             operation: Some(ctx::operation()),
             ..State::default()
         };
-        popup::show(&self.0.window, WIDTH, Opened::ByKey);
+        popup::show(&self.0.window, SIZE, Opened::ByKey);
         if material.trim().is_empty() {
             self.show(&[ui::text("Нет текста: выдели абзац.", &["cp-body"]).upcast()]);
             return;

@@ -179,7 +179,7 @@ pub fn background<T: Send + 'static>(
 }
 
 /// `COGNITIVE_PROMPTS`, else the installed prompts, else the repository's.
-fn prompts_dir() -> PathBuf {
+pub fn prompts_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("COGNITIVE_PROMPTS") {
         return dir.into();
     }

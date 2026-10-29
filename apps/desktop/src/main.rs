@@ -6,6 +6,7 @@
 //!   cognitive-popups hyprland-config   the lines for hyprland.conf
 
 mod ctx;
+mod doctor;
 mod help;
 mod hub;
 mod hypothesis;
@@ -70,6 +71,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("daemon") => daemon(),
+        Some("doctor") => doctor::run(),
         Some("signal") => signal(
             args.get(1).map(String::as_str),
             args.get(2).map(String::as_str),
@@ -87,7 +89,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: cognitive-popups daemon | signal <{}> | hyprland-config [--classic|--lua]",
+                "usage: cognitive-popups daemon | doctor | signal <{}> | hyprland-config [--classic|--lua]",
                 WINDOWS.join("|")
             );
             ExitCode::from(2)

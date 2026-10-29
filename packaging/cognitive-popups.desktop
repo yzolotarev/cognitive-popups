@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Cognitive Popups
+Comment=Open Cognitive Popups settings
+Exec=cognitive-popups signal hub
+Icon=preferences-system
+Terminal=false
+Categories=Education;Utility;

@@ -165,13 +165,21 @@ out of study history. Needs `wl-clipboard` and Hyprland (`hyprctl`) or `wtype`.
 the core also builds on Windows. One daemon keeps every window ready; a hotkey
 only sends it a signal.
 
-```sh
-cd apps/desktop
-cargo run -- hyprland-config >> ~/.config/hypr/hyprland.conf   # exec-once + binds
-cargo run -- daemon
-cargo run -- signal note                                       # what Alt+E runs
-tools/screenshots.sh shots/                                    # every window, light and dark
-```
+On Arch Linux install Rust, `gtk4`, `libadwaita`, `gtk4-layer-shell`,
+`wl-clipboard`, and `wtype`, then from the repository root run `make install`.
+This installs the app to `~/.local/bin` and prompts and a desktop entry under
+`~/.local/share`. Ensure `~/.local/bin` is on your PATH. Run
+`cognitive-popups doctor` to check your session and dependencies.
+
+Print `cognitive-popups hyprland-config --lua` for Hyprland 0.56 Lua, or
+`cognitive-popups hyprland-config --classic` for the classic configuration.
+Review the shortcuts for conflicts and add the appropriate output to your
+Hyprland configuration, then restart the session. The application menu entry
+opens the hub while the daemon is running; enter your AI key on its AI tab.
+The installed example blocks are also in `~/.local/share/cognitive-popups/`.
+
+For development, run `apps/desktop/tools/screenshots.sh shots/` from the
+repository root to capture every window in both themes.
 
 Alt+E is a note at the selected text: the selection becomes the quote, Enter
 saves, Shift+Enter is a new line, Esc closes and keeps the draft.

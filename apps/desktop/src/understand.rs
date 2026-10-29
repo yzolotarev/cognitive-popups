@@ -5,8 +5,9 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::Duration;
 
-use cognitive_exoskeleton_capture::Captured;
+use cognitive_exoskeleton_capture::{self as capture, Captured, Wayland};
 use cognitive_exoskeleton_domain::OperationId;
 use cognitive_exoskeleton_formula as formula;
 use cognitive_exoskeleton_understand::{
@@ -130,7 +131,103 @@ impl UnderstandWindow {
             generation: Cell::new(0),
         }));
         this.wire();
+        this.start_prefetch(app);
         this
+    }
+
+    /// Optional F-05 precomputation. Only new text selections from study
+    /// windows are sent; results stay in the process-local cache.
+    fn start_prefetch(&self, app: &adw::Application) {
+        let this = self.clone();
+        let app = app.clone();
+        let in_flight = Rc::new(Cell::new(false));
+        let last_text = Rc::new(RefCell::new(None::<String>));
+        glib::timeout_add_local(Duration::from_millis(800), move || {
+            if !this.0.ctx.precompute_words.get() {
+                last_text.borrow_mut().take();
+                return glib::ControlFlow::Continue;
+            }
+            if this.0.ctx.ai().config().key().is_none()
+                || this.0.window.is_visible()
+                || app.windows().iter().any(|window| window.is_visible())
+                || in_flight.replace(true)
+            {
+                return glib::ControlFlow::Continue;
+            }
+            let this = this.clone();
+            let running = in_flight.clone();
+            let last = last_text.clone();
+            let app_for_callback = app.clone();
+            ctx::background(
+                move || capture::selection(&Wayland).ok(),
+                move |captured| {
+                    running.set(false);
+                    if !this.0.ctx.precompute_words.get()
+                        || this.0.window.is_visible()
+                        || app_for_callback
+                            .windows()
+                            .iter()
+                            .any(|window| window.is_visible())
+                    {
+                        return;
+                    }
+                    let Some(captured) = captured.filter(|captured| {
+                        captured.context.is_study()
+                            && !captured.window_class.as_deref().is_some_and(|class| {
+                                class.to_lowercase().contains("cognitive-popups")
+                                    || class.eq_ignore_ascii_case("dev.cognitive.Popups")
+                            })
+                    }) else {
+                        return;
+                    };
+                    let text = captured.text.trim().to_string();
+                    if text.is_empty() || last.borrow().as_deref() == Some(text.as_str()) {
+                        return;
+                    }
+                    *last.borrow_mut() = Some(text.clone());
+                    let key = format!("{text}\u{1f}");
+                    if this
+                        .0
+                        .state
+                        .borrow()
+                        .cache
+                        .get(Mechanic::Words, &key)
+                        .is_some()
+                    {
+                        return;
+                    }
+                    let ai = this.0.ctx.ai();
+                    let prompts = this.0.ctx.prompts.clone();
+                    let this = this.clone();
+                    ctx::background(
+                        move || {
+                            understand::words(
+                                &ai,
+                                &prompts,
+                                &text,
+                                cognitive_exoskeleton_ai::Priority::Background,
+                            )
+                        },
+                        move |result| {
+                            if let Ok(cues) = result
+                                && this.0.ctx.precompute_words.get()
+                            {
+                                let value = match serde_json::to_value(cues) {
+                                    Ok(value) => value,
+                                    Err(_) => return,
+                                };
+                                this.0
+                                    .state
+                                    .borrow_mut()
+                                    .cache
+                                    .put(Mechanic::Words, &key, value);
+                            }
+                        },
+                    );
+                },
+            );
+            glib::ControlFlow::Continue
+        });
     }
 
     fn wire(&self) {

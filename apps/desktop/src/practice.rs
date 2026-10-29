@@ -236,12 +236,12 @@ impl PracticeWindow {
         };
         self.show(&[ui::waiting("Строю пробы по тексту…").upcast()]);
         let (ai, prompts, db) = (
-            inner.ctx.ai.clone(),
+            inner.ctx.ai(),
             inner.ctx.prompts.clone(),
             inner.ctx.db.clone(),
         );
         let this = self.clone();
-        let provider = inner.ctx.provider;
+        let provider = inner.ctx.provider();
         ctx::background(
             move || -> Result<(Vec<Category>, Vec<String>), PracticeError> {
                 let now = ctx::now();
@@ -457,10 +457,10 @@ impl PracticeWindow {
         inner.title.set_text("Выбор метода");
         let generation = self.next_generation();
         self.show(&[ui::waiting("Ищу, где нужно выбрать метод…").upcast()]);
-        let (ai, prompts) = (inner.ctx.ai.clone(), inner.ctx.prompts.clone());
+        let (ai, prompts) = (inner.ctx.ai(), inner.ctx.prompts.clone());
         let text = inner.state.borrow().text.clone();
         let this = self.clone();
-        let provider = inner.ctx.provider;
+        let provider = inner.ctx.provider();
         ctx::background(
             move || practice::method_trails(&ai, &prompts, &text, Priority::Foreground),
             move |result: Result<MethodSet, PracticeError>| {
@@ -578,10 +578,10 @@ impl PracticeWindow {
         inner.title.set_text("Своими словами");
         let generation = self.next_generation();
         self.show(&[ui::waiting("Готовлю вопрос…").upcast()]);
-        let (ai, prompts) = (inner.ctx.ai.clone(), inner.ctx.prompts.clone());
+        let (ai, prompts) = (inner.ctx.ai(), inner.ctx.prompts.clone());
         let text = inner.state.borrow().text.clone();
         let this = self.clone();
-        let provider = inner.ctx.provider;
+        let provider = inner.ctx.provider();
         ctx::background(
             move || feynman::question(&ai, &prompts, &text),
             move |result: Result<Question, PracticeError>| {
@@ -624,10 +624,10 @@ impl PracticeWindow {
         let generation = self.next_generation();
         let waiting = ui::waiting("Сверяю с текстом…");
         inner.body.append(&waiting);
-        let (ai, prompts) = (inner.ctx.ai.clone(), inner.ctx.prompts.clone());
+        let (ai, prompts) = (inner.ctx.ai(), inner.ctx.prompts.clone());
         let text = inner.state.borrow().text.clone();
         let this = self.clone();
-        let provider = inner.ctx.provider;
+        let provider = inner.ctx.provider();
         ctx::background(
             move || feynman::check(&ai, &prompts, &text, &question, &explanation),
             move |result| {
@@ -854,14 +854,14 @@ impl ProbePage {
         let waiting = ui::waiting("Собираю целую задачу…");
         this.cards.append(&waiting);
         let (ai, prompts, dir) = (
-            inner.ctx.ai.clone(),
+            inner.ctx.ai(),
             inner.ctx.prompts.clone(),
             inner.ctx.prompts_dir.clone(),
         );
         let text = inner.state.borrow().text.clone();
         let title = this.group.borrow().title.clone();
         let t = this.clone();
-        let provider = inner.ctx.provider;
+        let provider = inner.ctx.provider();
         ctx::background(
             move || -> Result<WholeTask, PracticeError> {
                 let types = practice::load_types(&dir)?;

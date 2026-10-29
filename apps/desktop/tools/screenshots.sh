@@ -38,6 +38,11 @@ shots=(
   "lesson-plan|lesson|generate"
   "lesson-clock|lesson|step 20 сделаю три шага для √2"
   "lesson-end|lesson|"
+  "hub-ai|hub|ai"
+  "hub-subjects|hub|subjects"
+  "hub-history|hub|history"
+  "pill|pill|3"
+  "notice|notice|+2 новые · 1 добавлена к существующим"
   "hypothesis-answer|hypothesis|чем ближе старт к корню, тем быстрее сходится"
 )
 

@@ -12,11 +12,15 @@ pub const WIDTH: i32 = 320;
 /// Below the step clock.
 const TOP: i32 = 64;
 
+/// A button label and what it does.
+pub type Answer = (&'static str, Box<dyn Fn()>);
+
 #[derive(Clone)]
 pub struct Notice {
     window: gtk::ApplicationWindow,
     title: gtk::Label,
     text: gtk::Label,
+    actions: gtk::Box,
 }
 
 impl Notice {
@@ -28,8 +32,11 @@ impl Notice {
         column.set_hexpand(true);
         let title = ui::text("", &["cp-footnote", "cp-secondary"]);
         let text = ui::text("", &["cp-body"]);
+        let actions = ui::row(8);
+        actions.set_halign(gtk::Align::Start);
         column.append(&title);
         column.append(&text);
+        column.append(&actions);
         let close = ui::button("×", &["cp-choice"]);
         close.set_tooltip_text(Some("Закрыть"));
         close.set_valign(gtk::Align::Start);
@@ -42,12 +49,30 @@ impl Notice {
             window,
             title,
             text,
+            actions,
         }
     }
 
     pub fn show(&self, title: &str, text: &str) {
+        self.show_asking(title, text, Vec::new());
+    }
+
+    /// With answers: each button does its thing and closes the notice. Used
+    /// to ask for consent once, when the thing it is about first appears.
+    pub fn show_asking(&self, title: &str, text: &str, answers: Vec<Answer>) {
         self.title.set_text(title);
         self.text.set_text(text);
+        ui::clear(&self.actions);
+        self.actions.set_visible(!answers.is_empty());
+        for (label, action) in answers {
+            let button = ui::button(label, &[]);
+            let window = self.window.clone();
+            button.connect_clicked(move |_| {
+                action();
+                popup::hide(&window);
+            });
+            self.actions.append(&button);
+        }
         popup::show_corner(&self.window, Opened::ByItself);
     }
 

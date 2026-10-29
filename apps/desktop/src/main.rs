@@ -6,13 +6,16 @@
 //!   cognitive-popups hyprland-config   the lines for hyprland.conf
 
 mod ctx;
+mod hub;
 mod hypothesis;
 mod lesson;
 mod note;
 mod notice;
+mod pill;
 mod popup;
 mod practice;
 mod theme;
+mod tray;
 mod ui;
 mod understand;
 
@@ -27,12 +30,15 @@ use cognitive_exoskeleton_practice::routes::Route;
 use cognitive_exoskeleton_understand::{self as understand_core, Mechanic};
 use gtk::glib;
 
-const WINDOWS: [&str; 6] = [
+const WINDOWS: [&str; 9] = [
     "note",
     "understand",
     "hypothesis",
     "practice",
     "lesson",
+    "pill",
+    "notice",
+    "hub",
     "hide",
 ];
 
@@ -141,8 +147,18 @@ fn daemon() -> ExitCode {
         };
         let practice = practice::PracticeWindow::new(app, ctx.clone(), links);
         let notice = notice::Notice::new(app);
-        let lesson = lesson::LessonUi::new(app, ctx.clone(), notice.clone());
+        let pill = pill::Pill::new(app, ctx.clone(), {
+            let practice = practice.clone();
+            move || practice.open(None, None, true)
+        });
+        pill.start();
+        let lesson = lesson::LessonUi::new(app, ctx.clone(), notice.clone(), pill.clone());
         lesson.restore();
+        let hub = hub::Hub::new(app, ctx.clone(), {
+            let pill = pill.clone();
+            move || pill.refresh()
+        });
+        tray::spawn(socket());
         listen(move |line| {
             let (window, argument) = line.split_once(' ').unwrap_or((line, ""));
             // The selection only: instant, and never a Ctrl+C into our own window.
@@ -181,6 +197,10 @@ fn daemon() -> ExitCode {
                 }
                 "lesson" if argument.is_empty() => lesson.press(selection()),
                 "lesson" => lesson.script(argument),
+                "pill" => pill.show_count(argument.parse().unwrap_or(0)),
+                // `signal notice <text>`: a quiet notice from a script.
+                "notice" => notice.show("Cognitive Popups", argument),
+                "hub" => hub.open(Some(argument).filter(|a| !a.is_empty())),
                 "hide" => {
                     note.hide();
                     understand.hide();
@@ -188,6 +208,8 @@ fn daemon() -> ExitCode {
                     practice.hide();
                     lesson.hide();
                     notice.hide();
+                    pill.hide();
+                    hub.hide();
                 }
                 _ => {}
             }

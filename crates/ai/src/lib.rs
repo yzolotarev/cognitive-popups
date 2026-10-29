@@ -13,6 +13,7 @@
 mod gate;
 mod prompts;
 mod provider;
+pub mod settings;
 
 pub use gate::{Gate, Priority};
 pub use prompts::{PromptError, PromptStore};
@@ -223,6 +224,18 @@ pub fn parse_json_object(text: &str) -> Result<Value, String> {
 /// The provider, model and key from `COGNITIVE_AI_*` (shared by the CLI and
 /// the desktop app).
 pub fn config_from_env() -> Result<AiConfig, String> {
+    let from_env = ["COGNITIVE_AI_PROVIDER", "COGNITIVE_AI_MODEL"]
+        .iter()
+        .any(|v| std::env::var_os(v).is_some());
+    let dir = settings::config_dir();
+    // The hub's settings, unless the environment says otherwise.
+    if !from_env && let Some(config) = settings::load_settings(&dir) {
+        let key = match read_key()? {
+            Some(key) => Some(key),
+            None => settings::load_key(&dir, true),
+        };
+        return Ok(config.with_key(key));
+    }
     let provider = match std::env::var("COGNITIVE_AI_PROVIDER").as_deref() {
         Err(_) | Ok("gemini") => ProviderKind::Gemini,
         Ok("openai_compatible") => ProviderKind::OpenaiCompatible,
@@ -244,9 +257,13 @@ pub fn config_from_env() -> Result<AiConfig, String> {
             .collect(),
         (Err(_), ProviderKind::OpenaiCompatible) => Vec::new(),
     };
+    let key = match read_key()? {
+        Some(key) => Some(key),
+        None => settings::load_key(&dir, true),
+    };
     Ok(AiConfig::new(provider, model, base_url)
         .with_fallbacks(fallbacks)
-        .with_key(read_key()?))
+        .with_key(key))
 }
 
 /// The key file must be private: a key readable by other users is refused rather

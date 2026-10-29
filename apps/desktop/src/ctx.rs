@@ -2,7 +2,9 @@
 //! manual request goes before background ones, F-63) and a way to run slow work
 //! off the GTK thread.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use cognitive_exoskeleton_ai::{
@@ -21,10 +23,9 @@ pub struct Ctx {
     pub db: PathBuf,
     pub prompts: Arc<PromptStore>,
     pub prompts_dir: PathBuf,
-    pub ai: Arc<Ai>,
-    pub provider: &'static str,
+    client: Rc<RefCell<Arc<Ai>>>,
     /// The running Alt+I lesson: help given during it belongs to it (F-29).
-    pub lesson: std::rc::Rc<std::cell::RefCell<Option<LessonId>>>,
+    pub lesson: Rc<RefCell<Option<LessonId>>>,
 }
 
 impl Ctx {
@@ -34,38 +35,29 @@ impl Ctx {
             eprintln!("prompts: {e}");
             PromptStore::default()
         });
-        let (config, transport) = match std::env::var("COGNITIVE_AI_FIXTURE") {
-            Ok(path) => (
-                AiConfig::new(ProviderKind::Gemini, "fixture", None)
-                    .with_key(Some("fixture".into())),
-                AnyTransport::Fixture(Fixture::load(&path, &prompts)),
-            ),
-            Err(_) => (
-                cognitive_exoskeleton_ai::config_from_env().unwrap_or_else(|e| {
-                    eprintln!("AI settings: {e}");
-                    AiConfig::new(
-                        ProviderKind::Gemini,
-                        cognitive_exoskeleton_ai::DEFAULT_GEMINI_MODEL,
-                        None,
-                    )
-                }),
-                AnyTransport::Real(UreqTransport::default()),
-            ),
-        };
-        let provider = config.provider_name();
         Self {
             db,
+            client: Rc::new(RefCell::new(Arc::new(client(&prompts)))),
             prompts: Arc::new(prompts),
             prompts_dir: dir,
-            ai: Arc::new(Client::new(config, transport)),
-            provider,
             lesson: Default::default(),
         }
     }
 
-    /// Writes what happened in one operation: the source, the reader's words,
-    /// the model's answer (S1; INV-01 keeps them apart). A failed write is
-    /// logged, never shown over the help itself.
+    /// The AI client of the moment: the hub can replace it (new key or model).
+    pub fn ai(&self) -> Arc<Ai> {
+        self.client.borrow().clone()
+    }
+
+    pub fn provider(&self) -> &'static str {
+        self.client.borrow().config().provider_name()
+    }
+
+    /// After the hub saved new AI settings.
+    pub fn reload_ai(&self) {
+        *self.client.borrow_mut() = Arc::new(client(&self.prompts));
+    }
+
     /// Writes what happened in one operation: the source, the reader's words,
     /// the model's answer (S1; INV-01 keeps them apart). Returns the journal
     /// sequences of the reader's words and the answer. A failed write is
@@ -98,17 +90,17 @@ impl Ctx {
             );
         }
         if let Some(text) = ai {
-            let model = self
-                .ai
+            let ai = self.ai();
+            let model = ai
                 .answered_by()
-                .unwrap_or_else(|| self.ai.config().model.clone());
+                .unwrap_or_else(|| ai.config().model.clone());
             keys.push(key(&format!("ai:{text}")));
             events.extend(
                 NewEvent::ai_response(
                     operation.clone(),
                     at,
                     keys[keys.len() - 1].clone(),
-                    self.provider,
+                    self.provider(),
                     model,
                     text,
                 )
@@ -137,6 +129,28 @@ impl Ctx {
             Vec::new()
         })
     }
+}
+
+/// The client from the settings (or the fixture for screenshots).
+fn client(prompts: &PromptStore) -> Ai {
+    let (config, transport) = match std::env::var("COGNITIVE_AI_FIXTURE") {
+        Ok(path) => (
+            AiConfig::new(ProviderKind::Gemini, "fixture", None).with_key(Some("fixture".into())),
+            AnyTransport::Fixture(Fixture::load(&path, prompts)),
+        ),
+        Err(_) => (
+            cognitive_exoskeleton_ai::config_from_env().unwrap_or_else(|e| {
+                eprintln!("AI settings: {e}");
+                AiConfig::new(
+                    ProviderKind::Gemini,
+                    cognitive_exoskeleton_ai::DEFAULT_GEMINI_MODEL,
+                    None,
+                )
+            }),
+            AnyTransport::Real(UreqTransport::default()),
+        ),
+    };
+    Client::new(config, transport)
 }
 
 pub fn operation() -> OperationId {

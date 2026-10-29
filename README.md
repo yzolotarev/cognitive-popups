@@ -213,6 +213,11 @@ and [Отделить]; the history of guesses, notes, lessons and the trial. Th
 goes to the Secret Service keyring (`secret-tool`), else to a file only you can
 read. With consent, a quiet «FSRS! N» pill in the corner opens due reviews.
 
+Alt+B returns you to where you stopped: the last document you selected text in
+(Firefox, Okular with its page, Obsidian) and your own last word about it — a
+refuted guess first. Alt+K lists the keys. Manual end-to-end check:
+[`docs/v2/E2E_P7.md`](docs/v2/E2E_P7.md).
+
 `COGNITIVE_AI_FIXTURE=apps/desktop/tools/fixture.json` replaces the model with
 canned answers (screenshots, demos without a key). Notes also
 work without windows: `cargo run -- note add|list|close`. Needs `gtk4-layer-shell`.

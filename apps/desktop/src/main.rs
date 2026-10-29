@@ -6,6 +6,7 @@
 //!   cognitive-popups hyprland-config   the lines for hyprland.conf
 
 mod ctx;
+mod help;
 mod hub;
 mod hypothesis;
 mod lesson;
@@ -14,6 +15,7 @@ mod notice;
 mod pill;
 mod popup;
 mod practice;
+mod resume;
 mod theme;
 mod tray;
 mod ui;
@@ -30,7 +32,7 @@ use cognitive_exoskeleton_practice::routes::Route;
 use cognitive_exoskeleton_understand::{self as understand_core, Mechanic};
 use gtk::glib;
 
-const WINDOWS: [&str; 9] = [
+const WINDOWS: [&str; 11] = [
     "note",
     "understand",
     "hypothesis",
@@ -39,6 +41,8 @@ const WINDOWS: [&str; 9] = [
     "pill",
     "notice",
     "hub",
+    "resume",
+    "help",
     "hide",
 ];
 
@@ -119,6 +123,8 @@ fn hyprland_config() -> String {
      bind = CTRL ALT, P, exec, cognitive-popups signal hypothesis\n\
      bind = ALT, T, exec, cognitive-popups signal practice\n\
      bind = ALT, I, exec, cognitive-popups signal lesson\n\
+     bind = ALT, B, exec, cognitive-popups signal resume\n\
+     bind = ALT, K, exec, cognitive-popups signal help\n\
      layerrule = blur, cognitive-.*\n\
      layerrule = ignorezero, cognitive-.*\n"
         .to_string()
@@ -159,6 +165,11 @@ fn daemon() -> ExitCode {
             move || pill.refresh()
         });
         tray::spawn(socket());
+        let resume = resume::Resume::new(app, ctx.clone());
+        let help = help::Help::new(app, {
+            let hub = hub.clone();
+            move || hub.open(None)
+        });
         listen(move |line| {
             let (window, argument) = line.split_once(' ').unwrap_or((line, ""));
             // The selection only: instant, and never a Ctrl+C into our own window.
@@ -201,6 +212,8 @@ fn daemon() -> ExitCode {
                 // `signal notice <text>`: a quiet notice from a script.
                 "notice" => notice.show("Cognitive Popups", argument),
                 "hub" => hub.open(Some(argument).filter(|a| !a.is_empty())),
+                "resume" => resume.open(),
+                "help" => help.open(),
                 "hide" => {
                     note.hide();
                     understand.hide();
@@ -210,6 +223,8 @@ fn daemon() -> ExitCode {
                     notice.hide();
                     pill.hide();
                     hub.hide();
+                    resume.hide();
+                    help.hide();
                 }
                 _ => {}
             }

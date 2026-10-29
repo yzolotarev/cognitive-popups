@@ -1,0 +1,16 @@
+[package]
+name = "cognitive-exoskeleton-resume"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+publish = false
+
+[dependencies]
+cognitive-exoskeleton-domain = { path = "../domain" }
+cognitive-exoskeleton-hypotheses = { path = "../hypotheses" }
+cognitive-exoskeleton-journal = { path = "../journal" }
+cognitive-exoskeleton-notes = { path = "../notes" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+

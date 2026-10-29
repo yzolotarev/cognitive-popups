@@ -187,6 +187,75 @@ fn skill_lists_the_admission_with_the_reason_for_every_refusal() {
 }
 
 #[test]
+fn the_archive_prefers_fragments_tied_to_active_skills_and_lists_them_for_an_explicit_pick() {
+    let db = fresh("link");
+    let source = |op: &str, at: &str, text: &str| {
+        format!(
+            r#"{{"operation":"{op}","key":"src-{op}","at":"{at}","event":{{"payload":"source","kind":"selection","text":"{text}","application":"okular","window_title":null,"context":"study"}}}}"#
+        )
+    };
+    let words = |op: &str, at: &str| {
+        format!(
+            r#"{{"operation":"{op}","key":"words-{op}","at":"{at}","event":{{"payload":"user_text","text":"Я понял так"}}}}"#
+        )
+    };
+    let tied = "Ранг матрицы равен числу ненулевых строк ступенчатого вида.";
+    let free = "Метод Ньютона сходится квадратично рядом с простым корнем.";
+    // The free fragment is newer, so without a tie it comes first.
+    let first = source("op-t", "2026-10-30T09:00:00Z", tied);
+    run(&db, &["log", "add", "--json", &first]);
+    let note = words("op-t", "2026-10-30T09:01:00Z");
+    run(&db, &["log", "add", "--json", &note]);
+    let second = source("op-f", "2026-10-31T09:00:00Z", free);
+    run(&db, &["log", "add", "--json", &second]);
+
+    // No subject yet: nothing is tied and the list is newest first.
+    let plain = json(&db, &["practice", "old", "--list", "--now", NOW]);
+    let list = plain["list"].as_array().unwrap();
+    assert_eq!(list.len(), 2, "{plain}");
+    assert!(list[0]["preview"].as_str().unwrap().starts_with("Метод"));
+    assert!(
+        list.iter()
+            .all(|row| row["linked"].as_array().unwrap().is_empty())
+    );
+
+    let sequence = cognitive_exoskeleton_journal::Journal::open(&db)
+        .unwrap()
+        .find_by_key("words-op-t")
+        .unwrap()
+        .unwrap();
+    let mut lessons = cognitive_exoskeleton_lessons::LessonStore::open(&db).unwrap();
+    let subject = lessons
+        .add_subject("Линейная алгебра", "сдать", None, 1_700_000_000)
+        .unwrap();
+    cognitive_exoskeleton_units::UnitStore::open(&db)
+        .unwrap()
+        .add_unit(&subject, "Ранг", "найти ранг", "execute", &[sequence])
+        .unwrap();
+
+    let linked = json(&db, &["practice", "old", "--list", "--now", NOW]);
+    let list = linked["list"].as_array().unwrap();
+    assert!(
+        list[0]["preview"].as_str().unwrap().starts_with("Ранг"),
+        "{linked}"
+    );
+    assert_eq!(list[0]["linked"][0], "Линейная алгебра");
+    assert!(list[1]["linked"].as_array().unwrap().is_empty());
+
+    // The reader may still pick the untied one explicitly.
+    let sequence = list[1]["sequence"].as_i64().unwrap().to_string();
+    let chosen = json(&db, &["practice", "old", "--pick", &sequence, "--now", NOW]);
+    assert!(
+        chosen["chosen"]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("Метод")
+    );
+    let routes = json(&db, &["practice", "routes", "--now", NOW]);
+    assert_eq!(shares(&routes), vec!["old_material"]);
+}
+
+#[test]
 fn b68_a_goal_profile_overrides_the_global_switch_and_inherit_returns_to_it() {
     let db = fresh("goal-profile");
     run(

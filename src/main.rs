@@ -65,7 +65,7 @@ usage:
                                       --solution <s> [--ops \"a; b\"] [--draft <d>]
   cognitive-exoskeleton practice task next|draft|finish|drop|restore --db <path> [--id <n>] [--draft <d>]
                                       unfinished whole tasks («продолжить задачу»)
-  cognitive-exoskeleton practice old --db <path> [--text <file>] [--now <t>]   archive fragments for «старый материал»
+  cognitive-exoskeleton practice old --db <path> [--text <file>] [--now <t>] [--list | --pick <seq>]   archive fragments for «старый материал»
   cognitive-exoskeleton practice skill --db <path> [--now <t>]   units admitted to «умение», and the refusals
   cognitive-exoskeleton practice skill list|suspend|resume|retire [<unit>] --db <path>   the reader's pause/снятие (B67)
   cognitive-exoskeleton practice check --family <name> --seed <n> --answer <text>
@@ -551,8 +551,9 @@ fn run_practice(args: &[String]) -> Result<String, String> {
             "--class",
             "--draft",
             "--id",
+            "--pick",
         ],
-        &["--from-pill"],
+        &["--from-pill", "--list"],
     )?;
     let ai_error = |provider: &'static str| {
         move |e: PracticeError| match e {
@@ -687,7 +688,7 @@ fn run_practice(args: &[String]) -> Result<String, String> {
             serde_json::to_string_pretty(&tree).map_err(|e| e.to_string())
         }
         "routes" | "route" | "task" | "old" | "skill" => {
-            run_practice_stores(command, &options, &positional)
+            run_practice_stores(command, &options, &flags, &positional)
         }
         other => Err(format!("unknown practice command {other}")),
     }
@@ -708,6 +709,7 @@ fn resolve_goal(db: &str, goal: &str) -> Result<String, String> {
 fn run_practice_stores(
     command: &str,
     options: &std::collections::HashMap<String, String>,
+    flags: &std::collections::HashSet<String>,
     positional: &[String],
 ) -> Result<String, String> {
     use cognitive_exoskeleton_practice::availability;
@@ -869,8 +871,33 @@ fn run_practice_stores(
         // Old fragments the reader worked on (the archive is the journal).
         "old" => {
             let journal = Journal::open(db).map_err(|e| e.to_string())?;
-            let fragments =
+            let mut fragments =
                 revisit::fragments(&journal, at, &read("--text")?).map_err(|e| e.to_string())?;
+            // Tie to active skills; where it cannot be read, the list is as before.
+            let _ = revisit::link_to_skills(db, &mut fragments);
+            if let Some(sequence) = options.get("--pick") {
+                // The reader's own choice from the list (F-23 point 2): no roll.
+                let sequence: i64 = sequence
+                    .parse()
+                    .map_err(|_| "--pick is a sequence number".to_string())?;
+                let chosen = revisit::choose(&fragments, sequence)
+                    .ok_or("no such fragment among the old material")?;
+                return json(serde_json::json!({"chosen": chosen}));
+            }
+            if flags.contains("--list") {
+                // Tied fragments first, then newest first; one short line each.
+                fragments.sort_by_key(|f| f.linked.is_empty());
+                let list: Vec<_> = fragments
+                    .iter()
+                    .map(|f| {
+                        serde_json::json!({
+                            "sequence": f.sequence, "at": f.at,
+                            "preview": revisit::preview(&f.text), "linked": f.linked,
+                        })
+                    })
+                    .collect();
+                return json(serde_json::json!({"list": list}));
+            }
             json(serde_json::json!({"fragments": fragments}))
         }
         // The admission rule per unit: who may be practised and why not the rest.

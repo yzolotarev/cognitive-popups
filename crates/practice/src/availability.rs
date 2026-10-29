@@ -241,7 +241,9 @@ pub fn compute_with(
     }
 
     match Journal::open(db).and_then(|j| revisit::fragments(&j, now, text)) {
-        Ok(fragments) if !fragments.is_empty() => {
+        Ok(mut fragments) if !fragments.is_empty() => {
+            // Where the tie cannot be read, the route works as without it.
+            let _ = revisit::link_to_skills(db, &mut fragments);
             let here: Vec<Fragment> = fragments
                 .iter()
                 .filter(|f| window.same_as(f.application.as_deref()) != Some(false))

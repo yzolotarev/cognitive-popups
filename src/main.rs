@@ -59,8 +59,8 @@ usage:
   cognitive-exoskeleton practice whole --prompts <dir> (--text <file> | --db <path> --unit <id>)
                                        [--type 1-10] [--ops \"op1; op2\"]   [Собери вместе]
   cognitive-exoskeleton practice methods --prompts <dir> --text <file>   trails: choose a method
-  cognitive-exoskeleton practice routes --db <path> [--text <file>] [--class <window class>] [--now <t>]   what Alt+T can draw, and why not (a changed window defers saved material)
-  cognitive-exoskeleton practice route <name> <on|off> --db <path>   take a route out of the draw (Q-49)
+  cognitive-exoskeleton practice routes --db <path> [--text <file>] [--class <window class>] [--goal <id|name>] [--now <t>]   what Alt+T can draw, and why not (a changed window defers saved material)
+  cognitive-exoskeleton practice route <name> <on|off> --db <path> [--goal <id|name>; also inherit]   take a route out of the draw (Q-49, B68)
   cognitive-exoskeleton practice task save --db <path> --key <k> --type <n> --title <t> --condition <c>
                                       --solution <s> [--ops \"a; b\"] [--draft <d>]
   cognitive-exoskeleton practice task next|draft|finish|drop|restore --db <path> [--id <n>] [--draft <d>]
@@ -534,6 +534,7 @@ fn run_practice(args: &[String]) -> Result<String, String> {
         rest,
         &[
             "--text",
+            "--goal",
             "--prompts",
             "--db",
             "--now",
@@ -693,6 +694,17 @@ fn run_practice(args: &[String]) -> Result<String, String> {
     }
 }
 
+/// A goal given by id or by name (B68).
+fn resolve_goal(db: &str, goal: &str) -> Result<String, String> {
+    let store = cognitive_exoskeleton_lessons::LessonStore::open(db).map_err(|e| e.to_string())?;
+    let subjects = store.subjects().map_err(|e| e.to_string())?;
+    subjects
+        .into_iter()
+        .find(|s| s.id == goal || s.name == goal)
+        .map(|s| s.id)
+        .ok_or_else(|| format!("unknown goal: {goal}"))
+}
+
 /// The stores behind the routes of Alt+T without a window (S5 rule 9, B64).
 fn run_practice_stores(
     command: &str,
@@ -702,7 +714,7 @@ fn run_practice_stores(
 ) -> Result<String, String> {
     use cognitive_exoskeleton_practice::availability;
     use cognitive_exoskeleton_practice::routes::{self, Route};
-    use cognitive_exoskeleton_practice::switches::RouteSwitches;
+    use cognitive_exoskeleton_practice::switches::{GoalSwitch, RouteSwitches};
     use cognitive_exoskeleton_practice::tasks::{NewTask, TaskError, TaskStore};
     use cognitive_exoskeleton_practice::{revisit, skill};
 
@@ -726,8 +738,14 @@ fn run_practice_stores(
     match command {
         // What Alt+T can draw now, with the reason for every route that is out.
         "routes" => {
+            // B68: the profile of --goal, else of the open lesson's goal, else the global one.
+            let goal = match options.get("--goal") {
+                Some(goal) => Some(resolve_goal(db, goal)?),
+                None => availability::current_goal(db),
+            };
             let window = availability::Window::known(options.get("--class").map(String::as_str));
-            let availability = availability::compute_in(db, at, &read("--text")?, &window);
+            let availability =
+                availability::compute_with(db, at, &read("--text")?, &window, goal.as_deref());
             let shares: Vec<_> = routes::shares(&availability.excluded())
                 .into_iter()
                 .map(|(route, share)| {
@@ -750,32 +768,49 @@ fn run_practice_stores(
                 .collect();
             let off: Vec<_> = availability.switched_off.iter().map(|r| r.name()).collect();
             json(
-                serde_json::json!({"shares": shares, "unavailable": unavailable, "deferred": deferred, "switched_off": off}),
+                serde_json::json!({"shares": shares, "unavailable": unavailable, "deferred": deferred, "switched_off": off, "goal": goal}),
             )
         }
-        // `route <name> <on|off>`: the reader's switch (Q-49); `off` removes it from the draw.
+        // `route <name> <on|off>`: the reader's global switch (Q-49); `off` removes it from the draw.
+        // With `--goal <id|name>`: the goal's own word, `inherit` meaning «как у всех» (B68).
         "route" => {
+            let usage = "route <name> <on|off> | route <name> <on|off|inherit> --goal <id|name>";
             let [name, state] = positional else {
-                return Err("route <name> <on|off>".into());
+                return Err(usage.into());
             };
             let route = Route::parse(name).ok_or("unknown route")?;
-            let off = match state.as_str() {
-                "off" => true,
-                "on" => false,
-                _ => return Err("route <name> <on|off>".into()),
-            };
-            RouteSwitches::open(db)
-                .and_then(|mut s| s.set_off(route, off, at))
-                .map_err(|e| e.to_string())?;
-            Ok(format!(
-                "{}: {}",
-                route.name(),
+            let say = |off: bool| {
                 if off {
                     "не выпадает"
                 } else {
                     "выпадает"
                 }
-            ))
+            };
+            if let Some(goal) = options.get("--goal") {
+                let goal = resolve_goal(db, goal)?;
+                let state = GoalSwitch::parse(state).ok_or(usage)?;
+                RouteSwitches::open(db)
+                    .and_then(|mut s| s.set_goal(&goal, route, state, at))
+                    .map_err(|e| e.to_string())?;
+                return Ok(format!(
+                    "{}: {}",
+                    route.name(),
+                    match state {
+                        GoalSwitch::Inherit => "как у всех",
+                        GoalSwitch::On => say(false),
+                        GoalSwitch::Off => say(true),
+                    }
+                ));
+            }
+            let off = match state.as_str() {
+                "off" => true,
+                "on" => false,
+                _ => return Err(usage.into()),
+            };
+            RouteSwitches::open(db)
+                .and_then(|mut s| s.set_off(route, off, at))
+                .map_err(|e| e.to_string())?;
+            Ok(format!("{}: {}", route.name(), say(off)))
         }
         "task" => {
             let sub = positional

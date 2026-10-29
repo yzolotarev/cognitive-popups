@@ -16,6 +16,7 @@
 use std::path::Path;
 
 use cognitive_exoskeleton_journal::Journal;
+use cognitive_exoskeleton_lessons::LessonStore;
 use serde::Serialize;
 
 use crate::revisit::{self, Fragment};
@@ -169,6 +170,15 @@ impl Availability {
     }
 }
 
+/// The goal of the material being worked on, when it is known (B68): the
+/// subject of the open Alt+I lesson, if that goal is still alive (Q-48).
+pub fn current_goal(db: impl AsRef<Path>) -> Option<String> {
+    let store = LessonStore::open(db).ok()?;
+    let lesson = store.open_lesson().ok().flatten()?;
+    let subject = store.subject(&lesson.subject).ok().flatten()?;
+    matches!(subject.status.as_str(), "active" | "maintaining").then_some(subject.id)
+}
+
 /// Reads the stores. `text` is the selection, if any; the window is unknown.
 pub fn compute(db: impl AsRef<Path>, now: i64, text: &str) -> Availability {
     compute_in(db, now, text, &Window::unknown())
@@ -176,6 +186,18 @@ pub fn compute(db: impl AsRef<Path>, now: i64, text: &str) -> Availability {
 
 /// Reads the stores and checks the context against `window` (B69).
 pub fn compute_in(db: impl AsRef<Path>, now: i64, text: &str, window: &Window) -> Availability {
+    compute_with(db, now, text, window, None)
+}
+
+/// Like `compute_in`, with the mechanics profile of `goal_id` (B68): its own
+/// word per route where it has one, the global switch otherwise.
+pub fn compute_with(
+    db: impl AsRef<Path>,
+    now: i64,
+    text: &str,
+    window: &Window,
+    goal_id: Option<&str>,
+) -> Availability {
     let db = db.as_ref();
     let mut out = Availability::default();
     if text.trim().is_empty() {
@@ -189,7 +211,7 @@ pub fn compute_in(db: impl AsRef<Path>, now: i64, text: &str, window: &Window) -
         }
     }
     out.switched_off = RouteSwitches::open(db)
-        .and_then(|s| s.off())
+        .and_then(|s| s.off_for(goal_id))
         .unwrap_or_default();
 
     let failed = |e: &dyn std::fmt::Display| Unavailable::StoreError {
@@ -366,6 +388,29 @@ mod tests {
             let pick = crate::routes::pick(f64::from(i) / 100.0, &availability.excluded());
             assert_ne!(pick, Some(Route::Feynman));
         }
+    }
+
+    #[test]
+    fn b68_the_goal_profile_decides_when_the_goal_is_known() {
+        use crate::switches::GoalSwitch;
+        let db = db();
+        let mut switches = RouteSwitches::open(&db.0).unwrap();
+        switches.set_off(Route::Feynman, true, NOW).unwrap();
+        switches
+            .set_goal("g1", Route::Feynman, GoalSwitch::On, NOW)
+            .unwrap();
+        switches
+            .set_goal("g1", Route::Hypothesis, GoalSwitch::Off, NOW)
+            .unwrap();
+        let known = compute_with(&db.0, NOW, "текст", &Window::unknown(), Some("g1"));
+        assert!(!known.excluded().contains(&Route::Feynman));
+        assert!(known.excluded().contains(&Route::Hypothesis));
+        for goal in [None, Some("other")] {
+            let other = compute_with(&db.0, NOW, "текст", &Window::unknown(), goal);
+            assert!(other.excluded().contains(&Route::Feynman));
+            assert!(!other.excluded().contains(&Route::Hypothesis));
+        }
+        assert_eq!(current_goal(&db.0), None);
     }
 
     fn save(db: &Db, key: &str, class: Option<&str>, at: i64) {

@@ -179,6 +179,7 @@ impl PracticeWindow {
     /// Reads the stores and tells the manual row what is out and why. A route
     /// that is out stays clickable: the click explains instead of faking.
     fn refresh_availability(&self) -> Rc<Availability> {
+        // B68: the profile of the goal of the open lesson, global when unknown.
         let (text, window) = {
             let state = self.0.state.borrow();
             // An archive fragment is not the window the reader is in.
@@ -188,11 +189,12 @@ impl PracticeWindow {
             };
             (state.text.clone(), window)
         };
-        let avail = Rc::new(availability::compute_in(
+        let avail = Rc::new(availability::compute_with(
             &self.0.ctx.db,
             ctx::now(),
             &text,
             &window,
+            availability::current_goal(&self.0.ctx.db).as_deref(),
         ));
         for (route, button) in &self.0.choices {
             match avail.reason(*route).filter(|_| *route != Route::Probes) {

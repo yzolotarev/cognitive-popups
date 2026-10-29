@@ -256,6 +256,88 @@ fn the_archive_prefers_fragments_tied_to_active_skills_and_lists_them_for_an_exp
 }
 
 #[test]
+fn b68_a_goal_profile_overrides_the_global_switch_and_inherit_returns_to_it() {
+    let db = fresh("goal-profile");
+    run(
+        &db,
+        &["subject", "add", "--now", NOW, "Физика", "Понять механику"],
+    );
+    run(
+        &db,
+        &[
+            "practice",
+            "task",
+            "save",
+            "--key",
+            "k",
+            "--type",
+            "1",
+            "--title",
+            "T",
+            "--condition",
+            "Требуется: x",
+            "--solution",
+            "x",
+            "--now",
+            NOW,
+        ],
+    );
+    run(
+        &db,
+        &["practice", "route", "continue_task", "off", "--now", NOW],
+    );
+    // the goal said nothing yet: it is the global word
+    let routes = json(
+        &db,
+        &["practice", "routes", "--goal", "Физика", "--now", NOW],
+    );
+    assert!(shares(&routes).is_empty());
+    // the goal switches it on for itself, by name
+    let said = run(
+        &db,
+        &[
+            "practice",
+            "route",
+            "continue_task",
+            "on",
+            "--goal",
+            "Физика",
+            "--now",
+            NOW,
+        ],
+    );
+    assert!(said.contains("выпадает"));
+    let routes = json(
+        &db,
+        &["practice", "routes", "--goal", "Физика", "--now", NOW],
+    );
+    assert_eq!(shares(&routes), vec!["continue_task"]);
+    // without a goal the global switch still holds
+    let routes = json(&db, &["practice", "routes", "--now", NOW]);
+    assert!(shares(&routes).is_empty());
+    // back to «как у всех»
+    let said = run(
+        &db,
+        &[
+            "practice",
+            "route",
+            "continue_task",
+            "inherit",
+            "--goal",
+            "Физика",
+            "--now",
+            NOW,
+        ],
+    );
+    assert!(said.contains("как у всех"));
+    let routes = json(
+        &db,
+        &["practice", "routes", "--goal", "Физика", "--now", NOW],
+    );
+    assert!(shares(&routes).is_empty());
+}
+
+#[test]
 fn b67_skill_suspend_retire_resume_list_and_unknown_unit() {
     use cognitive_exoskeleton_domain::LessonId;
     use cognitive_exoskeleton_units::{Extraction, ProposedUnit, UnitStore};

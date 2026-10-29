@@ -2,12 +2,14 @@
 //! manual request goes before background ones, F-63) and a way to run slow work
 //! off the GTK thread.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use cognitive_exoskeleton_ai::settings;
 use cognitive_exoskeleton_ai::{
     AiConfig, Client, PromptStore, ProviderKind, Transport, UreqTransport,
 };
@@ -32,11 +34,14 @@ pub struct Ctx {
     client: Rc<RefCell<Arc<Ai>>>,
     /// The running Alt+I lesson: help given during it belongs to it (F-29).
     pub lesson: Rc<RefCell<Option<LessonId>>>,
+    /// Explicit opt-in for primary-selection precomputation (off by default).
+    pub precompute_words: Rc<Cell<bool>>,
 }
 
 impl Ctx {
     pub fn load(db: PathBuf) -> Self {
         let dir = prompts_dir();
+        let precompute_words = load_precompute_words(&preferences_path());
         let prompts = PromptStore::from_dir(&dir).unwrap_or_else(|e| {
             eprintln!("prompts: {e}");
             PromptStore::default()
@@ -47,7 +52,14 @@ impl Ctx {
             prompts: Arc::new(prompts),
             prompts_dir: dir,
             lesson: Default::default(),
+            precompute_words: Rc::new(Cell::new(precompute_words)),
         }
+    }
+
+    pub fn set_precompute_words(&self, enabled: bool) -> Result<(), String> {
+        save_precompute_words(&preferences_path(), enabled)?;
+        self.precompute_words.set(enabled);
+        Ok(())
     }
 
     /// The AI client of the moment: the hub can replace it (new key or model).
@@ -135,6 +147,33 @@ impl Ctx {
             Vec::new()
         })
     }
+}
+
+fn preferences_path() -> PathBuf {
+    settings::config_dir().join("preferences.json")
+}
+
+fn load_precompute_words(path: &Path) -> bool {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|value| value["precompute_words"].as_bool())
+        .unwrap_or(false)
+}
+
+fn save_precompute_words(path: &Path, enabled: bool) -> Result<(), String> {
+    let mut preferences = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    preferences.insert("precompute_words".into(), Value::Bool(enabled));
+    let text = serde_json::to_vec_pretty(&preferences).map_err(|e| e.to_string())?;
+    let parent = path.parent().ok_or("invalid preferences path")?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let temporary = parent.join("preferences.json.tmp");
+    std::fs::write(&temporary, text).map_err(|e| e.to_string())?;
+    std::fs::rename(&temporary, path).map_err(|e| e.to_string())
 }
 
 /// The client from the settings (or the fixture for screenshots).
@@ -282,5 +321,27 @@ impl Fixture {
                 r#"{"error":{"message":"no fixture for this prompt"}}"#.into(),
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod preferences_tests {
+    use super::*;
+
+    #[test]
+    fn precomputation_is_off_by_default_and_saved_without_discarding_other_preferences() {
+        let dir = std::env::temp_dir().join(format!("cp-pref-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("preferences.json");
+        assert!(!load_precompute_words(&path));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, r#"{"other":true}"#).unwrap();
+        save_precompute_words(&path, true).unwrap();
+        assert!(load_precompute_words(&path));
+        let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["other"], true);
+        save_precompute_words(&path, false).unwrap();
+        assert!(!load_precompute_words(&path));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

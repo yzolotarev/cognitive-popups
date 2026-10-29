@@ -190,6 +190,25 @@ impl Hub {
         group.add(&key);
         page.add(&group);
 
+        let precompute_group = adw::PreferencesGroup::builder()
+            .title("Предвычисление четырёх слов")
+            .description("По умолчанию выключено. Выделенный текст отправляется провайдеру только при включении.")
+            .build();
+        let precompute = adw::SwitchRow::builder()
+            .title("Готовить слова для нового выделения")
+            .subtitle("Каждое новое учебное выделение отправляется провайдеру, даже если Alt+W не открывать. Терминалы, редакторы, AI-чаты и окна Cognitive Popups пропускаются.")
+            .build();
+        precompute.set_active(self.0.ctx.precompute_words.get());
+        let this = self.clone();
+        precompute.connect_active_notify(move |row| {
+            if let Err(error) = this.0.ctx.set_precompute_words(row.is_active()) {
+                row.set_active(!row.is_active());
+                this.toast(&format!("Настройка не сохранена: {error}"), None);
+            }
+        });
+        precompute_group.add(&precompute);
+        page.add(&precompute_group);
+
         if current.key().is_some() {
             let hint = gtk::Label::new(Some("Ключ сохранён. Чтобы заменить его, введи новый."));
             hint.set_wrap(true);

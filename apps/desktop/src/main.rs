@@ -20,6 +20,7 @@ mod popup;
 mod practice;
 mod resume;
 mod scale;
+mod seed;
 mod theme;
 mod tray;
 mod ui;
@@ -36,7 +37,8 @@ use cognitive_exoskeleton_practice::routes::Route;
 use cognitive_exoskeleton_understand::{self as understand_core, Mechanic};
 use gtk::glib;
 
-const WINDOWS: [&str; 12] = [
+/// `seed` is not a window: demo data for the screenshots, only with the AI fixture.
+const WINDOWS: [&str; 13] = [
     "note",
     "understand",
     "hypothesis",
@@ -49,6 +51,7 @@ const WINDOWS: [&str; 12] = [
     "resume",
     "help",
     "hide",
+    "seed",
 ];
 
 fn socket() -> PathBuf {
@@ -214,6 +217,7 @@ fn daemon() -> ExitCode {
                 move || practice.open(None, None, true)
             },
         );
+        let seed_db = ctx.db.clone();
         listen(move |line| {
             let (window, argument) = line.split_once(' ').unwrap_or((line, ""));
             // The selection only: instant, and never a Ctrl+C into our own window.
@@ -240,15 +244,26 @@ fn daemon() -> ExitCode {
                         hypothesis.submit_text(argument);
                     }
                 }
-                // `signal practice [probes|methods|feynman|pill]`.
+                // `signal practice [probes|methods|feynman|continue|old|skill|pill|whole]`;
+                // `continue reveal` also opens the solution of the task on screen.
                 "practice" => {
-                    let route = match argument {
-                        "probes" => Some(Route::Probes),
+                    let (word, rest) = argument.split_once(' ').unwrap_or((argument, ""));
+                    let route = match word {
+                        "probes" | "whole" => Some(Route::Probes),
                         "methods" => Some(Route::ChooseMethod),
                         "feynman" => Some(Route::Feynman),
+                        "continue" => Some(Route::ContinueTask),
+                        "old" => Some(Route::OldMaterial),
+                        "skill" => Some(Route::Skill),
                         _ => None,
                     };
-                    practice.open(selection(), route, argument == "pill");
+                    practice.open(selection(), route, word == "pill");
+                    if word == "whole" {
+                        practice.whole_demo();
+                    }
+                    if rest == "reveal" {
+                        practice.reveal_solution();
+                    }
                 }
                 "lesson" if argument.is_empty() => lesson.press(selection()),
                 "lesson" if argument == "feynman" => lesson.preview_feynman(),
@@ -265,6 +280,11 @@ fn daemon() -> ExitCode {
                 "hub" => hub.open(Some(argument).filter(|a| !a.is_empty())),
                 "resume" => resume.open(),
                 "help" => help.open(),
+                "seed" if seed::allowed() => {
+                    if let Err(e) = seed::demo(&seed_db, ctx::now()) {
+                        eprintln!("seed: {e}");
+                    }
+                }
                 "hide" => {
                     note.hide();
                     understand.hide();

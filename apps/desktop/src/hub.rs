@@ -19,6 +19,7 @@ use cognitive_exoskeleton_lessons::{LessonStore, Subject};
 use cognitive_exoskeleton_memory::Memory;
 use cognitive_exoskeleton_notes::Notes;
 use cognitive_exoskeleton_nudges::{Consent, Nudges};
+use cognitive_exoskeleton_practice::{routes::Route, switches::RouteSwitches};
 use cognitive_exoskeleton_units::UnitStore;
 use gtk::glib;
 
@@ -118,8 +119,9 @@ impl Hub {
             "ИИ",
             "network-server-symbolic",
         );
+        let subjects = self.subjects_page();
         stack.add_titled_with_icon(
-            &self.subjects_page().scroller,
+            &subjects.scroller,
             Some("subjects"),
             "Предметы",
             "view-list-bullet-symbolic",
@@ -138,7 +140,14 @@ impl Hub {
         );
         let no_key = self.0.ctx.ai().config().key().is_none();
         let tab = tab.unwrap_or(if no_key { "ai" } else { "subjects" });
-        stack.set_visible_child_name(tab);
+        // `subjects-end`: the end of the page (scripts, screenshots).
+        stack.set_visible_child_name(tab.trim_end_matches("-end"));
+        if tab == "subjects-end" {
+            let adjustment = subjects.scroller.vadjustment();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
+                adjustment.set_value(adjustment.upper() - adjustment.page_size());
+            });
+        }
         self.0.window.present();
     }
 
@@ -398,6 +407,7 @@ impl Hub {
             this.open(Some("subjects"));
         });
         page.add(&add);
+        page.add(&self.routes_group());
         page.add(&self.consent_group());
         page
     }
@@ -474,6 +484,35 @@ impl Hub {
                 })),
             );
         });
+        group
+    }
+
+    /// Q-49: the reader can only take a route out of the random draw of Alt+T;
+    /// the others keep their proportions. The manual choice in the window stays.
+    fn routes_group(&self) -> adw::PreferencesGroup {
+        let group = adw::PreferencesGroup::builder()
+            .title("Что выпадает по Alt+T")
+            .description(
+                "Выключенное не выпадает само, но выбирается в окне вручную. \
+                 Добавить вес другому нельзя.",
+            )
+            .build();
+        let off = RouteSwitches::open(&self.0.ctx.db)
+            .and_then(|s| s.off())
+            .unwrap_or_default();
+        for route in Route::ALL {
+            let row = adw::SwitchRow::builder().title(route.title()).build();
+            row.set_active(!off.contains(&route));
+            let db = self.0.ctx.db.clone();
+            row.connect_active_notify(move |r| {
+                let saved = RouteSwitches::open(&db)
+                    .and_then(|mut s| s.set_off(route, !r.is_active(), ctx::now()));
+                if let Err(e) = saved {
+                    eprintln!("route switches: {e}");
+                }
+            });
+            group.add(&row);
+        }
         group
     }
 

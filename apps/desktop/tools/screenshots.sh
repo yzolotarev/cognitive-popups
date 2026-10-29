@@ -5,7 +5,7 @@
 set -euo pipefail
 out=$(realpath -m "${1:-screenshots}")
 here=$(cd "$(dirname "$0")/.." && pwd)
-bin="$here/target/debug/cognitive-popups"
+bin="${COGNITIVE_BIN:-$here/target/debug/cognitive-popups}"
 mkdir -p "$out"
 export XDG_RUNTIME_DIR=$(mktemp -d) WAYLAND_DISPLAY=wayland-1 GTK_A11Y=none
 chmod 700 "$XDG_RUNTIME_DIR"
@@ -19,7 +19,8 @@ for _ in $(seq 50); do [ -S "$XDG_RUNTIME_DIR/wayland-1" ] && break; sleep 0.1; 
 printf 'Метод Ньютона сходится квадратично, если начальное приближение достаточно близко к корню.' |
   wl-copy --primary
 
-# name|window|argument
+# name|window|argument. A name that starts with _ takes no picture (`_seed`
+# writes the demo data of the routes that come from the stores, B64).
 shots=(
   "note|note"
   "understand-words|understand|words"
@@ -33,14 +34,23 @@ shots=(
   "practice|practice|probes"
   "practice-methods|practice|methods"
   "practice-feynman|practice|feynman"
+  "practice-continue-empty|practice|continue"
+  "practice-skill-empty|practice|skill"
   "lesson-subject|lesson|"
   "lesson-new|lesson|subject Численные методы|Сдать экзамен по численным методам 20 ноября"
   "lesson-plan|lesson|generate"
   "lesson-clock|lesson|step 20 сделаю три шага для √2"
   "lesson-end|lesson|"
   "lesson-feynman|lesson|feynman"
+  "_seed|seed|"
+  "practice-whole|practice|whole"
+  "practice-continue|practice|continue"
+  "practice-continue-solution|practice|continue reveal"
+  "practice-old|practice|old"
+  "practice-skill|practice|skill"
   "hub-ai|hub|ai"
   "hub-subjects|hub|subjects"
+  "hub-routes|hub|subjects-end"
   "hub-history|hub|history"
   "help|help|"
   "resume|resume|"
@@ -63,6 +73,7 @@ for theme in light dark; do
     # shellcheck disable=SC2086
     "$bin" signal $window ${argument:+"$argument"}
     sleep 1.2
+    if [[ $name == _* ]]; then continue; fi
     grim "$out/$name-$theme.png"
     "$bin" signal hide
     sleep 0.3

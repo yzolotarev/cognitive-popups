@@ -315,6 +315,7 @@ fn subjects_made_before_the_sync_are_passed_on_when_opened() {
         .map(|d| d.unit)
         .collect();
     assert_eq!(due, ["u"]);
+    drop(memory);
     std::fs::remove_file(db).unwrap();
 }
 

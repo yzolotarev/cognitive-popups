@@ -158,6 +158,10 @@ impl NoteWindow {
         self.window.add_controller(keys);
     }
 
+    pub fn hide(&self) {
+        popup::hide(&self.window);
+    }
+
     /// Alt+E: the selection (may be empty) becomes the anchor.
     pub fn open(&self, selection: Option<Captured>) {
         let quote = selection

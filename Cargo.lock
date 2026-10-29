@@ -71,6 +71,7 @@ dependencies = [
  "cognitive-exoskeleton-notes",
  "cognitive-exoskeleton-nudges",
  "cognitive-exoskeleton-practice",
+ "cognitive-exoskeleton-understand",
  "cognitive-exoskeleton-units",
  "serde",
  "serde_json",
@@ -154,6 +155,17 @@ name = "cognitive-exoskeleton-practice"
 version = "0.1.0"
 dependencies = [
  "cognitive-exoskeleton-ai",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "cognitive-exoskeleton-understand"
+version = "0.1.0"
+dependencies = [
+ "cognitive-exoskeleton-ai",
+ "rusqlite",
  "serde",
  "serde_json",
  "thiserror",

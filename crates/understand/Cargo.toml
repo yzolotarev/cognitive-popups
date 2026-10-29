@@ -1,0 +1,13 @@
+[package]
+name = "cognitive-exoskeleton-understand"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+publish = false
+
+[dependencies]
+cognitive-exoskeleton-ai = { path = "../ai" }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

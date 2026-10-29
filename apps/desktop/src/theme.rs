@@ -103,6 +103,7 @@ mod tests {
             ("cp_text", "cp_surface"),
             ("cp_text_secondary", "cp_surface"),
             ("cp_on_accent", "cp_accent"),
+            ("cp_accent_text", "cp_surface"),
             ("cp_success", "cp_surface"),
             ("cp_error", "cp_surface"),
         ];
@@ -139,6 +140,8 @@ mod tests {
         for (file, source) in [
             ("note.rs", include_str!("note.rs")),
             ("popup.rs", include_str!("popup.rs")),
+            ("understand.rs", include_str!("understand.rs")),
+            ("ui.rs", include_str!("ui.rs")),
         ] {
             for bad in ["#", "rgb(", "rgba("] {
                 let hit = source

@@ -250,3 +250,79 @@ fn subjects_can_be_listed_and_removed_without_deleting() {
         .unwrap();
     assert_eq!(rows, 1);
 }
+
+#[test]
+fn a_goal_deadline_and_state_reach_the_schedule() {
+    use cognitive_exoskeleton_memory::Memory;
+    let db = std::env::temp_dir().join(format!("cp-goal-sync-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&db);
+    let day = 86_400;
+    let now = end_of_day("2026-11-20").unwrap() - 5 * day;
+    let mut store = LessonStore::open(&db).unwrap();
+    let exam = store
+        .add_subject("Тервер", "сдать зачёт", Some("2026-11-20"), now)
+        .unwrap();
+    let english = store.add_subject("Английский", "B2+", None, now).unwrap();
+    let mut memory = Memory::open(&db).unwrap();
+    memory.enroll("u-exam", &exam, now).unwrap();
+    memory.enroll("u-english", &english, now).unwrap();
+    // Within 7 days of the deadline only its reviews are offered (S4 rule 7).
+    let due: Vec<_> = memory
+        .due(now)
+        .unwrap()
+        .into_iter()
+        .map(|d| d.unit)
+        .collect();
+    assert_eq!(due, ["u-exam"]);
+    // The goal is put aside: its reviews pause, the others come back (rule 8).
+    let mut paused = store.subject(&exam).unwrap().unwrap();
+    paused.status = "paused".into();
+    store.update_subject(&paused).unwrap();
+    let due: Vec<_> = memory
+        .due(now)
+        .unwrap()
+        .into_iter()
+        .map(|d| d.unit)
+        .collect();
+    assert_eq!(due, ["u-english"]);
+    drop((store, memory));
+    std::fs::remove_file(db).unwrap();
+}
+
+#[test]
+fn subjects_made_before_the_sync_are_passed_on_when_opened() {
+    use cognitive_exoskeleton_memory::Memory;
+    let db = std::env::temp_dir().join(format!("cp-goal-backfill-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&db);
+    {
+        let connection = Connection::open(&db).unwrap();
+        let mut old = LessonStore::from_connection(connection).unwrap();
+        old.add_subject("Старый", "цель", Some("2026-11-20"), 0)
+            .unwrap();
+    }
+    let now = end_of_day("2026-11-18").unwrap();
+    LessonStore::open(&db).unwrap();
+    let mut memory = Memory::open(&db).unwrap();
+    let id = LessonStore::open(&db).unwrap().subjects().unwrap()[0]
+        .id
+        .clone();
+    memory.enroll("u", &id, now).unwrap();
+    memory.enroll("other", "general", now).unwrap();
+    let due: Vec<_> = memory
+        .due(now)
+        .unwrap()
+        .into_iter()
+        .map(|d| d.unit)
+        .collect();
+    assert_eq!(due, ["u"]);
+    std::fs::remove_file(db).unwrap();
+}
+
+#[test]
+fn deadlines_are_read_as_whole_days() {
+    assert_eq!(end_of_day("1970-01-01"), Some(86_399));
+    assert_eq!(end_of_day("2026-11-28"), Some(1_795_910_399));
+    assert_eq!(end_of_day("2024-02-29"), Some(1_709_251_199));
+    assert_eq!(end_of_day("завтра"), None);
+    assert_eq!(end_of_day("2026-13-01"), None);
+}

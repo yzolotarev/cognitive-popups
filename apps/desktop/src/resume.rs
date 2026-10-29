@@ -81,7 +81,10 @@ impl Resume {
             let content = ui::column(4);
             content.add_css_class("cp-content");
             content.append(&ui::text(hint.label, &["cp-footnote", "cp-secondary"]));
-            content.append(&ui::text(&format!("«{}»", hint.quote), &["cp-body"]));
+            content.append(&ui::text(
+                &format!("«{}»", cognitive_exoskeleton_formula::plain(&hint.quote)),
+                &["cp-body"],
+            ));
             self.body.append(&content);
         }
         let go = ui::button("Продолжить с того места", &["cp-default"]);

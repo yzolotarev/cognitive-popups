@@ -93,3 +93,12 @@ fn plain_four_words_cue_with_fraction_has_no_latex() {
     let shown = plain(text);
     assert!(!shown.contains('\\') && !shown.contains("frac"), "{shown}");
 }
+
+#[test]
+fn plain_lesson_step_label_has_no_latex_delimiters() {
+    // A plan item as the model wrote it; the lesson window shows `plain` of it.
+    let text = r"Составить выражение для разности \(f(x + h) - f(x)\) для заданной функции.";
+    let shown = plain(text);
+    assert!(!shown.contains('\\'), "{shown}");
+    assert!(shown.contains("f(x + h) − f(x)"), "{shown}");
+}

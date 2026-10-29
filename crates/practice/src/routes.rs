@@ -17,6 +17,48 @@ pub enum Route {
     Skill,
 }
 
+impl Route {
+    pub const ALL: [Route; 7] = [
+        Route::Probes,
+        Route::ChooseMethod,
+        Route::Feynman,
+        Route::Hypothesis,
+        Route::ContinueTask,
+        Route::OldMaterial,
+        Route::Skill,
+    ];
+
+    /// The name in the database and in the CLI.
+    pub fn name(self) -> &'static str {
+        match self {
+            Route::Probes => "probes",
+            Route::ChooseMethod => "choose_method",
+            Route::Feynman => "feynman",
+            Route::Hypothesis => "hypothesis",
+            Route::ContinueTask => "continue_task",
+            Route::OldMaterial => "old_material",
+            Route::Skill => "skill",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Route> {
+        Route::ALL.into_iter().find(|route| route.name() == name)
+    }
+
+    /// The label in windows.
+    pub fn title(self) -> &'static str {
+        match self {
+            Route::Probes => "Пробы",
+            Route::ChooseMethod => "Выбор метода",
+            Route::Feynman => "Своими словами",
+            Route::Hypothesis => "Гипотеза",
+            Route::ContinueTask => "Продолжить задачу",
+            Route::OldMaterial => "Старый материал",
+            Route::Skill => "Умение",
+        }
+    }
+}
+
 /// v1 weights: probes 70, choose method 5, Feynman 5, hypothesis 3,
 /// continue task 2, old material 2, skill 2.
 pub const WEIGHTS: [(Route, u32); 7] = [

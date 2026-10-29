@@ -230,3 +230,25 @@ fn a_subject_with_enough_history_gets_its_own_weights() {
         OptimizeOutcome::TooSoon { .. }
     ));
 }
+
+#[test]
+fn last_correct_at_is_the_latest_good_and_pause_is_visible() {
+    let mut memory = memory_with(&[("u1", "S")]);
+    assert_eq!(memory.last_correct_at("u1").unwrap(), None);
+    memory
+        .review("u1", Grade::Again, GradeSource::Verified, "a", T0 + 1)
+        .unwrap();
+    assert_eq!(
+        memory.last_correct_at("u1").unwrap(),
+        None,
+        "a miss is not a gap closer"
+    );
+    good(&mut memory, "u1", "b", T0 + 100);
+    good(&mut memory, "u1", "c", T0 + 900);
+    assert_eq!(memory.last_correct_at("u1").unwrap(), Some(T0 + 900));
+    assert!(!memory.is_paused("u1").unwrap());
+    assert!(matches!(
+        memory.is_paused("nope"),
+        Err(MemoryError::NotEnrolled(_))
+    ));
+}

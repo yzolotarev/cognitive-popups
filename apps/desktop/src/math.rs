@@ -11,7 +11,7 @@ use gtk::prelude::*;
 
 use typst::diag::{FileError, FileResult};
 use typst::foundations::{Bytes, Datetime};
-use typst::layout::PagedDocument;
+use typst::layout::{Frame, FrameItem, PagedDocument};
 use typst::syntax::{FileId, Source, VirtualPath};
 use typst::text::{Font, FontBook};
 use typst::utils::LazyHash;
@@ -51,6 +51,9 @@ pub struct Drawn {
     raster: (i32, i32),
     pub width: i32,
     pub height: i32,
+    /// Distance from the top of the image to the text baseline of the
+    /// formula, in logical pixels.
+    pub baseline: i32,
 }
 
 struct Page<'a> {
@@ -98,16 +101,34 @@ pub fn document(math: &str, display: bool, dark: bool) -> String {
     let body = if display {
         format!("$ {math} $")
     } else {
-        format!("${math}$")
+        // The probe is invisible and 0.1 pt wide: it only tells where the
+        // text baseline of the line is (see `probe_baseline`).
+        format!("#text(size: {PROBE_PT}pt, fill: rgb(\"#00000000\"))[x]${math}$")
     };
     format!(
-        "#set page(width: auto, height: auto, margin: (x: 1pt, y: 2pt), fill: none)\n\
+        "#set page(width: auto, height: auto, margin: (x: 1pt, top: 2pt, bottom: 4pt), fill: none)\n\
          #set text(size: {SIZE_PT}pt, fill: rgb(\"{colour}\"))\n{body}\n"
     )
 }
 
-/// Compiles and rasterizes; `None` when Typst refuses the source.
-pub fn rasterize(source: &str) -> Option<(Vec<u8>, u32, u32)> {
+/// Size of the invisible probe glyph placed before an inline formula: its
+/// text item sits exactly on the baseline of the line.
+const PROBE_PT: f64 = 0.1;
+
+/// Baseline of the probe glyph from the frame's top, in points.
+fn probe_baseline(frame: &Frame) -> Option<f64> {
+    frame.items().find_map(|(pos, item)| match item {
+        FrameItem::Text(text) if (text.size.to_pt() - PROBE_PT).abs() < 1e-6 => Some(pos.y.to_pt()),
+        FrameItem::Group(group) => {
+            probe_baseline(&group.frame).map(|b| pos.y.to_pt() + group.transform.ty.to_pt() + b)
+        }
+        _ => None,
+    })
+}
+
+/// Compiles and rasterizes; `None` when Typst refuses the source. The last
+/// value is the baseline from the top of the image, in image pixels.
+pub fn rasterize(source: &str) -> Option<(Vec<u8>, u32, u32, f32)> {
     FONTS.with(|fonts| {
         let main = Source::new(
             FileId::new(None, VirtualPath::new("/formula.typ")),
@@ -117,7 +138,15 @@ pub fn rasterize(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         let document = typst::compile::<PagedDocument>(&page).output.ok()?;
         let first = document.pages.first()?;
         let pixmap = typst_render::render(first, PX_PER_PT * OVERSAMPLE);
-        Some((pixmap.data().to_vec(), pixmap.width(), pixmap.height()))
+        let baseline = probe_baseline(&first.frame).map_or(pixmap.height() as f32 / 2.0, |pt| {
+            pt as f32 * PX_PER_PT * OVERSAMPLE
+        });
+        Some((
+            pixmap.data().to_vec(),
+            pixmap.width(),
+            pixmap.height(),
+            baseline,
+        ))
     })
 }
 
@@ -131,7 +160,7 @@ pub fn draw(tex: &str, display: bool) -> Option<Drawn> {
     let drawn = formula::parse(tex)
         .ok()
         .and_then(|nodes| rasterize(&document(&formula::to_typst(&nodes), display, dark)))
-        .map(|(mut data, width, height)| {
+        .map(|(mut data, width, height, baseline)| {
             // tiny-skia gives RGBA; cairo's ARGB32 is BGRA in memory.
             for pixel in data.as_chunks_mut::<4>().0 {
                 pixel.swap(0, 2);
@@ -141,6 +170,7 @@ pub fn draw(tex: &str, display: bool) -> Option<Drawn> {
                 raster: (width as i32, height as i32),
                 width: (width as f32 / OVERSAMPLE).round() as i32,
                 height: (height as f32 / OVERSAMPLE).round() as i32,
+                baseline: (baseline / OVERSAMPLE).round() as i32,
             }
         });
     CACHE.with(|c| c.borrow_mut().insert(key, drawn.clone()));
@@ -149,13 +179,19 @@ pub fn draw(tex: &str, display: bool) -> Option<Drawn> {
 
 /// The formula at exactly its logical size (a `gtk::Picture` would ask for
 /// the oversampled size and leave empty space under the text).
-pub fn picture(drawn: &Drawn) -> gtk::DrawingArea {
+///
+/// A text view sets a child on the line's baseline by its bottom edge, so an
+/// inline formula with a descender (or a fraction) looks raised. `lowered` is
+/// a tag on the anchor character: its `rise` is kept at minus the part of the
+/// formula under its baseline, so the formula's baseline meets the text's.
+pub fn picture(drawn: &Drawn, lowered: Option<gtk::TextTag>) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::new();
     area.set_content_width(drawn.width);
     area.set_content_height(drawn.height);
     area.set_halign(gtk::Align::Start);
     area.set_valign(gtk::Align::Center);
     let (base_width, base_height) = (drawn.width, drawn.height);
+    let below = f64::from(drawn.height - drawn.baseline);
     area.add_tick_callback(move |area, _| {
         let scale = crate::scale::factor(area);
         let width = (f64::from(base_width) * scale).round() as i32;
@@ -163,6 +199,12 @@ pub fn picture(drawn: &Drawn) -> gtk::DrawingArea {
         if area.content_width() != width || area.content_height() != height {
             area.set_content_width(width);
             area.set_content_height(height);
+        }
+        if let Some(tag) = &lowered {
+            let rise = -(below * scale * f64::from(gtk::pango::SCALE)).round() as i32;
+            if tag.rise() != rise {
+                tag.set_rise(rise);
+            }
         }
         gtk::glib::ControlFlow::Continue
     });
@@ -200,7 +242,8 @@ mod tests {
             let nodes = formula::parse(tex).unwrap();
             for display in [false, true] {
                 let source = document(&formula::to_typst(&nodes), display, false);
-                let (data, w, h) = rasterize(&source).unwrap_or_else(|| panic!("{tex}\n{source}"));
+                let (data, w, h, _) =
+                    rasterize(&source).unwrap_or_else(|| panic!("{tex}\n{source}"));
                 assert!(
                     w > 4 && h > 4 && data.iter().any(|b| *b != 0),
                     "{tex}: empty"

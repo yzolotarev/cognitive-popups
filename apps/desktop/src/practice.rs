@@ -1,20 +1,26 @@
-//! Alt+T — практика (S5, F-18…F-24). The route falls by weight (probes 70,
-//! method choice 5, «своими словами» 5, hypothesis 3); the row at the bottom
-//! switches by hand. Every answer stays hidden until the reader tries; the
-//! highlighted next step follows rules in code (`Guidance`), never the model.
+//! Alt+T — практика (S5, F-18…F-24). The route falls by weight among the ones
+//! the stores allow now (probes 70, method choice 5, «своими словами» 5,
+//! hypothesis 3, continue a task 2, old material 2, skill 2; B64); the rows at
+//! the bottom switch by hand. Every answer stays hidden until the reader tries;
+//! the highlighted next step follows rules in code (`Guidance`), never the model.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use cognitive_exoskeleton_ai::Priority;
-use cognitive_exoskeleton_capture::Captured;
-use cognitive_exoskeleton_domain::OperationId;
+use cognitive_exoskeleton_capture::{Captured, Origin};
+use cognitive_exoskeleton_domain::{OperationId, SourceContext};
 use cognitive_exoskeleton_memory::{Grade, GradeSource, Memory, Note};
 use cognitive_exoskeleton_practice::{
     self as practice, Card, CardSession, Category, Guidance, Help, Hint, MethodItem, MethodSet,
-    PracticeError, ProbeGroup, RecallCard, WholeTask, families,
+    PracticeError, ProbeGroup, RecallCard, WholeTask,
+    availability::{self, Availability},
+    families,
     feynman::{self, Feedback, Question},
+    revisit,
     routes::{self, Route},
+    skill::{self, Candidate},
+    tasks::{NewTask, SavedTask, TaskStore},
 };
 use gtk::prelude::*;
 use gtk::{gdk, glib};
@@ -27,8 +33,8 @@ pub const WIDTH: i32 = 520;
 /// Width and the tallest it usually gets: keeps it on screen near the cursor.
 pub const SIZE: (i32, i32) = (WIDTH, 640);
 
-/// Routes that need a store this version does not have yet (B49).
-const NOT_YET: [Route; 3] = [Route::ContinueTask, Route::OldMaterial, Route::Skill];
+/// The routes that never need text on screen (B64): they come from the stores.
+const FROM_STORES: [Route; 3] = [Route::ContinueTask, Route::OldMaterial, Route::Skill];
 
 /// What other windows do for this one: the ladder for «Шаг поменьше», the
 /// hypothesis window for the route «гипотеза».
@@ -43,6 +49,14 @@ struct State {
     text: String,
     operation: Option<OperationId>,
     from_pill: bool,
+    /// What the stores allow now (F-18 step 2), read when a route is chosen.
+    avail: Rc<Availability>,
+    /// Whole tasks generated in this opening (their keys are `whole:<op>:<n>`).
+    wholes: u32,
+    /// Keep the draft of every whole task on screen when the window closes.
+    flush: Vec<Rc<dyn Fn()>>,
+    /// Opens the solution of the whole task on screen (scripts, screenshots).
+    reveal: Option<Rc<dyn Fn()>>,
 }
 
 struct Inner {
@@ -83,17 +97,24 @@ impl PracticeWindow {
         let body = ui::column(8);
         scroller.set_child(Some(&body));
         root.append(&scroller);
-        let footer = ui::row(0);
+        let footer = ui::column(4);
         let mut choices = Vec::new();
-        for (route, label) in [
-            (Route::Probes, "Пробы"),
-            (Route::ChooseMethod, "Выбор метода"),
-            (Route::Feynman, "Своими словами"),
-            (Route::Hypothesis, "Гипотеза"),
+        for group in [
+            &Route::ALL[..4],
+            // From the stores: what was left, what is old, what has a gap.
+            &Route::ALL[4..],
         ] {
-            let button = ui::button(label, &["cp-choice"]);
-            footer.append(&button);
-            choices.push((route, button));
+            let line = ui::row(0);
+            for route in group {
+                let label = match route {
+                    Route::ContinueTask => "Продолжить задачу",
+                    other => other.title(),
+                };
+                let button = ui::button(label, &["cp-choice"]);
+                line.append(&button);
+                choices.push((*route, button));
+            }
+            footer.append(&line);
         }
         root.append(&footer);
         window.set_child(Some(&root));
@@ -119,10 +140,10 @@ impl PracticeWindow {
             button.connect_clicked(move |_| this.route(route));
         }
         let keys = gtk::EventControllerKey::new();
-        let window = self.0.window.clone();
+        let this = self.clone();
         keys.connect_key_pressed(move |_, key, _, _| {
             if key == gdk::Key::Escape {
-                popup::hide(&window);
+                this.hide();
                 return glib::Propagation::Stop;
             }
             glib::Propagation::Proceed
@@ -131,7 +152,39 @@ impl PracticeWindow {
     }
 
     pub fn hide(&self) {
+        self.flush();
         popup::hide(&self.0.window);
+    }
+
+    /// A whole task left unfinished keeps the reader's draft (B64).
+    fn flush(&self) {
+        let pending = std::mem::take(&mut self.0.state.borrow_mut().flush);
+        for save in pending {
+            save();
+        }
+    }
+
+    /// Reads the stores and tells the manual row what is out and why. A route
+    /// that is out stays clickable: the click explains instead of faking.
+    fn refresh_availability(&self) -> Rc<Availability> {
+        let text = self.0.state.borrow().text.clone();
+        let avail = Rc::new(availability::compute(&self.0.ctx.db, ctx::now(), &text));
+        for (route, button) in &self.0.choices {
+            match avail.reason(*route).filter(|_| *route != Route::Probes) {
+                Some(why) => {
+                    button.add_css_class("cp-unavailable");
+                    button.set_opacity(0.55);
+                    button.set_tooltip_text(Some(&why.reason()));
+                }
+                None => {
+                    button.remove_css_class("cp-unavailable");
+                    button.set_opacity(1.0);
+                    button.set_tooltip_text(None);
+                }
+            }
+        }
+        self.0.state.borrow_mut().avail = avail.clone();
+        avail
     }
 
     /// Alt+T, or the «FSRS! N» pill (`from_pill`: «Достань из памяти» first).
@@ -150,25 +203,23 @@ impl PracticeWindow {
                 .map(|c| c.origin.label())
                 .unwrap_or("без выделения"),
         );
+        self.flush();
         *self.0.state.borrow_mut() = State {
             captured: selection,
             text: text.clone(),
             operation: Some(ctx::operation()),
             from_pill,
+            ..State::default()
         };
         popup::show(&self.0.window, SIZE, Opened::ByKey);
-        let has_text = !text.trim().is_empty();
-        let mut off = NOT_YET.to_vec();
-        if !has_text {
-            off.extend([
-                Route::Probes,
-                Route::ChooseMethod,
-                Route::Feynman,
-                Route::Hypothesis,
-            ]);
-        }
+        // F-18 step 2: what the stores cannot give is out, the rest is
+        // renormalised by `routes::pick`; so are the routes the reader
+        // switched off (Q-49). A manual choice is never overruled by a switch.
+        let avail = self.refresh_availability();
+        let off = avail.excluded();
         let route = chosen
-            .filter(|_| has_text)
+            .filter(|r| FROM_STORES.contains(r))
+            .or_else(|| chosen.filter(|r| avail.reason(*r).is_none()))
             .or_else(|| routes::pick(understand_roll(), &off));
         match route {
             Some(route) => self.route(route),
@@ -178,6 +229,9 @@ impl PracticeWindow {
     }
 
     fn route(&self, route: Route) {
+        // Leaving a whole task on screen keeps its draft.
+        self.flush();
+        let avail = self.refresh_availability();
         for (r, button) in &self.0.choices {
             if *r == route {
                 button.add_css_class("cp-current");
@@ -186,6 +240,14 @@ impl PracticeWindow {
             }
         }
         ui::clear(&self.0.tabs);
+        if route != Route::Probes
+            && let Some(why) = avail.reason(route)
+        {
+            self.0.title.set_text(route.title());
+            self.next_generation();
+            self.show(&[ui::text(&why.reason(), &["cp-body", "cp-secondary"]).upcast()]);
+            return;
+        }
         match route {
             Route::Hypothesis => {
                 self.hide();
@@ -193,7 +255,10 @@ impl PracticeWindow {
             }
             Route::ChooseMethod => self.methods(),
             Route::Feynman => self.feynman(),
-            _ => self.probes(),
+            Route::ContinueTask => self.continue_task(&avail),
+            Route::OldMaterial => self.old_material(&avail),
+            Route::Skill => self.skill(&avail),
+            Route::Probes => self.probes(),
         }
     }
 
@@ -330,14 +395,14 @@ impl PracticeWindow {
             &["cp-callout", "cp-secondary"],
         ));
         for card in cards {
-            page.append(&self.recall_card(card));
+            page.append(&self.recall_card(card, "recall"));
         }
         page
     }
 
     /// B31: the answer first, then the reference; the reader grades by
     /// comparing (self_graded) unless code can check it (verified).
-    fn recall_card(&self, card: RecallCard) -> gtk::Box {
+    fn recall_card(&self, card: RecallCard, route: &str) -> gtk::Box {
         let content = ui::column(8);
         content.add_css_class("cp-content");
         let task = card
@@ -356,7 +421,7 @@ impl PracticeWindow {
         let row = ui::actions(&[&forgot, &answer]);
         content.append(&row);
         let key = format!(
-            "recall:{}:{}",
+            "{route}:{}:{}",
             card.unit,
             self.0
                 .state
@@ -448,6 +513,399 @@ impl PracticeWindow {
             ));
         });
         content
+    }
+
+    // ---------- routes from the stores (B64) ----------
+
+    /// «Продолжить задачу»: the whole task left unfinished, with its draft.
+    fn continue_task(&self, avail: &Availability) {
+        let inner = &self.0;
+        inner.title.set_text("Продолжить задачу");
+        self.next_generation();
+        let Some(saved) = avail.stock.task.clone() else {
+            return;
+        };
+        let more = avail.stock.open_tasks.saturating_sub(1);
+        let task = NewTask {
+            type_id: saved.type_id,
+            type_title: saved.type_title.clone(),
+            operations: saved.operations.clone(),
+            condition: saved.condition.clone(),
+            solution: saved.solution.clone(),
+        };
+        let mut widgets = vec![self.whole_view(task, Some(saved)).upcast::<gtk::Widget>()];
+        if more > 0 {
+            widgets.push(
+                ui::text(
+                    &format!("Ещё отложено: {more}. Следующая — после этой."),
+                    &["cp-footnote", "cp-secondary"],
+                )
+                .upcast(),
+            );
+        }
+        self.show(&widgets);
+    }
+
+    /// «Старый материал»: a fragment from the archive becomes the material of
+    /// the probes again. Its snapshot is written once more, as a new use.
+    fn old_material(&self, avail: &Availability) {
+        let Some(fragment) = revisit::pick(&avail.stock.fragments, understand_roll()).cloned()
+        else {
+            return;
+        };
+        let captured = Captured {
+            text: fragment.text.clone(),
+            origin: Origin::Archive,
+            context: SourceContext::Study,
+            window_class: fragment.application.clone(),
+            title: fragment.title.clone(),
+            truncated: false,
+            clipboard_restored: None,
+        };
+        {
+            let mut state = self.0.state.borrow_mut();
+            state.text = fragment.text.clone();
+            state.captured = Some(captured);
+            state.operation = Some(ctx::operation());
+        }
+        self.0
+            .source
+            .set_text(&format!("из архива · {}", day(fragment.at)));
+        self.probes();
+        self.0.title.set_text("Пробы · старый материал");
+    }
+
+    /// «Умение»: one unit the admission rule lets through, asked as a recall
+    /// card; the reader answers first, then compares (self_graded) or the code
+    /// checks (verified). The model asks and quotes, it does not choose.
+    fn skill(&self, avail: &Availability) {
+        let inner = &self.0;
+        inner.title.set_text("Умение");
+        let Some(candidate) = skill::pick(&avail.stock.skills, understand_roll()).cloned() else {
+            return;
+        };
+        let generation = self.next_generation();
+        self.show(&[ui::waiting("Готовлю вопрос по умению…").upcast()]);
+        let (ai, prompts) = (inner.ctx.ai(), inner.ctx.prompts.clone());
+        let unit = candidate.unit.clone();
+        let this = self.clone();
+        let provider = inner.ctx.provider();
+        ctx::background(
+            move || {
+                practice::recall_cards(
+                    &ai,
+                    &prompts,
+                    &[unit],
+                    ctx::now() as u64,
+                    Priority::Foreground,
+                )
+            },
+            move |result| {
+                if !this.current(generation) {
+                    return;
+                }
+                match result {
+                    Ok(set) => match set.cards.into_iter().next() {
+                        Some(card) => this.skill_page(&candidate, card),
+                        None => this.show(&[ui::text(
+                            &format!(
+                                "Не вышло составить вопрос по «{}»: {}",
+                                candidate.unit.title,
+                                set.notes.join("; ")
+                            ),
+                            &["cp-body", "cp-secondary"],
+                        )
+                        .upcast()]),
+                    },
+                    Err(e) => this.failed(&e.user_message(provider), Route::Skill),
+                }
+            },
+        );
+    }
+
+    fn skill_page(&self, candidate: &Candidate, card: RecallCard) {
+        let page = ui::column(8);
+        page.append(&ui::text(
+            &format!("{} · {}", candidate.subject_name, candidate.unit.title),
+            &["cp-footnote", "cp-secondary"],
+        ));
+        page.append(&ui::text(
+            &format!("Умение: {}", candidate.unit.action),
+            &["cp-callout"],
+        ));
+        let gap = match candidate.last_correct {
+            Some(at) => format!(
+                "Верный ответ был {} назад. Вспомни сам, потом сверь с тем, что было в твоих материалах.",
+                days_ago(ctx::now() - at)
+            ),
+            None => "Верного ответа пока не было. Вспомни сам, потом сверь с тем, что было в твоих материалах.".into(),
+        };
+        page.append(&ui::text(&gap, &["cp-footnote", "cp-secondary"]));
+        page.append(&self.recall_card(card, "skill"));
+        self.show(&[page.upcast()]);
+    }
+
+    /// A whole task with the reader's attempt. The solution opens only after
+    /// an attempt (own attempt before the answer); [Отложить] or closing the
+    /// window keeps the task and the draft for «Продолжить задачу»; [Готово]
+    /// closes it without any grade; [Не возвращаться] drops it and [Вернуть]
+    /// undoes that.
+    fn whole_view(&self, task: NewTask, saved: Option<SavedTask>) -> gtk::Box {
+        let content = ui::column(8);
+        content.add_css_class("cp-content");
+        let heading = match &saved {
+            Some(s) => format!(
+                "Целая задача · {} · отложена {}",
+                task.type_title,
+                day(s.saved_at)
+            ),
+            None => format!("Целая задача · {}", task.type_title),
+        };
+        content.append(&ui::text(&heading, &["cp-footnote", "cp-secondary"]));
+        content.append(&ui::rich(&task.condition, &["cp-body"], WIDTH));
+        let (area, input) = ui::text_area("Твоя попытка: что делаешь, по шагам…", 110);
+        let draft = saved.as_ref().map(|s| s.draft.clone()).unwrap_or_default();
+        input.buffer().set_text(&draft);
+        content.append(&area);
+        let later = ui::button("Отложить", &[]);
+        let reveal = ui::button("Решение", &["cp-default"]);
+        reveal.set_sensitive(!draft.trim().is_empty());
+        reveal.set_tooltip_text(Some("Решение откроется, когда в попытке что-то есть"));
+        let leave = ui::button("Не возвращаться", &[]);
+        leave.set_visible(saved.is_some());
+        let row = ui::actions(&[&leave, &later, &reveal]);
+        content.append(&row);
+        let note = ui::text("", &["cp-footnote", "cp-secondary"]);
+        note.set_visible(false);
+        content.append(&note);
+
+        let (db, id) = (
+            self.0.ctx.db.clone(),
+            Rc::new(Cell::new(saved.as_ref().map(|s| s.id))),
+        );
+        let closed = Rc::new(Cell::new(false));
+        let dropped = Rc::new(Cell::new(false));
+        let key = {
+            let mut state = self.0.state.borrow_mut();
+            state.wholes += 1;
+            format!(
+                "whole:{}:{}",
+                state
+                    .operation
+                    .as_ref()
+                    .map(|o| o.as_str().to_string())
+                    .unwrap_or_default(),
+                state.wholes
+            )
+        };
+        // `force`: the reader asked; otherwise only a draft is worth keeping.
+        let save = {
+            let (db, id, closed, input, task, key) = (
+                db.clone(),
+                id.clone(),
+                closed.clone(),
+                input.clone(),
+                task.clone(),
+                key,
+            );
+            Rc::new(move |force: bool| {
+                if closed.get() {
+                    return;
+                }
+                let draft = ui::buffer_text(&input);
+                if id.get().is_none() && draft.trim().is_empty() && !force {
+                    return;
+                }
+                let at = ctx::now();
+                let saved = TaskStore::open(&db).and_then(|mut store| match id.get() {
+                    Some(known) => store.set_draft(known, &draft, at).map(|()| known),
+                    None => store.save(&key, &task, &draft, at),
+                });
+                match saved {
+                    Ok(known) => id.set(Some(known)),
+                    Err(e) => eprintln!("tasks: {e}"),
+                }
+            })
+        };
+        {
+            let mut state = self.0.state.borrow_mut();
+            let flush = save.clone();
+            state.flush.push(Rc::new(move || flush(false)));
+        }
+
+        let r = reveal.clone();
+        input.buffer().connect_changed(move |buffer| {
+            let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+            r.set_sensitive(!text.trim().is_empty());
+        });
+        let (s, n) = (save.clone(), note.clone());
+        later.connect_clicked(move |_| {
+            s(true);
+            n.set_text("Отложено. Вернуться к задаче можно через Alt+T.");
+            n.set_visible(true);
+        });
+        let (this, s, i, t) = (self.clone(), save.clone(), input.clone(), task.clone());
+        let (id_c, closed_c, dropped_c, db_c, row_c, content_c) = (
+            id.clone(),
+            closed.clone(),
+            dropped.clone(),
+            db.clone(),
+            row.clone(),
+            content.clone(),
+        );
+        let leave_c = leave.clone();
+        reveal.connect_clicked(move |_| {
+            let attempt = ui::buffer_text(&i);
+            if attempt.trim().is_empty() {
+                return;
+            }
+            s(true);
+            this.record(&format!(
+                "Целая задача «{}» (своя попытка до решения): {attempt}",
+                t.type_title
+            ));
+            i.set_editable(false);
+            row_c.set_visible(false);
+            content_c.append(&ui::rich(&t.solution, &["cp-callout"], WIDTH));
+            let done = ui::button("Готово", &["cp-default"]);
+            let again = ui::button(
+                if dropped_c.get() {
+                    "Вернуть"
+                } else {
+                    "Не возвращаться"
+                },
+                &[],
+            );
+            let note = ui::text("", &["cp-footnote", "cp-secondary"]);
+            let (id, closed, db, n, a) = (
+                id_c.clone(),
+                closed_c.clone(),
+                db_c.clone(),
+                note.clone(),
+                again.clone(),
+            );
+            done.connect_clicked(move |b| {
+                if let Some(known) = id.get() {
+                    let result = TaskStore::open(&db).and_then(|mut s| s.finish(known, ctx::now()));
+                    if let Err(e) = result {
+                        eprintln!("tasks: {e}");
+                        return;
+                    }
+                }
+                closed.set(true);
+                b.set_sensitive(false);
+                a.set_sensitive(false);
+                n.set_text("Задача закрыта. Это не оценка: сверь решение со своим.");
+            });
+            let toggle = toggle_drop(&id_c, &closed_c, &dropped_c, &db_c, &done, &note);
+            again.connect_clicked(toggle);
+            content_c.append(&ui::actions(&[&again, &done]));
+            content_c.append(&note);
+            leave_c.set_visible(false);
+        });
+        let toggle = toggle_drop(&id, &closed, &dropped, &db, &reveal, &note);
+        let s = save;
+        leave.connect_clicked(move |b| {
+            s(true);
+            toggle(b);
+        });
+        let open_solution = reveal.clone();
+        self.0.state.borrow_mut().reveal = Some(Rc::new(move || open_solution.emit_clicked()));
+        content
+    }
+
+    /// Scripts and screenshots: opens the solution of the whole task on screen.
+    pub fn reveal_solution(&self) {
+        let reveal = self.0.state.borrow().reveal.clone();
+        if let Some(reveal) = reveal {
+            reveal();
+        }
+    }
+
+    /// [Собери вместе] (B24): one whole task on the operations of `operations`,
+    /// from the material on screen, shown into `into`.
+    fn generate_whole(&self, operations: Vec<String>, into: &gtk::Box) {
+        let inner = &self.0;
+        let waiting = ui::waiting("Собираю целую задачу…");
+        into.append(&waiting);
+        let (ai, prompts, dir) = (
+            inner.ctx.ai(),
+            inner.ctx.prompts.clone(),
+            inner.ctx.prompts_dir.clone(),
+        );
+        let text = inner.state.borrow().text.clone();
+        let ops = operations.clone();
+        let (this, into) = (self.clone(), into.clone());
+        let provider = inner.ctx.provider();
+        ctx::background(
+            move || -> Result<WholeTask, PracticeError> {
+                let types = practice::load_types(&dir)?;
+                // A newcomer gets worked-example types only (rule 7): without a
+                // unit yet, the reader counts as one.
+                practice::whole_task(
+                    &ai,
+                    &prompts,
+                    &types,
+                    &text,
+                    &ops,
+                    None,
+                    false,
+                    Priority::Foreground,
+                )
+            },
+            move |result| {
+                into.remove(&waiting);
+                match result {
+                    Ok(WholeTask::Ready {
+                        type_id,
+                        type_title,
+                        condition,
+                        solution,
+                        ..
+                    }) => {
+                        let task = NewTask {
+                            type_id,
+                            type_title,
+                            operations,
+                            condition,
+                            solution,
+                        };
+                        into.append(&this.whole_view(task, None));
+                    }
+                    Ok(
+                        WholeTask::NotApplicable { reason, .. }
+                        | WholeTask::NeedsContext { reason, .. },
+                    ) => {
+                        let content = ui::column(6);
+                        content.add_css_class("cp-content");
+                        content.append(&ui::text(
+                            &format!("Целой задачи здесь не выйдет: {reason}"),
+                            &["cp-callout", "cp-secondary"],
+                        ));
+                        into.append(&content);
+                    }
+                    Err(e) => {
+                        let content = ui::column(6);
+                        content.add_css_class("cp-content");
+                        content.append(&ui::text(
+                            &e.user_message(provider),
+                            &["cp-body", "cp-error"],
+                        ));
+                        into.append(&content);
+                    }
+                }
+            },
+        );
+    }
+
+    /// Scripts and screenshots: a whole task on the text on screen.
+    pub fn whole_demo(&self) {
+        self.0.title.set_text("Собери вместе");
+        self.next_generation();
+        ui::clear(&self.0.body);
+        let page = ui::column(8);
+        self.show(&[page.clone().upcast()]);
+        self.generate_whole(vec!["Шаг метода Ньютона".into()], &page);
     }
 
     // ---------- method choice ----------
@@ -853,75 +1311,66 @@ impl ProbePage {
 
     /// [Собери вместе] (B24): one whole task on the operations of this category.
     fn whole_task(this: &Rc<Self>) {
-        let inner = &this.window.0;
-        let waiting = ui::waiting("Собираю целую задачу…");
-        this.cards.append(&waiting);
-        let (ai, prompts, dir) = (
-            inner.ctx.ai(),
-            inner.ctx.prompts.clone(),
-            inner.ctx.prompts_dir.clone(),
-        );
-        let text = inner.state.borrow().text.clone();
         let title = this.group.borrow().title.clone();
-        let t = this.clone();
-        let provider = inner.ctx.provider();
-        ctx::background(
-            move || -> Result<WholeTask, PracticeError> {
-                let types = practice::load_types(&dir)?;
-                // A newcomer gets worked-example types only (rule 7): without a
-                // unit yet, the reader counts as one.
-                practice::whole_task(
-                    &ai,
-                    &prompts,
-                    &types,
-                    &text,
-                    &[title],
-                    None,
-                    false,
-                    Priority::Foreground,
-                )
-            },
-            move |result| {
-                t.cards.remove(&waiting);
-                let content = ui::column(6);
-                content.add_css_class("cp-content");
-                match result {
-                    Ok(WholeTask::Ready {
-                        type_title,
-                        condition,
-                        solution,
-                        ..
-                    }) => {
-                        content.append(&ui::text(
-                            &format!("Целая задача · {type_title}"),
-                            &["cp-footnote", "cp-secondary"],
-                        ));
-                        content.append(&ui::rich(&condition, &["cp-body"], WIDTH));
-                        let show = ui::button("Решение", &[]);
-                        let c = content.clone();
-                        show.connect_clicked(move |b| {
-                            b.set_visible(false);
-                            c.append(&ui::rich(&solution, &["cp-callout"], WIDTH));
-                        });
-                        content.append(&ui::actions(&[&show]));
-                    }
-                    Ok(
-                        WholeTask::NotApplicable { reason, .. }
-                        | WholeTask::NeedsContext { reason, .. },
-                    ) => {
-                        content.append(&ui::text(
-                            &format!("Целой задачи здесь не выйдет: {reason}"),
-                            &["cp-callout", "cp-secondary"],
-                        ));
-                    }
-                    Err(e) => content.append(&ui::text(
-                        &e.user_message(provider),
-                        &["cp-body", "cp-error"],
-                    )),
-                }
-                t.cards.append(&content);
-            },
-        );
+        this.window.generate_whole(vec![title], &this.cards);
+    }
+}
+
+/// [Не возвращаться] and its [Вернуть]: the reader's own action, undone by the
+/// reader (INV-12). While dropped, the task is not kept up to date.
+fn toggle_drop(
+    id: &Rc<Cell<Option<i64>>>,
+    closed: &Rc<Cell<bool>>,
+    dropped: &Rc<Cell<bool>>,
+    db: &std::path::Path,
+    blocked: &gtk::Button,
+    note: &gtk::Label,
+) -> impl Fn(&gtk::Button) + 'static {
+    let (id, closed, dropped) = (id.clone(), closed.clone(), dropped.clone());
+    let (db, blocked, note) = (db.to_path_buf(), blocked.clone(), note.clone());
+    move |button| {
+        let Some(known) = id.get() else { return };
+        let undo = dropped.get();
+        let result = TaskStore::open(&db).and_then(|mut store| {
+            if undo {
+                store.restore(known, ctx::now())
+            } else {
+                store.drop_task(known, ctx::now())
+            }
+        });
+        if let Err(e) = result {
+            eprintln!("tasks: {e}");
+            return;
+        }
+        dropped.set(!undo);
+        closed.set(!undo);
+        blocked.set_sensitive(undo);
+        button.set_label(if undo {
+            "Не возвращаться"
+        } else {
+            "Вернуть"
+        });
+        note.set_text(if undo {
+            "Задача снова в списке."
+        } else {
+            "Больше не предложу эту задачу. [Вернуть] отменит."
+        });
+        note.set_visible(true);
+    }
+}
+
+fn day(at: i64) -> String {
+    time::OffsetDateTime::from_unix_timestamp(at)
+        .map(|t| format!("{:02}.{:02}", t.day(), t.month() as u8))
+        .unwrap_or_default()
+}
+
+/// «3 дн.», «5 ч», «12 мин» for a gap in seconds.
+fn days_ago(seconds: i64) -> String {
+    match seconds {
+        s if s < 3600 => format!("{} мин", (s / 60).max(1)),
+        s if s < 86_400 => format!("{} ч", s / 3600),
+        s => format!("{} дн.", s / 86_400),
     }
 }
 

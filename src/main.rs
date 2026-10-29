@@ -59,6 +59,14 @@ usage:
   cognitive-exoskeleton practice whole --prompts <dir> (--text <file> | --db <path> --unit <id>)
                                        [--type 1-10] [--ops \"op1; op2\"]   [Собери вместе]
   cognitive-exoskeleton practice methods --prompts <dir> --text <file>   trails: choose a method
+  cognitive-exoskeleton practice routes --db <path> [--text <file>] [--now <t>]   what Alt+T can draw, and why not
+  cognitive-exoskeleton practice route <name> <on|off> --db <path>   take a route out of the draw (Q-49)
+  cognitive-exoskeleton practice task save --db <path> --key <k> --type <n> --title <t> --condition <c>
+                                      --solution <s> [--ops \"a; b\"] [--draft <d>]
+  cognitive-exoskeleton practice task next|draft|finish|drop|restore --db <path> [--id <n>] [--draft <d>]
+                                      unfinished whole tasks («продолжить задачу»)
+  cognitive-exoskeleton practice old --db <path> [--text <file>] [--now <t>]   archive fragments for «старый материал»
+  cognitive-exoskeleton practice skill --db <path> [--now <t>]   units admitted to «умение», and the refusals
   cognitive-exoskeleton practice check --family <name> --seed <n> --answer <text>
   cognitive-exoskeleton nudge consent --db <path> <opportunity|daily|background_recording|experiments> <on|off>
   cognitive-exoskeleton nudge check --db <path> --kind <opportunity|daily> --topic <t> [--busy] [--media]
@@ -521,7 +529,7 @@ fn run_memory(args: &[String]) -> Result<String, String> {
 /// Alt+T probes for a text, as JSON (S5).
 fn run_practice(args: &[String]) -> Result<String, String> {
     let (command, rest) = args.split_first().ok_or("practice needs a command")?;
-    let (options, flags, _) = parse_options(
+    let (options, flags, positional) = parse_options(
         rest,
         &[
             "--text",
@@ -534,6 +542,12 @@ fn run_practice(args: &[String]) -> Result<String, String> {
             "--family",
             "--seed",
             "--answer",
+            "--key",
+            "--title",
+            "--condition",
+            "--solution",
+            "--draft",
+            "--id",
         ],
         &["--from-pill"],
     )?;
@@ -668,6 +682,171 @@ fn run_practice(args: &[String]) -> Result<String, String> {
                 eprintln!("ответила модель {model}");
             }
             serde_json::to_string_pretty(&tree).map_err(|e| e.to_string())
+        }
+        "routes" | "route" | "task" | "old" | "skill" => {
+            run_practice_stores(command, &options, &positional)
+        }
+        other => Err(format!("unknown practice command {other}")),
+    }
+}
+
+/// The stores behind the routes of Alt+T without a window (S5 rule 9, B64).
+fn run_practice_stores(
+    command: &str,
+    options: &std::collections::HashMap<String, String>,
+    positional: &[String],
+) -> Result<String, String> {
+    use cognitive_exoskeleton_practice::availability;
+    use cognitive_exoskeleton_practice::routes::{self, Route};
+    use cognitive_exoskeleton_practice::switches::RouteSwitches;
+    use cognitive_exoskeleton_practice::tasks::{NewTask, TaskError, TaskStore};
+    use cognitive_exoskeleton_practice::{revisit, skill};
+
+    let db = options.get("--db").ok_or("--db is required")?;
+    let at = now(options.get("--now").map(String::as_str))?;
+    let json =
+        |value: serde_json::Value| serde_json::to_string_pretty(&value).map_err(|e| e.to_string());
+    let id = || -> Result<i64, String> {
+        options
+            .get("--id")
+            .ok_or("--id is required")?
+            .parse()
+            .map_err(|_| "--id is a number".to_string())
+    };
+    let read = |name: &str| -> Result<String, String> {
+        match options.get(name) {
+            Some(path) => std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}")),
+            None => Ok(String::new()),
+        }
+    };
+    match command {
+        // What Alt+T can draw now, with the reason for every route that is out.
+        "routes" => {
+            let availability = availability::compute(db, at, &read("--text")?);
+            let shares: Vec<_> = routes::shares(&availability.excluded())
+                .into_iter()
+                .map(|(route, share)| {
+                    serde_json::json!({"route": route.name(), "percent": (share * 10.0).round() / 10.0})
+                })
+                .collect();
+            let unavailable: Vec<_> = availability
+                .unavailable
+                .iter()
+                .map(|(route, why)| {
+                    serde_json::json!({"route": route.name(), "why": why, "reason": why.reason()})
+                })
+                .collect();
+            let off: Vec<_> = availability.switched_off.iter().map(|r| r.name()).collect();
+            json(
+                serde_json::json!({"shares": shares, "unavailable": unavailable, "switched_off": off}),
+            )
+        }
+        // `route <name> <on|off>`: the reader's switch (Q-49); `off` removes it from the draw.
+        "route" => {
+            let [name, state] = positional else {
+                return Err("route <name> <on|off>".into());
+            };
+            let route = Route::parse(name).ok_or("unknown route")?;
+            let off = match state.as_str() {
+                "off" => true,
+                "on" => false,
+                _ => return Err("route <name> <on|off>".into()),
+            };
+            RouteSwitches::open(db)
+                .and_then(|mut s| s.set_off(route, off, at))
+                .map_err(|e| e.to_string())?;
+            Ok(format!(
+                "{}: {}",
+                route.name(),
+                if off {
+                    "не выпадает"
+                } else {
+                    "выпадает"
+                }
+            ))
+        }
+        "task" => {
+            let sub = positional
+                .first()
+                .ok_or("task save|next|draft|finish|drop|restore")?;
+            let mut store = TaskStore::open(db).map_err(|e| e.to_string())?;
+            let done = |what: &str, result: Result<(), TaskError>| {
+                result.map(|()| what.to_string()).map_err(|e| e.to_string())
+            };
+            match sub.as_str() {
+                "save" => {
+                    let need = |name: &str| {
+                        options
+                            .get(name)
+                            .cloned()
+                            .ok_or(format!("{name} is required"))
+                    };
+                    let task = NewTask {
+                        type_id: need("--type")?.parse().map_err(|_| "--type is 1–10")?,
+                        type_title: need("--title")?,
+                        operations: options
+                            .get("--ops")
+                            .map(|s| s.split(';').map(|o| o.trim().to_string()).collect())
+                            .unwrap_or_default(),
+                        condition: need("--condition")?,
+                        solution: need("--solution")?,
+                    };
+                    let draft = options.get("--draft").map(String::as_str).unwrap_or("");
+                    let id = store
+                        .save(&need("--key")?, &task, draft, at)
+                        .map_err(|e| e.to_string())?;
+                    Ok(format!("task {id}"))
+                }
+                "next" => {
+                    let task = store.latest_open().map_err(|e| e.to_string())?;
+                    let open = store.count_open().map_err(|e| e.to_string())?;
+                    json(serde_json::json!({"open": open, "task": task}))
+                }
+                "draft" => {
+                    let draft = options.get("--draft").ok_or("--draft is required")?;
+                    done("draft saved", store.set_draft(id()?, draft, at))
+                }
+                "finish" => done("finished (not a grade)", store.finish(id()?, at)),
+                "drop" => done(
+                    "dropped; restore brings it back",
+                    store.drop_task(id()?, at),
+                ),
+                "restore" => done("restored", store.restore(id()?, at)),
+                other => Err(format!("unknown task command {other}")),
+            }
+        }
+        // Old fragments the reader worked on (the archive is the journal).
+        "old" => {
+            let journal = Journal::open(db).map_err(|e| e.to_string())?;
+            let fragments =
+                revisit::fragments(&journal, at, &read("--text")?).map_err(|e| e.to_string())?;
+            json(serde_json::json!({"fragments": fragments}))
+        }
+        // The admission rule per unit: who may be practised and why not the rest.
+        "skill" => {
+            let survey = skill::survey(db, at).map_err(|e| e.to_string())?;
+            let admitted: Vec<_> = survey
+                .admitted
+                .iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "unit": c.unit.id, "title": c.unit.title, "action": c.unit.action,
+                        "kind": c.unit.kind, "subject": c.subject_name,
+                        "last_correct": c.last_correct,
+                    })
+                })
+                .collect();
+            let refused: Vec<_> = survey
+                .refused
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "unit": r.unit, "title": r.title, "refusal": r.refusal,
+                        "reason": r.refusal.reason(),
+                    })
+                })
+                .collect();
+            json(serde_json::json!({"admitted": admitted, "refused": refused}))
         }
         other => Err(format!("unknown practice command {other}")),
     }

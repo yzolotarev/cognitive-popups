@@ -168,7 +168,14 @@ impl PracticeWindow {
     /// that is out stays clickable: the click explains instead of faking.
     fn refresh_availability(&self) -> Rc<Availability> {
         let text = self.0.state.borrow().text.clone();
-        let avail = Rc::new(availability::compute(&self.0.ctx.db, ctx::now(), &text));
+        // B68: the profile of the goal of the open lesson, global when unknown.
+        let goal = availability::current_goal(&self.0.ctx.db);
+        let avail = Rc::new(availability::compute_for(
+            &self.0.ctx.db,
+            ctx::now(),
+            &text,
+            goal.as_deref(),
+        ));
         for (route, button) in &self.0.choices {
             match avail.reason(*route).filter(|_| *route != Route::Probes) {
                 Some(why) => {

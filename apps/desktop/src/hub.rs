@@ -19,7 +19,10 @@ use cognitive_exoskeleton_lessons::{LessonStore, Subject};
 use cognitive_exoskeleton_memory::Memory;
 use cognitive_exoskeleton_notes::Notes;
 use cognitive_exoskeleton_nudges::{Consent, Nudges};
-use cognitive_exoskeleton_practice::{routes::Route, switches::RouteSwitches};
+use cognitive_exoskeleton_practice::{
+    routes::Route,
+    switches::{GoalSwitch, RouteSwitches},
+};
 use cognitive_exoskeleton_units::UnitStore;
 use gtk::glib;
 
@@ -442,6 +445,7 @@ impl Hub {
             group.add(row);
         }
         group.add(&status);
+        group.add(&self.goal_routes_expander(&subject));
         let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         buttons.set_halign(gtk::Align::End);
         buttons.set_margin_top(8);
@@ -487,13 +491,65 @@ impl Hub {
         group
     }
 
+    /// B68: what falls out by Alt+T for this goal. The state «Как у всех»
+    /// follows the global switches; the others override them for this goal only.
+    fn goal_routes_expander(&self, subject: &Subject) -> adw::ExpanderRow {
+        let expander = adw::ExpanderRow::builder()
+            .title("Что выпадает по Alt+T для этой цели")
+            .subtitle("По умолчанию как у всех. Выключенное только убирается из броска.")
+            .build();
+        let global = RouteSwitches::open(&self.0.ctx.db)
+            .and_then(|s| s.off())
+            .unwrap_or_default();
+        for route in Route::ALL {
+            let state = RouteSwitches::open(&self.0.ctx.db)
+                .and_then(|s| s.goal_state(&subject.id, route))
+                .unwrap_or(GoalSwitch::Inherit);
+            let now_global = if global.contains(&route) {
+                "не выпадает"
+            } else {
+                "выпадает"
+            };
+            let inherit = format!("Как у всех ({now_global})");
+            let row = adw::ComboRow::builder()
+                .title(route.title())
+                .model(&gtk::StringList::new(&[
+                    inherit.as_str(),
+                    "Выпадает",
+                    "Не выпадает",
+                ]))
+                .build();
+            row.set_selected(match state {
+                GoalSwitch::Inherit => 0,
+                GoalSwitch::On => 1,
+                GoalSwitch::Off => 2,
+            });
+            let (db, id) = (self.0.ctx.db.clone(), subject.id.clone());
+            row.connect_selected_notify(move |r| {
+                let state = match r.selected() {
+                    1 => GoalSwitch::On,
+                    2 => GoalSwitch::Off,
+                    _ => GoalSwitch::Inherit,
+                };
+                let saved = RouteSwitches::open(&db)
+                    .and_then(|mut s| s.set_goal(&id, route, state, ctx::now()));
+                if let Err(e) = saved {
+                    eprintln!("goal route switches: {e}");
+                }
+            });
+            expander.add_row(&row);
+        }
+        expander
+    }
+
     /// Q-49: the reader can only take a route out of the random draw of Alt+T;
     /// the others keep their proportions. The manual choice in the window stays.
     fn routes_group(&self) -> adw::PreferencesGroup {
         let group = adw::PreferencesGroup::builder()
             .title("Что выпадает по Alt+T")
             .description(
-                "Выключенное не выпадает само, но выбирается в окне вручную. \
+                "Для всех целей, пока цель не задала своё (в карточке цели ниже). \
+                 Выключенное не выпадает само, но выбирается в окне вручную. \
                  Добавить вес другому нельзя.",
             )
             .build();

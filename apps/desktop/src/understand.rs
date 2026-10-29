@@ -525,9 +525,9 @@ impl UnderstandWindow {
                         ui::markup(
                             &format!(
                                 "<b>{}</b> · {} — {}",
-                                ui::escape(&cue.simple),
-                                ui::escape(&cue.term),
-                                ui::escape(&cue.meaning)
+                                ui::escape(&formula::plain(&cue.simple)),
+                                ui::escape(&formula::plain(&cue.term)),
+                                ui::escape(&formula::plain(&cue.meaning))
                             ),
                             &["cp-body"],
                         )
@@ -779,8 +779,8 @@ impl UnderstandWindow {
             let label = ui::markup(
                 &format!(
                     "<b>{}</b> · {}",
-                    ui::escape(&cue.simple),
-                    ui::escape(&cue.term)
+                    ui::escape(&formula::plain(&cue.simple)),
+                    ui::escape(&formula::plain(&cue.term))
                 ),
                 if *hit {
                     &["cp-body", "cp-match"]
@@ -788,7 +788,7 @@ impl UnderstandWindow {
                     &["cp-body"]
                 },
             );
-            label.set_tooltip_text(Some(&cue.meaning));
+            label.set_tooltip_text(Some(&formula::plain(&cue.meaning)));
             right.append(&label);
         }
         columns.append(&left);

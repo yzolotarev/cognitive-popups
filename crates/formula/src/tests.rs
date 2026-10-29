@@ -87,6 +87,14 @@ fn a_broken_fraction_still_reads_as_a_fraction() {
 }
 
 #[test]
+fn plain_four_words_cue_with_fraction_has_no_latex() {
+    // A cue meaning as the model wrote it: the window shows `plain` of it.
+    let text = r"Формула корней \(x_{1,2} = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}\)";
+    let shown = plain(text);
+    assert!(!shown.contains('\\') && !shown.contains("frac"), "{shown}");
+}
+
+#[test]
 fn plain_lesson_step_label_has_no_latex_delimiters() {
     // A plan item as the model wrote it; the lesson window shows `plain` of it.
     let text = r"Составить выражение для разности \(f(x + h) - f(x)\) для заданной функции.";

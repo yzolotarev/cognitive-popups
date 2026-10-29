@@ -85,3 +85,12 @@ fn plain_text_never_shows_markup() {
 fn a_broken_fraction_still_reads_as_a_fraction() {
     assert_eq!(loose(r"\frac{a+1}{b} \foo"), "(a+1)/(b)");
 }
+
+#[test]
+fn plain_lesson_step_label_has_no_latex_delimiters() {
+    // A plan item as the model wrote it; the lesson window shows `plain` of it.
+    let text = r"Составить выражение для разности \(f(x + h) - f(x)\) для заданной функции.";
+    let shown = plain(text);
+    assert!(!shown.contains('\\'), "{shown}");
+    assert!(shown.contains("f(x + h) − f(x)"), "{shown}");
+}

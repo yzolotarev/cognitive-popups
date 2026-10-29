@@ -115,6 +115,8 @@ fn signal(window: Option<&str>, argument: Option<&str>) -> ExitCode {
     if sent.is_err() {
         let _ = Command::new("notify-send")
             .args([
+                "-h",
+                "boolean:suppress-sound:true",
                 "Cognitive Popups не запущен",
                 "Запусти: cognitive-popups daemon (или exec-once в hyprland.conf)",
             ])

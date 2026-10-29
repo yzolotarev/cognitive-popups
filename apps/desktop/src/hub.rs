@@ -362,7 +362,8 @@ impl Hub {
             .as_ref()
             .and_then(|s| s.subjects().ok())
             .unwrap_or_default();
-        for subject in subjects {
+        // In the order they were set up: a new one appears next to the form.
+        for subject in subjects.into_iter().rev() {
             page.add(&self.subject_group(subject));
         }
         let add = adw::PreferencesGroup::builder()

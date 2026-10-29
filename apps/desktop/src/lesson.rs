@@ -242,7 +242,7 @@ impl LessonUi {
                 self.0.subject.set_text(&name);
                 self.plan_view(lesson);
             }
-            _ => self.new_lesson(subjects),
+            _ => self.new_lesson(store.lesson_subjects().unwrap_or(subjects)),
         }
     }
 

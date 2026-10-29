@@ -13,6 +13,9 @@ pub enum PromptError {
     Missing(String),
 }
 
+/// How formulas are written in answers a person reads (B53).
+pub const FORMULA_RULE: &str = "NEW_formula_rule";
+
 #[derive(Debug, Default, Clone)]
 pub struct PromptStore {
     prompts: BTreeMap<String, String>,
@@ -41,6 +44,16 @@ impl PromptStore {
             .get(key)
             .map(String::as_str)
             .ok_or_else(|| PromptError::Missing(key.into()))
+    }
+
+    /// The prompt with the formula rule appended (B53): for answers a person
+    /// reads. Without the rule file the prompt is used as it is.
+    pub fn with_formulas(&self, key: &str) -> Result<String, PromptError> {
+        let prompt = self.get(key)?;
+        Ok(match self.get(FORMULA_RULE) {
+            Ok(rule) => format!("{prompt}\n\n{rule}"),
+            Err(_) => prompt.to_string(),
+        })
     }
 
     pub fn keys(&self) -> impl Iterator<Item = &str> {
@@ -77,6 +90,17 @@ mod tests {
     #[test]
     fn files_without_a_text_block_are_not_prompts() {
         assert!(first_text_block("# README\n\n| a | b |\n").is_none());
+    }
+
+    #[test]
+    fn readable_answers_get_the_formula_rule() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/v2/port/prompts");
+        let store = PromptStore::from_dir(dir).unwrap();
+        let with = store.with_formulas("clarify_system").unwrap();
+        assert!(with.contains("\\( … \\)"));
+        assert!(with.starts_with(store.get("clarify_system").unwrap()));
+        let bare = PromptStore::default();
+        assert!(bare.with_formulas("x").is_err());
     }
 
     #[test]

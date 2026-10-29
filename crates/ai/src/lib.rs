@@ -16,7 +16,7 @@ mod provider;
 pub mod settings;
 
 pub use gate::{Gate, Priority};
-pub use prompts::{PromptError, PromptStore};
+pub use prompts::{FORMULA_RULE, PromptError, PromptStore};
 pub use provider::{AiConfig, ProviderKind, THINKING_RESERVE, Transport, UreqTransport};
 
 use serde_json::Value;

@@ -116,3 +116,89 @@ pub fn buffer_text(input: &gtk::TextView) -> String {
         .text(&buffer.start_iter(), &buffer.end_iter(), false)
         .to_string()
 }
+
+/// Text that may hold formulas (B53): plain text stays a label; with
+/// `\( … \)` it becomes a read-only text view with the formulas drawn inline,
+/// and `\[ … \]` gets a line of its own. A formula that cannot be drawn is
+/// written in Unicode.
+/// `window_width` is the popup's width: the text view measures its height for
+/// the width it will really get (window and content paddings: 28 pt each side).
+pub fn rich(content: &str, classes: &[&str], window_width: i32) -> gtk::Widget {
+    use cognitive_exoskeleton_formula::{self as formula, Segment};
+    if !formula::has_math(content) {
+        return text(content, classes).upcast();
+    }
+    let view = gtk::TextView::new();
+    view.set_editable(false);
+    view.set_cursor_visible(false);
+    view.set_wrap_mode(gtk::WrapMode::WordChar);
+    view.add_css_class("cp-rich");
+    view.set_size_request(window_width - 56, -1);
+    for class in classes {
+        view.add_css_class(class);
+    }
+    let buffer = view.buffer();
+    let mut anchors = Vec::new();
+    let mut previous_display = false;
+    for segment in formula::segments(content) {
+        let mut end = buffer.end_iter();
+        match segment {
+            Segment::Text(text) => {
+                // A display formula already ends its line.
+                let text = if previous_display {
+                    text.trim_start_matches('\n').to_string()
+                } else {
+                    text
+                };
+                buffer.insert(&mut end, &text);
+                previous_display = false;
+            }
+            Segment::Math { tex, display } => match crate::math::draw(&tex, display) {
+                Some(drawn) => {
+                    if display
+                        && !buffer
+                            .text(&buffer.start_iter(), &end, false)
+                            .ends_with('\n')
+                        && buffer.char_count() > 0
+                    {
+                        buffer.insert(&mut end, "\n");
+                    }
+                    let anchor = buffer.create_child_anchor(&mut buffer.end_iter());
+                    anchors.push((anchor, crate::math::picture(&drawn)));
+                    if display {
+                        buffer.insert(&mut buffer.end_iter(), "\n");
+                        previous_display = true;
+                    }
+                }
+                None => buffer.insert(&mut end, &formula::unicode_of(&tex)),
+            },
+        }
+    }
+    for (anchor, picture) in anchors {
+        view.add_child_at_anchor(&picture, &anchor);
+    }
+    // GTK's text view asks for the height of an earlier, narrower layout and
+    // leaves empty lines under the text; the real height is read from its own
+    // lines once laid out, and a frame without scrolling holds it to that.
+    let frame = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        // External: no scrollbar, but not forced to the view's own height.
+        .vscrollbar_policy(gtk::PolicyType::External)
+        .child(&view)
+        // Start small: a window grows to fit, but does not shrink back.
+        .min_content_height(1)
+        .max_content_height(1)
+        .build();
+    let (f, v) = (frame.clone(), view.clone());
+    view.add_tick_callback(move |_, _| {
+        let buffer = v.buffer();
+        let (y, h) = v.line_yrange(&buffer.end_iter());
+        let height = y + h;
+        if height > 0 && f.min_content_height() != height {
+            f.set_min_content_height(height);
+            f.set_max_content_height(height);
+        }
+        gtk::glib::ControlFlow::Continue
+    });
+    frame.upcast()
+}

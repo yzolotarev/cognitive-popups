@@ -248,7 +248,11 @@ impl Fixture {
             .as_str()
             .unwrap_or("");
         std::thread::sleep(std::time::Duration::from_millis(300));
-        match self.answers.iter().find(|(s, _)| s == system) {
+        match self
+            .answers
+            .iter()
+            .find(|(s, _)| system.starts_with(s.as_str()))
+        {
             Some((_, text)) => Ok((
                 200,
                 serde_json::json!({"candidates":[{"content":{"parts":[{"text": text}]}}]})

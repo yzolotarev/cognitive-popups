@@ -194,10 +194,10 @@ pub fn generate<T: Transport>(
     context: &Context,
 ) -> Result<Plan, PlanError> {
     let system = prompts
-        .get(PLAN_PROMPT)
+        .with_formulas(PLAN_PROMPT)
         .map_err(|e| PlanError::Prompt(e.to_string()))?;
     let request = Request {
-        system: system.to_string(),
+        system,
         input: context.render(),
         max_tokens: 1200,
         json: true,

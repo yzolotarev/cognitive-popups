@@ -17,6 +17,7 @@ cognitive-exoskeleton-understand = { path = "crates/understand" }
 cognitive-exoskeleton-hypotheses = { path = "crates/hypotheses" }
 cognitive-exoskeleton-lessons = { path = "crates/lessons" }
 cognitive-exoskeleton-resume = { path = "crates/resume" }
+cognitive-exoskeleton-formula = { path = "crates/formula" }
 cognitive-exoskeleton-domain = { path = "crates/domain" }
 cognitive-exoskeleton-journal = { path = "crates/journal" }
 serde = { workspace = true }

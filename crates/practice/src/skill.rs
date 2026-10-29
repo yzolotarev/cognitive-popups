@@ -26,6 +26,7 @@ use serde::Serialize;
 
 use crate::due::{self, DueError};
 use crate::recall::DueUnit;
+use crate::standing::{SkillStandings, Standing, StandingError};
 
 /// A correct answer this old no longer counts as recent.
 pub const GAP: i64 = 7 * 86_400;
@@ -53,12 +54,16 @@ pub enum SkillError {
     Memory(#[from] cognitive_exoskeleton_memory::MemoryError),
     #[error("journal: {0}")]
     Journal(#[from] cognitive_exoskeleton_journal::JournalError),
+    #[error("{0}")]
+    Standing(#[from] StandingError),
 }
 
 /// What the rule looks at. `own_events` is None until the unit's evidence has
 /// been read (the cheap checks come first).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Facts<'a> {
+    /// The reader's own pause or retirement of this skill (B67).
+    pub standing: Standing,
     pub subject_status: &'a str,
     pub kind: &'a str,
     pub on_schedule: bool,
@@ -71,6 +76,8 @@ pub struct Facts<'a> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "refusal", rename_all = "snake_case")]
 pub enum Refusal {
+    SuspendedByReader,
+    RetiredByReader,
     SubjectNotLive { status: String },
     KindNotAskable { kind: String },
     NotOnSchedule,
@@ -83,6 +90,12 @@ pub enum Refusal {
 impl Refusal {
     pub fn reason(&self) -> String {
         match self {
+            Refusal::SuspendedByReader => {
+                "ты поставил это умение на паузу: вернуть можно в хабе, «Единицы»".into()
+            }
+            Refusal::RetiredByReader => {
+                "ты снял это умение: оно не предлагается, но хранится, вернуть можно в хабе".into()
+            }
             Refusal::SubjectNotLive { status } => {
                 format!("цель предмета сейчас «{status}»: умения не предлагаются")
             }
@@ -100,6 +113,12 @@ impl Refusal {
 
 /// The admission rule: Ok means the unit may be practised now.
 pub fn admission(facts: &Facts, now: i64) -> Result<(), Refusal> {
+    // The reader's own decision comes first: it is the reason to show.
+    match facts.standing {
+        Standing::Suspended => return Err(Refusal::SuspendedByReader),
+        Standing::Retired => return Err(Refusal::RetiredByReader),
+        Standing::Active => {}
+    }
     if !LIVE_SUBJECTS.contains(&facts.subject_status) {
         return Err(Refusal::SubjectNotLive {
             status: facts.subject_status.to_string(),
@@ -159,11 +178,13 @@ pub fn survey(db: impl AsRef<Path>, now: i64) -> Result<Survey, SkillError> {
     let units = UnitStore::open(db)?;
     let memory = Memory::open(db)?;
     let journal = Journal::open(db)?;
+    let standings = SkillStandings::open(db)?;
     let mut survey = Survey::default();
     for subject in subjects {
         for unit in units.registry(&subject.id)? {
             let card = memory.card(&unit.id).ok();
             let mut facts = Facts {
+                standing: standings.standing(&unit.id)?,
                 subject_status: &subject.status,
                 kind: &unit.kind,
                 on_schedule: card.is_some(),
@@ -230,6 +251,7 @@ mod tests {
 
     fn facts() -> Facts<'static> {
         Facts {
+            standing: Standing::Active,
             subject_status: "active",
             kind: "execute",
             on_schedule: true,
@@ -252,6 +274,21 @@ mod tests {
             Ok(()),
             "never right is the widest gap"
         );
+    }
+
+    #[test]
+    fn b67_the_readers_pause_or_retirement_is_the_first_reason() {
+        for (standing, refusal) in [
+            (Standing::Suspended, Refusal::SuspendedByReader),
+            (Standing::Retired, Refusal::RetiredByReader),
+        ] {
+            let f = Facts {
+                standing,
+                due: NOW - 1,
+                ..facts()
+            };
+            assert_eq!(admission(&f, NOW), Err(refusal));
+        }
     }
 
     #[test]
@@ -540,6 +577,92 @@ mod tests {
                 reason(&other),
                 Some(Refusal::SubjectNotLive { .. })
             ));
+        }
+
+        #[test]
+        fn b67_suspended_and_retired_units_leave_the_route_and_resume_brings_them_back() {
+            use crate::standing::{Action, SkillStandings, Standing, apply};
+            let db = db("standing");
+            let mut lessons = LessonStore::open(&db.0).unwrap();
+            let live = lessons
+                .add_subject("Численные методы", "сдать", None, NOW - 50 * DAY)
+                .unwrap();
+            let a = unit(&db, &live, "a", "execute");
+            let b = unit(&db, &live, "b", "execute");
+            let mut memory = Memory::open(&db.0).unwrap();
+            for u in [&a, &b] {
+                memory.enroll(u, &live, NOW - 40 * DAY).unwrap();
+            }
+            drop(memory);
+            for u in [&a, &b] {
+                rehearse(&db, u, NOW - 40 * DAY, NOW - 8 * DAY);
+            }
+            let admitted = |db: &Db| {
+                let mut ids: Vec<String> = survey(&db.0, NOW)
+                    .unwrap()
+                    .admitted
+                    .iter()
+                    .map(|c| c.unit.id.clone())
+                    .collect();
+                ids.sort();
+                ids
+            };
+            let mut both = vec![a.clone(), b.clone()];
+            both.sort();
+            assert_eq!(admitted(&db), both);
+            let journal_len = Journal::open(&db.0).unwrap().len().unwrap();
+
+            // Pause: gone from the route, the reason says so.
+            let change = apply(&db.0, &a, Action::Suspend, NOW).unwrap();
+            assert!(change.changed);
+            assert_eq!(admitted(&db), vec![b.clone()]);
+            let survey_now = survey(&db.0, NOW).unwrap();
+            let refusal = survey_now.refused.iter().find(|r| r.unit == a).unwrap();
+            assert_eq!(refusal.refusal, Refusal::SuspendedByReader);
+            assert!(refusal.refusal.reason().contains("на паузу"));
+            // Logged as a user event, once; the same press again writes nothing.
+            let journal = Journal::open(&db.0).unwrap();
+            assert_eq!(journal.len().unwrap(), journal_len + 1);
+            assert!(!apply(&db.0, &a, Action::Suspend, NOW + 5).unwrap().changed);
+            assert_eq!(
+                Journal::open(&db.0).unwrap().len().unwrap(),
+                journal_len + 1
+            );
+
+            // Retire: also gone, with its own reason, nothing deleted.
+            apply(&db.0, &a, Action::Retire, NOW + 10).unwrap();
+            let refusal = survey(&db.0, NOW)
+                .unwrap()
+                .refused
+                .into_iter()
+                .find(|r| r.unit == a)
+                .unwrap();
+            assert_eq!(refusal.refusal, Refusal::RetiredByReader);
+            assert!(refusal.refusal.reason().contains("снял"));
+            let memory = Memory::open(&db.0).unwrap();
+            assert!(memory.review_count(&a).unwrap() > 0, "reviews are kept");
+            assert!(
+                UnitStore::open(&db.0)
+                    .unwrap()
+                    .all_units()
+                    .unwrap()
+                    .iter()
+                    .any(|(id, _)| *id == a),
+                "the unit is kept"
+            );
+            assert_eq!(
+                SkillStandings::open(&db.0).unwrap().standing(&a).unwrap(),
+                Standing::Retired
+            );
+
+            // Resume restores it.
+            apply(&db.0, &a, Action::Resume, NOW + 20).unwrap();
+            assert_eq!(admitted(&db), both);
+            assert_eq!(
+                Journal::open(&db.0).unwrap().len().unwrap(),
+                journal_len + 3
+            );
+            assert!(apply(&db.0, "no-such-unit", Action::Retire, NOW).is_err());
         }
 
         #[test]

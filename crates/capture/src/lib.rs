@@ -107,6 +107,8 @@ pub enum Origin {
     Clipboard,
     /// «из окна разработки · не в учебную историю»
     Dev,
+    /// «из архива» — a fragment the reader worked on earlier (route «старый материал»).
+    Archive,
 }
 
 impl Origin {
@@ -116,6 +118,7 @@ impl Origin {
             Origin::Copy => "из активного окна",
             Origin::Clipboard => "из буфера обмена",
             Origin::Dev => "из окна разработки · не в учебную историю",
+            Origin::Archive => "из архива",
         }
     }
 }

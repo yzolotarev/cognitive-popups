@@ -13,6 +13,7 @@
 //! and `NEW_probe_verify` in `docs/v2/port/prompts`.
 
 pub mod arith;
+pub mod availability;
 pub mod due;
 pub mod expr;
 pub mod families;
@@ -20,7 +21,11 @@ pub mod feynman;
 pub mod guidance;
 pub mod numeric;
 pub mod recall;
+pub mod revisit;
 pub mod routes;
+pub mod skill;
+pub mod switches;
+pub mod tasks;
 pub mod trails;
 pub mod whole;
 

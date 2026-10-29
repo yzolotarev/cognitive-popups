@@ -285,12 +285,28 @@ impl Fixture {
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
+        // `tasks__types:<n>:task|solution` answers a type of [Собери вместе]
+        // (its prompt lives in the types file, not in the prompt store); the
+        // system text is matched up to the first placeholder.
+        let types = cognitive_exoskeleton_practice::load_types(prompts_dir()).unwrap_or_default();
         let answers = file
             .as_object()
             .into_iter()
             .flatten()
             .filter_map(|(key, answer)| {
-                let system = prompts.get(key).ok()?.to_string();
+                let system = match key.strip_prefix("tasks__types:") {
+                    Some(rest) => {
+                        let (id, part) = rest.split_once(':')?;
+                        let kind = types.iter().find(|t| t.id.to_string() == id)?;
+                        let prompt = if part == "solution" {
+                            &kind.solution_prompt
+                        } else {
+                            &kind.task_prompt
+                        };
+                        prompt.split('{').next()?.to_string()
+                    }
+                    None => prompts.get(key).ok()?.to_string(),
+                };
                 let text = answer
                     .as_str()
                     .map(str::to_string)
@@ -306,6 +322,12 @@ impl Fixture {
             .as_str()
             .unwrap_or("");
         std::thread::sleep(std::time::Duration::from_millis(300));
+        // `__UNIT__` stands for the first unit of the request («ЕДИНИЦА <id> · …»),
+        // whose id is made when the demo data is written.
+        let unit = body
+            .to_string()
+            .split_once("ЕДИНИЦА ")
+            .and_then(|(_, rest)| rest.split_whitespace().next().map(str::to_string));
         match self
             .answers
             .iter()
@@ -313,8 +335,9 @@ impl Fixture {
         {
             Some((_, text)) => Ok((
                 200,
-                serde_json::json!({"candidates":[{"content":{"parts":[{"text": text}]}}]})
-                    .to_string(),
+                serde_json::json!({"candidates":[{"content":{"parts":[{"text":
+                    text.replace("__UNIT__", unit.as_deref().unwrap_or("none"))}]}}]})
+                .to_string(),
             )),
             None => Ok((
                 503,

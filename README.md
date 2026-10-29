@@ -203,6 +203,13 @@ next step follows rules in code. When FSRS reviews are due, «Достань и�
 replaces the third category: you answer first, then compare with a quote from
 your own materials. The bottom row switches to method choice, «своими словами»
 or a hypothesis.
+Three more routes come from the stores and are drawn only when they have
+something real: «продолжить задачу» reopens a whole task you set aside, with
+your draft and the solution still hidden; «старый материал» offers an older
+study fragment as probes again; «умение» asks one unit you have not answered
+correctly for a week, if its goal is live. What cannot be offered says why, and
+the hub can take any route out of the draw. Without windows:
+`cargo run -- practice routes|route|task|old|skill --db journal.db`.
 
 Alt+I is a ~15-minute lesson. The first time it asks for a subject and your
 long-term goal (Alt+S). Then it builds a goal for the next ~15 minutes and a

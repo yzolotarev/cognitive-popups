@@ -185,7 +185,7 @@ fn daemon() -> ExitCode {
             },
             hypothesis: {
                 let hypothesis = hypothesis.clone();
-                Box::new(move || hypothesis.open(capture::selection(&Wayland).ok()))
+                Box::new(move || hypothesis.open(grab_text()))
             },
         };
         let practice = practice::PracticeWindow::new(app, ctx.clone(), links);
@@ -224,24 +224,28 @@ fn daemon() -> ExitCode {
             let (window, argument) = line.split_once(' ').unwrap_or((line, ""));
             // The selection only: instant, and never a Ctrl+C into our own window.
             let selection = || capture::selection(&Wayland).ok();
+            // The selection, else Ctrl+C into the window the reader is in (A4, B-capture):
+            // taken before our window opens. Primary selection can be off in the
+            // compositor (`misc:middle_click_paste = false`), then only Ctrl+C reads.
+            let grab = || grab_text();
             match window {
                 "note" => note.open(selection()),
                 // `signal understand example`: that help, not a weighted pick.
                 // `signal understand own [words…]`: [Сначала сам] at once; the
                 // words, if given, are compared (screenshots without a keyboard).
                 "understand" if argument.starts_with("own") => {
-                    understand.open(selection(), Some(Mechanic::Words));
+                    understand.open(grab(), Some(Mechanic::Words));
                     understand.write_own();
                     let mine = understand_core::own_words(&argument["own".len()..]);
                     if !mine.is_empty() {
                         understand.compare(mine);
                     }
                 }
-                "understand" => understand.open(selection(), Mechanic::parse(argument)),
+                "understand" => understand.open(grab(), Mechanic::parse(argument)),
                 // `signal hide`: every window away (screenshots, scripts).
                 // `signal hypothesis [guess…]`: a given guess is checked at once.
                 "hypothesis" => {
-                    hypothesis.open(selection());
+                    hypothesis.open(grab());
                     if !argument.is_empty() {
                         hypothesis.submit_text(argument);
                     }
@@ -259,7 +263,7 @@ fn daemon() -> ExitCode {
                         "skill" => Some(Route::Skill),
                         _ => None,
                     };
-                    practice.open(selection(), route, word == "pill");
+                    practice.open(grab(), route, word == "pill");
                     if word == "whole" {
                         practice.whole_demo();
                     }
@@ -390,6 +394,22 @@ impl Receiver {
         })
         .await
     }
+}
+
+/// The reader's selection; if there is none, a Ctrl+C into their window. Never
+/// into our own windows: the hub is a normal window and would swallow it.
+fn grab_text() -> Option<capture::Captured> {
+    if let Ok(selected) = capture::selection(&Wayland) {
+        return Some(selected);
+    }
+    use capture::Desktop;
+    let ours = Wayland
+        .active_window()
+        .is_some_and(|w| w.class.starts_with("dev.cognitive") || w.class.starts_with("cognitive-"));
+    if ours {
+        return None;
+    }
+    capture::capture(&Wayland, false).ok()
 }
 
 #[cfg(test)]

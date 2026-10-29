@@ -6,6 +6,11 @@ use std::process::{Command, Stdio};
 
 use crate::{Desktop, Window};
 
+/// Ctrl+C to the active window: Hyprland 0.56 (Lua) and the classic form.
+const LUA_COPY: &str =
+    "hl.dsp.send_shortcut({ mods = \"CTRL\", key = \"C\", window = \"activewindow\" })";
+const CLASSIC_COPY: &str = "sendshortcut CTRL,C,activewindow";
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Wayland;
 
@@ -79,11 +84,19 @@ impl Desktop for Wayland {
     }
 
     fn send_copy(&self) -> Result<(), String> {
-        let hyprland = Command::new("hyprctl")
-            .args(["dispatch", "sendshortcut", "CTRL,C,activewindow"])
-            .stdout(Stdio::null())
-            .status();
-        if hyprland.is_ok_and(|s| s.success()) {
+        // `hyprctl dispatch` exits 0 even when the dispatcher is unknown, so the
+        // answer text is checked: «ok» only. Hyprland 0.56 (Lua) and the classic
+        // syntax differ, both are tried before the `wtype` fallback.
+        let dispatched = |argument: &str| {
+            Command::new("hyprctl")
+                .args(["dispatch", argument])
+                .stderr(Stdio::null())
+                .output()
+                .is_ok_and(|o| {
+                    o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "ok"
+                })
+        };
+        if dispatched(LUA_COPY) || dispatched(CLASSIC_COPY) {
             return Ok(());
         }
         let wtype = Command::new("wtype")

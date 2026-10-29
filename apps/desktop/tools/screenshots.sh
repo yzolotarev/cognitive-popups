@@ -29,6 +29,8 @@ shots=(
   "understand-example|understand|example"
   "understand-ladder|understand|ladder"
   "understand-character|understand|character"
+  "hypothesis|hypothesis|"
+  "hypothesis-answer|hypothesis|чем ближе старт к корню, тем быстрее сходится"
 )
 
 for theme in light dark; do

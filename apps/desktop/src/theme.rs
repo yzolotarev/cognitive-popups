@@ -142,6 +142,7 @@ mod tests {
             ("popup.rs", include_str!("popup.rs")),
             ("understand.rs", include_str!("understand.rs")),
             ("ui.rs", include_str!("ui.rs")),
+            ("hypothesis.rs", include_str!("hypothesis.rs")),
         ] {
             for bad in ["#", "rgb(", "rgba("] {
                 let hit = source

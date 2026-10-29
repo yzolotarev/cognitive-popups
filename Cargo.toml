@@ -14,6 +14,7 @@ cognitive-exoskeleton-nudges = { path = "crates/nudges" }
 cognitive-exoskeleton-capture = { path = "crates/capture" }
 cognitive-exoskeleton-notes = { path = "crates/notes" }
 cognitive-exoskeleton-understand = { path = "crates/understand" }
+cognitive-exoskeleton-hypotheses = { path = "crates/hypotheses" }
 cognitive-exoskeleton-domain = { path = "crates/domain" }
 cognitive-exoskeleton-journal = { path = "crates/journal" }
 serde = { workspace = true }

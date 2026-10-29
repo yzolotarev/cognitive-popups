@@ -182,6 +182,12 @@ or a story by one fixed character (5 %); the row at the bottom switches by hand.
 [Сначала сам] hides the model's four words until you write yours; matches are
 highlighted by code, never scored. Without windows:
 `cargo run -- understand words|explain|example|ladder|character --text <file> --prompts docs/v2/port/prompts`.
+Ctrl+Alt+P records your guess about the selection first, then checks it: a
+short corrective answer with a verbatim quote; [Подробнее] shows where it parts
+from the text, [Другой ракурс] one other way to see it. A vague guess is asked to
+be bolder once; a refuted one returns in FSRS reviews as «how it really is».
+Without windows: `cargo run -- hypothesis check --db journal.db --prompts docs/v2/port/prompts --text <file> <guess…>`.
+
 `COGNITIVE_AI_FIXTURE=apps/desktop/tools/fixture.json` replaces the model with
 canned answers (screenshots, demos without a key). Notes also
 work without windows: `cargo run -- note add|list|close`. Needs `gtk4-layer-shell`.

@@ -694,9 +694,13 @@ fn from_cache(mechanic: Mechanic, value: &serde_json::Value) -> Option<Outcome> 
     }
 }
 
-/// What already holds for the ladder: the reader's marked rungs (F-09).
+/// What already holds for the ladder (F-09): the last six guesses with their
+/// verdicts and the last six rungs with their marks.
 fn known(ctx: &Ctx) -> Vec<Known> {
-    Store::open(&ctx.db)
+    let guesses = crate::hypothesis::known(&ctx.db, 6)
+        .into_iter()
+        .map(|(mark, text)| Known { mark, text });
+    let rungs = Store::open(&ctx.db)
         .and_then(|s| s.recent_rungs(6))
         .map(|rungs| {
             rungs
@@ -708,7 +712,8 @@ fn known(ctx: &Ctx) -> Vec<Known> {
                     },
                     text: format!("{} → {}", r.from, r.to),
                 })
-                .collect()
+                .collect::<Vec<_>>()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    guesses.chain(rungs).collect()
 }

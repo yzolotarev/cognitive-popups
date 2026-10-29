@@ -19,6 +19,7 @@ use cognitive_exoskeleton_lessons::{LessonStore, Subject};
 use cognitive_exoskeleton_memory::Memory;
 use cognitive_exoskeleton_notes::Notes;
 use cognitive_exoskeleton_nudges::{Consent, Nudges};
+use cognitive_exoskeleton_practice::standing::{self, Action, SkillStandings, Standing};
 use cognitive_exoskeleton_practice::{
     routes::Route,
     switches::{GoalSwitch, RouteSwitches},
@@ -671,6 +672,37 @@ impl Hub {
                     separate.connect_clicked(move |_| this.unmerge(&id));
                     row.add_suffix(&separate);
                 }
+                // B67: the reader's own pause / retirement of the skill (Alt+T «Умение»).
+                let standing = SkillStandings::open(db)
+                    .and_then(|s| s.standing(&unit.id))
+                    .unwrap_or_default();
+                let skill_button = |label: &str, action: Action, undo: Action| {
+                    let button = gtk::Button::with_label(label);
+                    button.set_valign(gtk::Align::Center);
+                    button.add_css_class("flat");
+                    let (this, id) = (self.clone(), unit.id.clone());
+                    button.connect_clicked(move |_| this.skill_standing(&id, action, undo));
+                    button
+                };
+                match standing {
+                    Standing::Active => {
+                        row.add_suffix(&skill_button("Пауза", Action::Suspend, Action::Resume));
+                        row.add_suffix(&skill_button("Снять", Action::Retire, Action::Resume));
+                    }
+                    Standing::Suspended => {
+                        row.add_suffix(&gtk::Label::new(Some("умение на паузе")));
+                        row.add_suffix(&skill_button(
+                            "Продолжить",
+                            Action::Resume,
+                            Action::Suspend,
+                        ));
+                        row.add_suffix(&skill_button("Снять", Action::Retire, Action::Suspend));
+                    }
+                    Standing::Retired => {
+                        row.add_suffix(&gtk::Label::new(Some("умение снято")));
+                        row.add_suffix(&skill_button("Вернуть", Action::Resume, Action::Retire));
+                    }
+                }
                 let mastered = gtk::Switch::new();
                 mastered.set_valign(gtk::Align::Center);
                 mastered.set_active(unit.mastered);
@@ -766,6 +798,26 @@ impl Hub {
             page.add(&group);
         }
         page
+    }
+
+    /// Pause, resume or retire the skill of a unit (B67); the toast undoes it.
+    fn skill_standing(&self, unit: &str, action: Action, undo: Action) {
+        let said = match action {
+            Action::Suspend => "Умение на паузе",
+            Action::Resume => "Умение вернулось",
+            Action::Retire => "Умение снято: оно хранится, вернуть можно здесь",
+        };
+        match standing::apply(&self.0.ctx.db, unit, action, ctx::now()) {
+            Ok(_) => {
+                self.open(Some("units"));
+                let (this, id) = (self.clone(), unit.to_string());
+                self.toast(
+                    said,
+                    Some(Box::new(move || this.skill_standing(&id, undo, action))),
+                );
+            }
+            Err(e) => self.toast(&format!("Не получилось: {e}"), None),
+        }
     }
 
     /// [Объединить] (B32): the weakest part's FSRS state; [Отделить] undoes it.

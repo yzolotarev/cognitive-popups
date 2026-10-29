@@ -188,6 +188,14 @@ from the text, [Другой ракурс] one other way to see it. A vague gues
 be bolder once; a refuted one returns in FSRS reviews as «how it really is».
 Without windows: `cargo run -- hypothesis check --db journal.db --prompts docs/v2/port/prompts --text <file> <guess…>`.
 
+Alt+T is practice. Usually probes: up to three categories of one small
+operation each, a worked example always visible, three cards with ✓/✗ before
+[Ответ] (your own attempt) and «Совпало / Промахнулся» after it; the highlighted
+next step follows rules in code. When FSRS reviews are due, «Достань из памяти»
+replaces the third category: you answer first, then compare with a quote from
+your own materials. The bottom row switches to method choice, «своими словами»
+or a hypothesis.
+
 `COGNITIVE_AI_FIXTURE=apps/desktop/tools/fixture.json` replaces the model with
 canned answers (screenshots, demos without a key). Notes also
 work without windows: `cargo run -- note add|list|close`. Needs `gtk4-layer-shell`.

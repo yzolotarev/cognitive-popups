@@ -9,6 +9,7 @@ mod ctx;
 mod hypothesis;
 mod note;
 mod popup;
+mod practice;
 mod theme;
 mod ui;
 mod understand;
@@ -20,10 +21,11 @@ use std::process::{Command, ExitCode};
 
 use adw::prelude::*;
 use cognitive_exoskeleton_capture::{self as capture, Wayland};
+use cognitive_exoskeleton_practice::routes::Route;
 use cognitive_exoskeleton_understand::{self as understand_core, Mechanic};
 use gtk::glib;
 
-const WINDOWS: [&str; 4] = ["note", "understand", "hypothesis", "hide"];
+const WINDOWS: [&str; 5] = ["note", "understand", "hypothesis", "practice", "hide"];
 
 fn socket() -> PathBuf {
     let dir = std::env::var_os("XDG_RUNTIME_DIR").unwrap_or_else(|| "/tmp".into());
@@ -100,6 +102,7 @@ fn hyprland_config() -> String {
      bind = ALT, E, exec, cognitive-popups signal note\n\
      bind = ALT, W, exec, cognitive-popups signal understand\n\
      bind = CTRL ALT, P, exec, cognitive-popups signal hypothesis\n\
+     bind = ALT, T, exec, cognitive-popups signal practice\n\
      layerrule = blur, cognitive-.*\n\
      layerrule = ignorezero, cognitive-.*\n"
         .to_string()
@@ -116,6 +119,17 @@ fn daemon() -> ExitCode {
         let note = note::NoteWindow::new(app, ctx.db.clone());
         let understand = understand::UnderstandWindow::new(app, ctx.clone());
         let hypothesis = hypothesis::HypothesisWindow::new(app, ctx.clone());
+        let links = practice::Links {
+            ladder: {
+                let understand = understand.clone();
+                Box::new(move |target: String| understand.ladder(target))
+            },
+            hypothesis: {
+                let hypothesis = hypothesis.clone();
+                Box::new(move || hypothesis.open(capture::selection(&Wayland).ok()))
+            },
+        };
+        let practice = practice::PracticeWindow::new(app, ctx.clone(), links);
         listen(move |line| {
             let (window, argument) = line.split_once(' ').unwrap_or((line, ""));
             // The selection only: instant, and never a Ctrl+C into our own window.
@@ -142,10 +156,21 @@ fn daemon() -> ExitCode {
                         hypothesis.submit_text(argument);
                     }
                 }
+                // `signal practice [probes|methods|feynman|pill]`.
+                "practice" => {
+                    let route = match argument {
+                        "probes" => Some(Route::Probes),
+                        "methods" => Some(Route::ChooseMethod),
+                        "feynman" => Some(Route::Feynman),
+                        _ => None,
+                    };
+                    practice.open(selection(), route, argument == "pill");
+                }
                 "hide" => {
                     note.hide();
                     understand.hide();
                     hypothesis.hide();
+                    practice.hide();
                 }
                 _ => {}
             }

@@ -395,3 +395,32 @@ fn a_quote_with_a_slip_is_replaced_by_the_text_itself() {
         None
     );
 }
+
+#[test]
+fn feynman_keeps_at_most_two_gaps_and_skips_an_empty_explanation() {
+    use crate::feynman;
+    let c = client(&[
+        json!({"question": "Почему преобразования не меняют решения?", "rubric": "обратимость"}),
+    ]);
+    let q = feynman::question(&c, &prompts(), TEXT).unwrap();
+    assert!(q.question.starts_with("Почему"));
+    assert_eq!(
+        feynman::check(&c, &prompts(), TEXT, &q, "  ").unwrap(),
+        None
+    );
+    assert_eq!(c.transport().calls.get(), 1);
+
+    let reply = json!({"status": "needs_retry", "gaps": [
+        {"location": "a", "type": "missing_causal_link", "description": "один"},
+        {"location": "b", "type": "missing_condition", "description": "два"},
+        {"location": "c", "type": "missing_condition", "description": "три"}],
+        "follow_up": "Что будет при умножении на 0?"});
+    let c = client(&[reply]);
+    match feynman::check(&c, &prompts(), TEXT, &q, "Потому что так").unwrap() {
+        Some(feynman::Feedback::NeedsRetry { gaps, follow_up }) => {
+            assert_eq!(gaps.len(), 2);
+            assert!(follow_up.is_some());
+        }
+        other => panic!("{other:?}"),
+    }
+}

@@ -92,6 +92,7 @@ button.cp-choice.cp-current { color: @cp_accent_text; font-weight: 600; }
 
 entry.cp-field {
   background: @cp_surface;
+  border: 1px solid @cp_separator;
   color: @cp_text;
   border-radius: 7px;
   min-height: 28px;

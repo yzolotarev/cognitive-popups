@@ -20,6 +20,7 @@ pub type Ai = Client<AnyTransport>;
 pub struct Ctx {
     pub db: PathBuf,
     pub prompts: Arc<PromptStore>,
+    pub prompts_dir: PathBuf,
     pub ai: Arc<Ai>,
     pub provider: &'static str,
     /// The running Alt+I lesson: help given during it belongs to it (F-29).
@@ -28,7 +29,8 @@ pub struct Ctx {
 
 impl Ctx {
     pub fn load(db: PathBuf) -> Self {
-        let prompts = PromptStore::from_dir(prompts_dir()).unwrap_or_else(|e| {
+        let dir = prompts_dir();
+        let prompts = PromptStore::from_dir(&dir).unwrap_or_else(|e| {
             eprintln!("prompts: {e}");
             PromptStore::default()
         });
@@ -54,6 +56,7 @@ impl Ctx {
         Self {
             db,
             prompts: Arc::new(prompts),
+            prompts_dir: dir,
             ai: Arc::new(Client::new(config, transport)),
             provider,
             lesson: Default::default(),

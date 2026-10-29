@@ -21,8 +21,8 @@ use cognitive_exoskeleton_nudges::{
 };
 use cognitive_exoskeleton_practice::families::{self, Family};
 use cognitive_exoskeleton_practice::{
-    DueUnit, EvidenceLine, PracticeError, ProbeTree, RecallSet, arrange, load_types, method_trails,
-    probe_tree, recall_cards, whole_task,
+    DueUnit, PracticeError, ProbeTree, RecallSet, arrange, load_types, method_trails, probe_tree,
+    recall_cards, whole_task,
 };
 use cognitive_exoskeleton_units::{ExtractError, UnitStore, extract_lesson};
 use serde::Deserialize;
@@ -1019,56 +1019,11 @@ fn unit_material(db: &str, unit: &str) -> Result<(String, bool), String> {
 
 /// Due units with their evidence, most overdue first (input of «Достань из памяти»).
 fn due_units(db: &str, at: i64) -> Result<Vec<DueUnit>, String> {
-    let store = UnitStore::open(db).map_err(|e| e.to_string())?;
-    let mut memory = Memory::open(db).map_err(|e| e.to_string())?;
-    let journal = Journal::open(db).map_err(|e| e.to_string())?;
-    sync_memory(&store, &mut memory, at)?;
-    let mut units = Vec::new();
-    for due in memory.due(at).map_err(|e| e.to_string())? {
-        let registry = store.registry(&due.subject).map_err(|e| e.to_string())?;
-        let Some(unit) = registry.into_iter().find(|u| u.id == due.unit) else {
-            continue;
-        };
-        let sequences = store.events_of(&unit.id).map_err(|e| e.to_string())?;
-        let events = journal
-            .read_sequences(&sequences)
-            .map_err(|e| e.to_string())?;
-        let evidence = citable_events(&events)
-            .into_iter()
-            .map(|stored| {
-                let (marker, text) = marked_text(stored);
-                EvidenceLine {
-                    sequence: stored.sequence,
-                    marker,
-                    text,
-                }
-            })
-            .collect();
-        let family = store
-            .family(&unit.id)
-            .map_err(|e| e.to_string())?
-            .and_then(|f| Family::parse(&f));
-        units.push(DueUnit {
-            family,
-            id: unit.id,
-            title: unit.title,
-            action: unit.action,
-            kind: unit.kind,
-            evidence,
-        });
-    }
-    Ok(units)
+    cognitive_exoskeleton_practice::due::due_units(db, at).map_err(|e| e.to_string())
 }
 
-/// Every current unit is on the schedule (B35: units always rest on the reader's
-/// own events and belong to an Alt+S subject).
 fn sync_memory(store: &UnitStore, memory: &mut Memory, at: i64) -> Result<(), String> {
-    for (unit, subject) in store.all_units().map_err(|e| e.to_string())? {
-        memory
-            .enroll(&unit, &subject, at)
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    cognitive_exoskeleton_practice::due::sync_memory(store, memory, at).map_err(|e| e.to_string())
 }
 
 fn now(value: Option<&str>) -> Result<i64, String> {

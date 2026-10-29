@@ -13,8 +13,10 @@
 //! and `NEW_probe_verify` in `docs/v2/port/prompts`.
 
 pub mod arith;
+pub mod due;
 pub mod expr;
 pub mod families;
+pub mod feynman;
 pub mod guidance;
 pub mod numeric;
 pub mod recall;
@@ -24,7 +26,7 @@ pub mod whole;
 
 pub use guidance::{Attempt, CardSession, Guidance, Hint, whole_task_types};
 pub use recall::{DueUnit, EvidenceLine, RecallCard, RecallSet, recall_cards};
-pub use trails::{Help, MethodSet, method_trails, names_acceptable};
+pub use trails::{Help, MethodItem, MethodSet, Situation, method_trails, names_acceptable};
 pub use whole::{WholeTask, load_types, whole_task};
 
 use cognitive_exoskeleton_ai::{AiError, Client, Priority, PromptStore, Request, Transport};
@@ -136,6 +138,17 @@ pub enum PracticeError {
     Prompt(String),
     #[error("the text is empty")]
     EmptyText,
+}
+
+impl PracticeError {
+    /// One line for the window (F-71).
+    pub fn user_message(&self, provider: &str) -> String {
+        match self {
+            PracticeError::Ai(error) => error.user_message(provider),
+            PracticeError::EmptyText => "Выдели материал для практики.".into(),
+            PracticeError::Prompt(error) => format!("Промпт: {error}"),
+        }
+    }
 }
 
 /// Shape check inside the model call, so a malformed answer gets one repair.

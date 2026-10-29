@@ -20,6 +20,8 @@ use crate::popup::{self, Opened};
 use crate::ui;
 
 pub const WIDTH: i32 = 420;
+/// Width and the tallest it usually gets: keeps it on screen near the cursor.
+pub const SIZE: (i32, i32) = (WIDTH, 380);
 
 enum Outcome {
     Words(Vec<Cue>),
@@ -152,10 +154,27 @@ impl UnderstandWindow {
         popup::hide(&self.0.window);
     }
 
+    /// «Шаг поменьше» from Alt+T: a ladder step towards that place.
+    pub fn ladder(&self, target: String) {
+        if target.trim().is_empty() {
+            return;
+        }
+        self.0.source.set_text("из пробы");
+        {
+            let mut state = self.0.state.borrow_mut();
+            state.text = target;
+            state.captured = None;
+            state.cues = None;
+            state.operation = Some(ctx::operation());
+        }
+        popup::show(&self.0.window, SIZE, Opened::ByKey);
+        self.choose(Mechanic::Ladder, true);
+    }
+
     /// Alt+W. A second press while the window is open only raises it (F-02).
     pub fn open(&self, selection: Option<Captured>, chosen: Option<Mechanic>) {
         if self.0.window.is_visible() {
-            popup::show(&self.0.window, WIDTH, Opened::ByKey);
+            popup::show(&self.0.window, SIZE, Opened::ByKey);
             return;
         }
         let text = selection
@@ -178,7 +197,7 @@ impl UnderstandWindow {
             state.words_in_flight = false;
             state.operation = Some(ctx::operation());
         }
-        popup::show(&self.0.window, WIDTH, Opened::ByKey);
+        popup::show(&self.0.window, SIZE, Opened::ByKey);
         let picked = understand::pick(&[], !text.trim().is_empty(), understand::roll());
         match chosen.filter(|_| picked.is_some()).or(picked) {
             Some(mechanic) => self.choose(mechanic, chosen.is_some()),

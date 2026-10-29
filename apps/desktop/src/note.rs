@@ -15,6 +15,8 @@ use gtk::{gdk, glib};
 use crate::popup::{self, Opened};
 
 pub const WIDTH: i32 = 360;
+/// Width and the tallest it usually gets: keeps it on screen near the cursor.
+pub const SIZE: (i32, i32) = (WIDTH, 220);
 
 pub struct NoteWindow {
     window: gtk::ApplicationWindow,
@@ -178,7 +180,7 @@ impl NoteWindow {
         );
         *self.anchor.borrow_mut() = quote;
         self.status.remove_css_class("cp-error");
-        popup::show(&self.window, WIDTH, Opened::ByKey);
+        popup::show(&self.window, SIZE, Opened::ByKey);
         self.input.grab_focus();
     }
 }

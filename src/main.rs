@@ -70,6 +70,9 @@ usage:
   cognitive-exoskeleton capture [--from-clipboard] [--db <path>]   selection → JSON (S6)
   cognitive-exoskeleton note add --db <path> [--anchor <selection>] <text…> | list | close <id> [--reopen]
   cognitive-exoskeleton hypothesis check --db <path> --prompts <dir> --text <file> [--insist] <guess…> | list --db <path>
+  cognitive-exoskeleton subject add --db <path> [--deadline YYYY-MM-DD] <name> <long-term goal> | list
+  cognitive-exoskeleton lesson plan --db <path> --prompts <dir> --subject <id> [--thoughts <text>] [--text <file>] | show | item <id> <status> | close [--remaining <text>]
+  cognitive-exoskeleton step start --db <path> [--path 1|3|5|inf] [<minutes> <text>] | finish done|partly|not [--takeaway <text>] | bridge
   cognitive-exoskeleton understand pick|words|explain|example|ladder|character --text <file> --prompts <dir> [--mine <four words>] [--target <text>] [<terms or question>]
 
 AI settings (environment):
@@ -147,6 +150,7 @@ fn run(args: &[String]) -> Result<String, String> {
         Some("note") => return run_note(&args[1..]),
         Some("understand") => return run_understand(&args[1..]),
         Some("hypothesis") => return run_hypothesis(&args[1..]),
+        Some("lesson") | Some("subject") | Some("step") => return run_lesson(&args[0], &args[1..]),
         _ => {}
     }
     let (command, rest) = match args {
@@ -881,6 +885,141 @@ fn run_understand(args: &[String]) -> Result<String, String> {
         understand::Mechanic::Character => Ok(json(
             &understand::character(&client, &prompts, &text).map_err(failed)?,
         )),
+    }
+}
+
+/// Alt+I and Alt+S without windows: subjects, lessons with their plan, steps.
+fn run_lesson(group: &str, args: &[String]) -> Result<String, String> {
+    use cognitive_exoskeleton_lessons::{self as lessons, ItemStatus, LessonStore, Outcome};
+    let (command, rest) = args.split_first().ok_or("needs a command")?;
+    let (options, _, positional) = parse_options(
+        rest,
+        &[
+            "--db",
+            "--prompts",
+            "--text",
+            "--now",
+            "--subject",
+            "--thoughts",
+            "--deadline",
+            "--path",
+            "--takeaway",
+            "--remaining",
+        ],
+        &[],
+    )?;
+    let db = options.get("--db").ok_or("--db is required")?;
+    let at = now(options.get("--now").map(String::as_str))?;
+    let mut store = LessonStore::open(db).map_err(|e| e.to_string())?;
+    let e = |e: lessons::StoreError| e.to_string();
+    match (group, command.as_str()) {
+        ("subject", "add") => {
+            let [name, goal] = positional.as_slice() else {
+                return Err("subject add needs <name> <long-term goal>".into());
+            };
+            let deadline = options.get("--deadline").map(String::as_str);
+            store.add_subject(name, goal, deadline, at).map_err(e)
+        }
+        ("subject", "list") => Ok(json(&store.subjects().map_err(e)?)),
+        ("lesson", "plan") => {
+            if let Some(lesson) = store.open_lesson().map_err(e)? {
+                return Ok(format!(
+                    "урок уже открыт: {} — продолжай его ({})",
+                    lesson.goal, lesson.id
+                ));
+            }
+            let subject_id = options.get("--subject").ok_or("--subject is required")?;
+            let subject = store
+                .subject(subject_id)
+                .map_err(e)?
+                .ok_or("Для урока выбери сохранённый предмет (subject add)")?;
+            let material = match options.get("--text") {
+                Some(path) => std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?,
+                None => String::new(),
+            };
+            let thoughts = options.get("--thoughts").map(String::as_str).unwrap_or("");
+            let prompts = options.get("--prompts").ok_or("--prompts is required")?;
+            let prompts = PromptStore::from_dir(prompts).map_err(|e| e.to_string())?;
+            let context = lessons::gather(db, &subject, thoughts, &material, at).map_err(e)?;
+            let config = ai_config_from_env()?;
+            let provider = config.provider_name();
+            let client = Client::new(config, UreqTransport::default());
+            let plan = lessons::generate(&client, &prompts, &context)
+                .map_err(|e| e.user_message(provider))?;
+            let lesson = store
+                .create_lesson(&subject.id, &plan, thoughts, at)
+                .map_err(e)?;
+            Ok(json(
+                &serde_json::json!({"lesson": lesson, "items": store.items(&lesson.id).map_err(e)?, "notes": plan.notes}),
+            ))
+        }
+        ("lesson", "show") => match store.open_lesson().map_err(e)? {
+            Some(lesson) => Ok(json(
+                &serde_json::json!({"lesson": lesson, "items": store.items(&lesson.id).map_err(e)?}),
+            )),
+            None => Ok("нет открытого урока".into()),
+        },
+        ("lesson", "item") => {
+            let [item, status] = positional.as_slice() else {
+                return Err("lesson item needs <item-id> <current|worked|skipped|pending>".into());
+            };
+            let item: i64 = item.parse().map_err(|_| "item id is a number")?;
+            store.set_item(item, ItemStatus::parse(status)).map_err(e)?;
+            Ok("отмечено".into())
+        }
+        ("lesson", "close") => {
+            let lesson = store
+                .open_lesson()
+                .map_err(e)?
+                .ok_or("нет открытого урока")?;
+            let remaining = options.get("--remaining").map(String::as_str).unwrap_or("");
+            store.close_lesson(&lesson.id, remaining, at).map_err(e)?;
+            Ok(format!(
+                "урок закрыт; единицы: units extract --lesson {}",
+                lesson.id
+            ))
+        }
+        ("step", "start") => {
+            if let Some(step) = store.open_step().map_err(e)? {
+                return Err(format!("шаг уже идёт: {} ({})", step.text, step.id));
+            }
+            let (minutes, text) = lessons::parse_step(&positional.join(" "));
+            let journey = match store.current_journey(at).map_err(e)? {
+                Some(journey) => journey,
+                None => {
+                    let target = match options.get("--path").map(String::as_str) {
+                        None | Some("1") => Some(1),
+                        Some("∞") | Some("inf") => None,
+                        Some(n) => Some(n.parse().map_err(|_| "--path is 1, 3, 5 or inf")?),
+                    };
+                    store.start_journey(target, at).map_err(e)?
+                }
+            };
+            let lesson = store.open_lesson().map_err(e)?.map(|l| l.id);
+            Ok(json(
+                &store
+                    .start_step(lesson.as_deref(), journey.id, &text, minutes, at)
+                    .map_err(e)?,
+            ))
+        }
+        ("step", "finish") => {
+            let step = store.open_step().map_err(e)?.ok_or("нет идущего шага")?;
+            let outcome = match positional.first().map(String::as_str) {
+                Some("done") => Some(Outcome::Done),
+                Some("partly") => Some(Outcome::Partly),
+                Some("not") => Some(Outcome::Not),
+                None if step.is_reading() => None,
+                _ => return Err("step finish needs done|partly|not".into()),
+            };
+            let takeaway = options.get("--takeaway").map(String::as_str).unwrap_or("");
+            store
+                .finish_step(step.id, outcome, takeaway, at)
+                .map_err(e)?;
+            let journey = store.journey(step.journey).map_err(e)?.ok_or("нет пути")?;
+            Ok(format!("шаг закончен · {}", journey.progress()))
+        }
+        ("step", "bridge") => Ok(json(&store.bridge(at).map_err(e)?)),
+        (group, other) => Err(format!("unknown {group} command {other}")),
     }
 }
 

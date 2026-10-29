@@ -15,10 +15,6 @@ const OFFSET: i32 = 12;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Opened {
     ByKey,
-    #[expect(
-        dead_code,
-        reason = "the pill and nudges (P7 step 6) open by themselves"
-    )]
     ByItself,
 }
 
@@ -45,6 +41,36 @@ pub fn new(app: &adw::Application, namespace: &str, width: i32) -> gtk::Applicat
     });
     window.add_controller(hover);
     window
+}
+
+/// A window of the top-right corner (the clock, the end of a step, notices):
+/// it stays put instead of following the cursor. `top` stacks corner windows.
+pub fn corner(
+    app: &adw::Application,
+    namespace: &str,
+    width: i32,
+    top: i32,
+) -> gtk::ApplicationWindow {
+    let window = new(app, namespace, width);
+    window.set_anchor(Edge::Left, false);
+    window.set_anchor(Edge::Right, true);
+    window.set_margin(Edge::Right, OFFSET);
+    window.set_margin(Edge::Top, top);
+    window
+}
+
+/// Shows a corner window on the monitor under the cursor. One that opened by
+/// itself does not take the keyboard (INV-13).
+pub fn show_corner(window: &gtk::ApplicationWindow, opened: Opened) {
+    if !window.is_visible() {
+        let (monitor, ..) = place(cursor(), (0, 0));
+        window.set_monitor(monitor.as_ref());
+    }
+    window.set_keyboard_mode(match opened {
+        Opened::ByKey => KeyboardMode::OnDemand,
+        Opened::ByItself => KeyboardMode::None,
+    });
+    window.present();
 }
 
 /// Shows the window next to the cursor, or raises it if it is already open.

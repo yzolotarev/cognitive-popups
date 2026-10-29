@@ -149,6 +149,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "cognitive-exoskeleton-lessons"
+version = "0.1.0"
+dependencies = [
+ "cognitive-exoskeleton-ai",
+ "cognitive-exoskeleton-hypotheses",
+ "cognitive-exoskeleton-memory",
+ "cognitive-exoskeleton-units",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "cognitive-exoskeleton-memory"
 version = "0.1.0"
 dependencies = [
@@ -213,10 +228,12 @@ dependencies = [
  "cognitive-exoskeleton-domain",
  "cognitive-exoskeleton-hypotheses",
  "cognitive-exoskeleton-journal",
+ "cognitive-exoskeleton-lessons",
  "cognitive-exoskeleton-memory",
  "cognitive-exoskeleton-notes",
  "cognitive-exoskeleton-practice",
  "cognitive-exoskeleton-understand",
+ "cognitive-exoskeleton-units",
  "gtk4",
  "gtk4-layer-shell",
  "libadwaita",

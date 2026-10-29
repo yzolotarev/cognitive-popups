@@ -196,6 +196,16 @@ replaces the third category: you answer first, then compare with a quote from
 your own materials. The bottom row switches to method choice, «своими словами»
 or a hypothesis.
 
+Alt+I is a ~15-minute lesson. The first time it asks for a subject and your
+long-term goal (Alt+S). Then it builds a goal for the next ~15 minutes and a
+plan of 2–5 items, at once or from your own thoughts; items can be made current
+or skipped, never edited, and [Другой план] replaces the whole plan. A step runs
+under a small clock in the corner; at its end a quiet window asks for one mark
+and one line «что вынес». An unfinished lesson comes back on the next Alt+I.
+When the lesson ends, its events become learning units in the background and a
+notice in the corner says how many. Without windows:
+`cargo run -- subject add|list`, `lesson plan|show|item|close`, `step start|finish|bridge`.
+
 `COGNITIVE_AI_FIXTURE=apps/desktop/tools/fixture.json` replaces the model with
 canned answers (screenshots, demos without a key). Notes also
 work without windows: `cargo run -- note add|list|close`. Needs `gtk4-layer-shell`.

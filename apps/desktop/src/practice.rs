@@ -34,6 +34,8 @@ pub const WIDTH: i32 = 520;
 pub const SIZE: (i32, i32) = (WIDTH, 640);
 
 /// The routes that never need text on screen (B64): they come from the stores.
+/// How many old passages the list shows.
+const OLD_LIST: usize = 30;
 const FROM_STORES: [Route; 3] = [Route::ContinueTask, Route::OldMaterial, Route::Skill];
 
 /// What other windows do for this one: the ladder for «Шаг поменьше», the
@@ -65,6 +67,8 @@ struct Inner {
     window: gtk::ApplicationWindow,
     title: gtk::Label,
     source: gtk::Label,
+    /// «Выбрать из списка»: shown only in «Старый материал» (F-23 п. 2).
+    list: gtk::Button,
     tabs: gtk::Box,
     body: gtk::Box,
     choices: Vec<(Route, gtk::Button)>,
@@ -86,7 +90,10 @@ impl PracticeWindow {
         source.set_hexpand(true);
         source.set_xalign(1.0);
         header.append(&title);
+        let list = ui::button("Выбрать из списка", &["cp-secondary"]);
+        list.set_visible(false);
         header.append(&source);
+        header.append(&list);
         root.append(&header);
         let tabs = ui::row(0);
         root.append(&tabs);
@@ -124,6 +131,7 @@ impl PracticeWindow {
             window,
             title,
             source,
+            list,
             tabs,
             body,
             choices,
@@ -139,6 +147,10 @@ impl PracticeWindow {
             let (this, route) = (self.clone(), *route);
             button.connect_clicked(move |_| this.route(route));
         }
+        let this = self.clone();
+        self.0
+            .list
+            .connect_clicked(move |_| this.old_material_list());
         let keys = gtk::EventControllerKey::new();
         let this = self.clone();
         keys.connect_key_pressed(move |_, key, _, _| {
@@ -231,6 +243,7 @@ impl PracticeWindow {
     fn route(&self, route: Route) {
         // Leaving a whole task on screen keeps its draft.
         self.flush();
+        self.0.list.set_visible(false);
         let avail = self.refresh_availability();
         for (r, button) in &self.0.choices {
             if *r == route {
@@ -547,12 +560,20 @@ impl PracticeWindow {
     }
 
     /// «Старый материал»: a fragment from the archive becomes the material of
-    /// the probes again. Its snapshot is written once more, as a new use.
+    /// the probes again; one tied to an active skill is preferred (B66). The
+    /// reader may instead choose from the list.
     fn old_material(&self, avail: &Availability) {
         let Some(fragment) = revisit::pick(&avail.stock.fragments, understand_roll()).cloned()
         else {
             return;
         };
+        self.0.list.set_visible(avail.stock.fragments.len() > 1);
+        self.start_fragment(&fragment);
+    }
+
+    /// The fragment becomes the material. Its snapshot is written once more,
+    /// as a new use.
+    fn start_fragment(&self, fragment: &revisit::Fragment) {
         let captured = Captured {
             text: fragment.text.clone(),
             origin: Origin::Archive,
@@ -573,6 +594,37 @@ impl PracticeWindow {
             .set_text(&format!("из архива · {}", day(fragment.at)));
         self.probes();
         self.0.title.set_text("Пробы · старый материал");
+    }
+
+    /// The list of old passages (F-23 п. 2): tied to a skill first, then the
+    /// newest. Nothing happens until the reader presses a row (no keyboard
+    /// grab beyond the window the reader opened).
+    fn old_material_list(&self) {
+        let fragments = self.0.state.borrow().avail.stock.fragments.clone();
+        self.next_generation();
+        self.0.title.set_text("Старый материал · список");
+        let mut rows = fragments;
+        rows.sort_by_key(|f| f.linked.is_empty());
+        let mut widgets: Vec<gtk::Widget> = Vec::new();
+        for fragment in rows.into_iter().take(OLD_LIST) {
+            let mut label = format!(
+                "{} · {}",
+                day(fragment.at),
+                revisit::preview(&fragment.text)
+            );
+            if !fragment.linked.is_empty() {
+                label.push_str(&format!(" · умение: {}", fragment.linked.join(", ")));
+            }
+            let button = ui::button(&label, &["cp-choice"]);
+            if let Some(child) = button.child().and_downcast::<gtk::Label>() {
+                child.set_wrap(true);
+                child.set_xalign(0.0);
+            }
+            let this = self.clone();
+            button.connect_clicked(move |_| this.start_fragment(&fragment));
+            widgets.push(button.upcast());
+        }
+        self.show(&widgets);
     }
 
     /// «Умение»: one unit the admission rule lets through, asked as a recall

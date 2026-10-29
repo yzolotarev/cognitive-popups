@@ -132,7 +132,11 @@ pub fn compute(db: impl AsRef<Path>, now: i64, text: &str) -> Availability {
     }
 
     match Journal::open(db).and_then(|j| revisit::fragments(&j, now, text)) {
-        Ok(fragments) if !fragments.is_empty() => out.stock.fragments = fragments,
+        Ok(mut fragments) if !fragments.is_empty() => {
+            // Where the tie cannot be read, the route works as without it.
+            let _ = revisit::link_to_skills(db, &mut fragments);
+            out.stock.fragments = fragments;
+        }
         Ok(_) => out
             .unavailable
             .push((Route::OldMaterial, Unavailable::NoArchivedFragment)),

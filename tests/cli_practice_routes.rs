@@ -186,6 +186,64 @@ fn skill_lists_the_admission_with_the_reason_for_every_refusal() {
     assert!(skill["refused"].as_array().unwrap().is_empty());
 }
 
+#[test]
+fn b67_skill_suspend_retire_resume_list_and_unknown_unit() {
+    use cognitive_exoskeleton_domain::LessonId;
+    use cognitive_exoskeleton_units::{Extraction, ProposedUnit, UnitStore};
+
+    let db = fresh("standing");
+    let mut store = UnitStore::open(&db).unwrap();
+    store
+        .apply(
+            "S",
+            &LessonId::new("L1").unwrap(),
+            &Extraction {
+                units: vec![ProposedUnit {
+                    title: "Ранг".into(),
+                    action: "найти ранг".into(),
+                    kind: "execute".into(),
+                    events: vec![1],
+                    same_as: None,
+                    why: "w".into(),
+                }],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let id = store.registry("S").unwrap()[0].id.clone();
+
+    assert!(
+        json(&db, &["practice", "skill", "list"])["held"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let change = json(&db, &["practice", "skill", "suspend", &id, "--now", NOW]);
+    assert_eq!(change["change"]["after"], "suspended");
+    assert_eq!(change["change"]["changed"], true);
+    let again = json(&db, &["practice", "skill", "suspend", &id, "--now", NOW]);
+    assert_eq!(again["change"]["changed"], false);
+    let retired = json(&db, &["practice", "skill", "retire", &id, "--now", NOW]);
+    assert_eq!(retired["change"]["before"], "suspended");
+    let held = json(&db, &["practice", "skill", "list"]);
+    assert_eq!(held["held"][0]["standing"], "retired");
+    let back = json(&db, &["practice", "skill", "resume", &id, "--now", NOW]);
+    assert_eq!(back["change"]["after"], "active");
+    assert!(
+        json(&db, &["practice", "skill", "list"])["held"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    let failed = Command::new(env!("CARGO_BIN_EXE_cognitive-exoskeleton"))
+        .args(["practice", "skill", "retire", "nope", "--db"])
+        .arg(&db)
+        .output()
+        .unwrap();
+    assert!(!failed.status.success());
+}
+
 fn task_save(db: &Path, class: Option<&str>) {
     let mut args = vec![
         "practice",

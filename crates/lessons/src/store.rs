@@ -159,6 +159,29 @@ pub struct Journey {
     pub closed_at: Option<i64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeynmanStatus {
+    Unverified,
+    Checked,
+}
+
+impl FeynmanStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unverified => "unverified",
+            Self::Checked => "checked",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeynmanRecord {
+    pub status: FeynmanStatus,
+    pub question: Option<String>,
+    pub answer: Option<String>,
+    pub updated_at: i64,
+}
+
 impl Journey {
     pub fn finished(&self) -> bool {
         self.target.is_some_and(|t| self.completed >= t)
@@ -243,6 +266,14 @@ impl LessonStore {
                  outcome     TEXT,
                  takeaway    TEXT,
                  finished_at INTEGER
+             );
+             CREATE TABLE IF NOT EXISTS journey_feynman (
+                 journey_id INTEGER PRIMARY KEY,
+                 status TEXT NOT NULL CHECK(status IN ('unverified', 'checked')),
+                 question TEXT,
+                 answer TEXT,
+                 updated_at INTEGER NOT NULL,
+                 FOREIGN KEY(journey_id) REFERENCES journeys(journey_id)
              );",
         )?;
         Ok(Self { connection })
@@ -530,6 +561,59 @@ impl LessonStore {
         Ok(self
             .connection
             .query_row(&format!("{STEP} WHERE step_id = ?1"), [id], step_row)
+            .optional()?)
+    }
+
+    /// The steps in a path, in the order the reader took them (F-30).
+    pub fn steps_for_journey(&self, journey: i64) -> Result<Vec<Step>, StoreError> {
+        let mut statement = self
+            .connection
+            .prepare(&format!("{STEP} WHERE journey_id = ?1 ORDER BY step_id"))?;
+        let rows = statement.query_map([journey], step_row)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Persist the fixed-path Feynman close-out separately from step marks
+    /// (which are not learning grades, INV-02). Repeated updates replace one
+    /// record for the journey.
+    pub fn record_feynman(
+        &mut self,
+        journey: i64,
+        status: FeynmanStatus,
+        question: Option<&str>,
+        answer: Option<&str>,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        self.connection.execute(
+            "INSERT INTO journey_feynman (journey_id, status, question, answer, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(journey_id) DO UPDATE SET status = ?2, question = ?3,
+                 answer = ?4, updated_at = ?5",
+            params![journey, status.as_str(), question, answer, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn feynman_record(&self, journey: i64) -> Result<Option<FeynmanRecord>, StoreError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT status, question, answer, updated_at FROM journey_feynman
+                 WHERE journey_id = ?1",
+                [journey],
+                |row| {
+                    let status = match row.get::<_, String>(0)?.as_str() {
+                        "checked" => FeynmanStatus::Checked,
+                        _ => FeynmanStatus::Unverified,
+                    };
+                    Ok(FeynmanRecord {
+                        status,
+                        question: row.get(1)?,
+                        answer: row.get(2)?,
+                        updated_at: row.get(3)?,
+                    })
+                },
+            )
             .optional()?)
     }
 

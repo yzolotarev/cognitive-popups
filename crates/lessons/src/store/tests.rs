@@ -118,6 +118,52 @@ fn a_step_is_marked_once_and_counts_on_the_path() {
 }
 
 #[test]
+fn fixed_path_steps_and_feynman_state_are_kept_in_order() {
+    let (mut store, _) = store_with_subject();
+    let journey = store.start_journey(Some(3), 100).unwrap();
+    let first = store
+        .start_step(None, journey.id, "сравнить ранги", 15, 100)
+        .unwrap();
+    store
+        .finish_step(first.id, Some(Outcome::Done), "решает число строк", 1000)
+        .unwrap();
+    store
+        .start_step(None, journey.id, "объяснить совместность", 15, 1001)
+        .unwrap();
+    let steps = store.steps_for_journey(journey.id).unwrap();
+    assert_eq!(steps.len(), 2);
+    assert_eq!(steps[0].text, "сравнить ранги");
+    assert_eq!(steps[0].takeaway.as_deref(), Some("решает число строк"));
+    assert_eq!(steps[1].text, "объяснить совместность");
+
+    store
+        .record_feynman(
+            journey.id,
+            FeynmanStatus::Unverified,
+            Some("Как связаны ранги и совместность?"),
+            Some("число строк определяет ..."),
+            1200,
+        )
+        .unwrap();
+    assert_eq!(
+        store.feynman_record(journey.id).unwrap().unwrap().status,
+        FeynmanStatus::Unverified
+    );
+    store
+        .record_feynman(
+            journey.id,
+            FeynmanStatus::Checked,
+            Some("Как связаны ранги и совместность?"),
+            Some("число строк определяет ..."),
+            1300,
+        )
+        .unwrap();
+    let result = store.feynman_record(journey.id).unwrap().unwrap();
+    assert_eq!(result.status, FeynmanStatus::Checked);
+    assert_eq!(result.updated_at, 1300);
+}
+
+#[test]
 fn a_path_ends_when_finished_or_after_three_hours() {
     let (mut store, _) = store_with_subject();
     let journey = store.start_journey(Some(1), 0).unwrap();

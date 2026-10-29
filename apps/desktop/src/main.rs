@@ -7,7 +7,9 @@
 
 mod ctx;
 mod hypothesis;
+mod lesson;
 mod note;
+mod notice;
 mod popup;
 mod practice;
 mod theme;
@@ -25,7 +27,14 @@ use cognitive_exoskeleton_practice::routes::Route;
 use cognitive_exoskeleton_understand::{self as understand_core, Mechanic};
 use gtk::glib;
 
-const WINDOWS: [&str; 5] = ["note", "understand", "hypothesis", "practice", "hide"];
+const WINDOWS: [&str; 6] = [
+    "note",
+    "understand",
+    "hypothesis",
+    "practice",
+    "lesson",
+    "hide",
+];
 
 fn socket() -> PathBuf {
     let dir = std::env::var_os("XDG_RUNTIME_DIR").unwrap_or_else(|| "/tmp".into());
@@ -103,6 +112,7 @@ fn hyprland_config() -> String {
      bind = ALT, W, exec, cognitive-popups signal understand\n\
      bind = CTRL ALT, P, exec, cognitive-popups signal hypothesis\n\
      bind = ALT, T, exec, cognitive-popups signal practice\n\
+     bind = ALT, I, exec, cognitive-popups signal lesson\n\
      layerrule = blur, cognitive-.*\n\
      layerrule = ignorezero, cognitive-.*\n"
         .to_string()
@@ -130,6 +140,9 @@ fn daemon() -> ExitCode {
             },
         };
         let practice = practice::PracticeWindow::new(app, ctx.clone(), links);
+        let notice = notice::Notice::new(app);
+        let lesson = lesson::LessonUi::new(app, ctx.clone(), notice.clone());
+        lesson.restore();
         listen(move |line| {
             let (window, argument) = line.split_once(' ').unwrap_or((line, ""));
             // The selection only: instant, and never a Ctrl+C into our own window.
@@ -166,11 +179,15 @@ fn daemon() -> ExitCode {
                     };
                     practice.open(selection(), route, argument == "pill");
                 }
+                "lesson" if argument.is_empty() => lesson.press(selection()),
+                "lesson" => lesson.script(argument),
                 "hide" => {
                     note.hide();
                     understand.hide();
                     hypothesis.hide();
                     practice.hide();
+                    lesson.hide();
+                    notice.hide();
                 }
                 _ => {}
             }

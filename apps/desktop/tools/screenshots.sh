@@ -33,6 +33,11 @@ shots=(
   "practice|practice|probes"
   "practice-methods|practice|methods"
   "practice-feynman|practice|feynman"
+  "lesson-subject|lesson|"
+  "lesson-new|lesson|subject Численные методы|Сдать экзамен по численным методам 20 ноября"
+  "lesson-plan|lesson|generate"
+  "lesson-clock|lesson|step 20 сделаю три шага для √2"
+  "lesson-end|lesson|"
   "hypothesis-answer|hypothesis|чем ближе старт к корню, тем быстрее сходится"
 )
 
@@ -48,7 +53,7 @@ for theme in light dark; do
     # shellcheck disable=SC2086
     "$bin" signal $window ${argument:+"$argument"}
     sleep 1.2
-    grim -g "250,0 680x800" "$out/$name-$theme.png"
+    grim "$out/$name-$theme.png"
     "$bin" signal hide
     sleep 0.3
   done

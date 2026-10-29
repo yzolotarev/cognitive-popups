@@ -1,7 +1,7 @@
 //! Subjects, lessons, plan items, steps and paths (DATA_MODEL: `subjects`,
 //! `lessons`, `plan_items`, `steps`, `journeys`).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
@@ -15,6 +15,8 @@ pub enum StoreError {
     Database(#[from] rusqlite::Error),
     #[error("not found: {0}")]
     NotFound(String),
+    #[error("memory: {0}")]
+    Memory(#[from] cognitive_exoskeleton_memory::MemoryError),
 }
 
 /// Alt+S: a subject and its long-term goal (B20).
@@ -216,6 +218,9 @@ impl Journey {
 
 pub struct LessonStore {
     connection: Connection,
+    /// The database file, so a goal's deadline and state reach the schedule
+    /// (S4 rules 7–8); `None` in memory, where there is no schedule to keep.
+    path: Option<PathBuf>,
 }
 
 fn new_id(prefix: &str) -> String {
@@ -225,7 +230,14 @@ fn new_id(prefix: &str) -> String {
 
 impl LessonStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
-        Self::from_connection(Connection::open(path)?)
+        let mut store = Self::from_connection(Connection::open(path.as_ref())?)?;
+        store.path = Some(path.as_ref().to_path_buf());
+        if store.unsynced()? {
+            for subject in store.all_subjects()? {
+                store.sync_goal(&subject)?;
+            }
+        }
+        Ok(store)
     }
 
     pub fn open_in_memory() -> Result<Self, StoreError> {
@@ -310,7 +322,54 @@ impl LessonStore {
         if !has_topic {
             connection.execute_batch("ALTER TABLE lessons ADD COLUMN topic_id INTEGER;")?;
         }
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            path: None,
+        })
+    }
+
+    /// A subject the schedule does not know yet (made before goals were
+    /// passed on, or the schedule table is not there yet).
+    fn unsynced(&self) -> Result<bool, StoreError> {
+        let known: bool = self.connection.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_subjects')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !known {
+            return Ok(!self.all_subjects()?.is_empty());
+        }
+        Ok(self.connection.query_row(
+            "SELECT EXISTS (SELECT 1 FROM subjects
+                            WHERE subject_id NOT IN (SELECT subject_id FROM memory_subjects))",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Passes the goal's deadline and state to the schedule: within 7 days of
+    /// the deadline only its reviews are offered; a goal not pursued pauses
+    /// its reviews, nothing is deleted (S4 rules 7–8, Q-48).
+    fn sync_goal(&self, subject: &Subject) -> Result<(), StoreError> {
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+        let deadline = subject.deadline.as_deref().and_then(end_of_day);
+        let active = matches!(subject.status.as_str(), "active" | "maintaining");
+        cognitive_exoskeleton_memory::Memory::open(path)?.set_subject(
+            &subject.id,
+            deadline,
+            active,
+        )?;
+        Ok(())
+    }
+
+    fn all_subjects(&self) -> Result<Vec<Subject>, StoreError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT subject_id, name, goal_text, deadline, status FROM subjects")?;
+        let rows = statement.query_map([], subject_row)?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     // ---------- subjects ----------
@@ -334,6 +393,9 @@ impl LessonStore {
                 now
             ],
         )?;
+        if let Some(subject) = self.subject(&id)? {
+            self.sync_goal(&subject)?;
+        }
         Ok(id)
     }
 
@@ -342,7 +404,7 @@ impl LessonStore {
             "UPDATE subjects SET name = ?2, goal_text = ?3, deadline = ?4, status = ?5 WHERE subject_id = ?1",
             params![subject.id, subject.name, subject.goal, subject.deadline, subject.status],
         )?;
-        Ok(())
+        self.sync_goal(subject)
     }
 
     /// Every subject not removed, newest first.
@@ -351,15 +413,7 @@ impl LessonStore {
             "SELECT subject_id, name, goal_text, deadline, status FROM subjects
              WHERE status != 'removed' ORDER BY created_at DESC",
         )?;
-        let rows = statement.query_map([], |row| {
-            Ok(Subject {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                goal: row.get(2)?,
-                deadline: row.get(3)?,
-                status: row.get(4)?,
-            })
-        })?;
+        let rows = statement.query_map([], subject_row)?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
@@ -881,6 +935,33 @@ const TOPIC: &str = "SELECT topic_id, position, title, done_at FROM subject_topi
 const JOURNEY: &str =
     "SELECT journey_id, target_steps, completed, started_at, closed_at FROM journeys";
 const STEP: &str = "SELECT step_id, lesson_id, journey_id, text, minutes, started_at, deadline, outcome, takeaway, finished_at FROM steps";
+
+fn subject_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Subject> {
+    Ok(Subject {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        goal: row.get(2)?,
+        deadline: row.get(3)?,
+        status: row.get(4)?,
+    })
+}
+
+/// `YYYY-MM-DD` → the last second of that day (UTC); `None` if not a date.
+pub fn end_of_day(date: &str) -> Option<i64> {
+    let mut parts = date.trim().splitn(3, '-').map(|p| p.parse::<i64>().ok());
+    let (y, m, d) = (parts.next()??, parts.next()??, parts.next()??);
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    // Days from 1970-01-01 (H. Hinnant, days_from_civil).
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + 86_399)
+}
 
 fn lesson_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Lesson> {
     Ok(Lesson {

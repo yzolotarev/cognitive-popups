@@ -423,6 +423,51 @@ impl UnitStore {
         Ok(rows)
     }
 
+    /// Merge candidates the model proposed and the reader has not answered.
+    pub fn merge_candidates(
+        &self,
+        subject: &str,
+    ) -> Result<Vec<(String, Vec<String>, String)>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT candidate_id, unit_ids_json, why FROM merge_candidates
+             WHERE subject_id = ?1 AND status = 'proposed' ORDER BY rowid",
+        )?;
+        let rows = statement
+            .query_map([subject], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, units, why)| (id, serde_json::from_str(&units).unwrap_or_default(), why))
+            .collect())
+    }
+
+    /// `merged` or `declined`: the candidate leaves the list (the reader's action).
+    pub fn answer_candidate(&mut self, candidate: &str, status: &str) -> Result<(), StoreError> {
+        self.connection.execute(
+            "UPDATE merge_candidates SET status = ?2 WHERE candidate_id = ?1",
+            params![candidate, status],
+        )?;
+        Ok(())
+    }
+
+    /// Merged units that can still be separated ([отделить]).
+    pub fn merged_units(&self, subject: &str) -> Result<Vec<String>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT m.merged_unit FROM merges m JOIN units u ON u.unit_id = m.merged_unit
+             WHERE u.subject_id = ?1 AND m.separated = 0",
+        )?;
+        let rows = statement
+            .query_map([subject], |r| r.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// [Объединить] (B32): the reader joins 2-5 units of one subject into one.
     /// The parts stay as they are; the merged unit holds the union of their events
     /// and is not mastered, whatever the parts were. Returns the merged unit id.
@@ -546,7 +591,7 @@ fn new_id(prefix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ProposedUnit;
+    use crate::{MergeCandidate, ProposedUnit};
 
     fn lesson(id: &str) -> LessonId {
         LessonId::new(id).unwrap()
@@ -685,6 +730,7 @@ mod tests {
             .merge(&ids, "A+B", "сделать A и B", "transfer")
             .unwrap();
         assert_eq!(store.events_of(&merged).unwrap(), vec![1, 2]);
+        assert_eq!(store.merged_units("S").unwrap(), vec![merged.clone()]);
         let unit = store
             .registry("S")
             .unwrap()
@@ -701,6 +747,29 @@ mod tests {
             store.merge(&ids[..1], "x", "y", "z"),
             Err(StoreError::BadMerge)
         ));
+    }
+
+    #[test]
+    fn merge_candidates_wait_for_the_readers_answer() {
+        let mut store = UnitStore::open_in_memory().unwrap();
+        store
+            .apply(
+                "S",
+                &lesson("L1"),
+                &Extraction {
+                    merge_candidates: vec![MergeCandidate {
+                        unit_ids: vec!["u1".into(), "u2".into()],
+                        why: "одно действие".into(),
+                    }],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let list = store.merge_candidates("S").unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].1, ["u1", "u2"]);
+        store.answer_candidate(&list[0].0, "declined").unwrap();
+        assert!(store.merge_candidates("S").unwrap().is_empty());
     }
 
     #[test]

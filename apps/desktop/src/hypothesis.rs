@@ -212,10 +212,10 @@ impl HypothesisWindow {
         let generation = inner.generation.get() + 1;
         inner.generation.set(generation);
         self.show(&[ui::waiting("Сверяю с текстом…").upcast()]);
-        let (ai, prompts) = (inner.ctx.ai.clone(), inner.ctx.prompts.clone());
+        let (ai, prompts) = (inner.ctx.ai(), inner.ctx.prompts.clone());
         let (t, m) = (text.clone(), material.clone());
         let this = self.clone();
-        let provider = inner.ctx.provider;
+        let provider = inner.ctx.provider();
         ctx::background(
             move || hypotheses::check(&ai, &prompts, &t, &m, insist),
             move |result: Result<Check, HypothesisError>| {
@@ -327,14 +327,14 @@ impl HypothesisWindow {
         let inner = &self.0;
         let waiting = ui::waiting("Ищу, где расходится…");
         content.append(&waiting);
-        let (ai, prompts) = (inner.ctx.ai.clone(), inner.ctx.prompts.clone());
+        let (ai, prompts) = (inner.ctx.ai(), inner.ctx.prompts.clone());
         let (material, used) = {
             let state = inner.state.borrow();
             (state.material.clone(), state.nodes_used.clone())
         };
         let text = text.to_string();
         let (this, content) = (self.clone(), content.clone());
-        let provider = inner.ctx.provider;
+        let provider = inner.ctx.provider();
         ctx::background(
             move || hypotheses::nodes(&ai, &prompts, &text, &material, &used),
             move |result| {
@@ -374,11 +374,11 @@ impl HypothesisWindow {
         let inner = &self.0;
         let waiting = ui::waiting("Ищу другой ракурс…");
         content.append(&waiting);
-        let (ai, prompts) = (inner.ctx.ai.clone(), inner.ctx.prompts.clone());
+        let (ai, prompts) = (inner.ctx.ai(), inner.ctx.prompts.clone());
         let material = inner.state.borrow().material.clone();
         let text = text.to_string();
         let content = content.clone();
-        let provider = inner.ctx.provider;
+        let provider = inner.ctx.provider();
         ctx::background(
             move || hypotheses::reframe(&ai, &prompts, &material, &text),
             move |result| {

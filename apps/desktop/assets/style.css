@@ -99,3 +99,6 @@ entry.cp-field {
 }
 
 separator { background: @cp_separator; min-height: 1px; }
+
+/* The «FSRS! N» pill: quiet, round, the material of every window. */
+window.cp-pill { border-radius: 999px; }

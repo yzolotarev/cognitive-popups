@@ -293,3 +293,13 @@ fn card_texts_inform_rather_than_order() {
         assert!(!text.contains('!'));
     }
 }
+
+#[test]
+fn the_review_pill_is_asked_once_and_off_by_default() {
+    let mut nudges = Nudges::open_in_memory().unwrap();
+    assert!(!nudges.consented(Consent::Reviews).unwrap());
+    assert!(!nudges.consent_asked(Consent::Reviews).unwrap());
+    nudges.set_consent(Consent::Reviews, false, 1).unwrap();
+    assert!(nudges.consent_asked(Consent::Reviews).unwrap());
+    assert!(!nudges.consented(Consent::Reviews).unwrap());
+}

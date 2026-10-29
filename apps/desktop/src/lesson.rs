@@ -15,12 +15,14 @@ use cognitive_exoskeleton_domain::LessonId;
 use cognitive_exoskeleton_lessons::{
     self as lessons, ItemStatus, Lesson, LessonStore, Outcome, Plan, PlanError, Step, Subject,
 };
+use cognitive_exoskeleton_nudges::{Consent, Nudges};
 use cognitive_exoskeleton_units::{UnitStore, extract_lesson};
 use gtk::prelude::*;
 use gtk::{gdk, glib};
 
 use crate::ctx::{self, Ctx};
 use crate::notice::Notice;
+use crate::pill::Pill;
 use crate::popup::{self, Opened};
 use crate::ui;
 
@@ -35,6 +37,7 @@ const STEP_PROMPT: &str = "Какой шаг сделаешь за эти мин
 struct Inner {
     ctx: Ctx,
     notice: Notice,
+    pill: Pill,
     window: gtk::ApplicationWindow,
     subject: gtk::Label,
     body: gtk::Box,
@@ -57,7 +60,7 @@ fn open_store(ctx: &Ctx) -> Option<LessonStore> {
 }
 
 impl LessonUi {
-    pub fn new(app: &adw::Application, ctx: Ctx, notice: Notice) -> Self {
+    pub fn new(app: &adw::Application, ctx: Ctx, notice: Notice, pill: Pill) -> Self {
         let window = popup::new(app, "cognitive-lesson", WIDTH);
         let root = ui::column(10);
         root.add_css_class("cp-root");
@@ -91,6 +94,7 @@ impl LessonUi {
         let this = Self(Rc::new(Inner {
             ctx,
             notice,
+            pill,
             window,
             subject,
             body,
@@ -292,13 +296,13 @@ impl LessonUi {
         self.show(&[ui::waiting("Составляю урок…").upcast()]);
         let inner = &self.0;
         let (ai, prompts, db) = (
-            inner.ctx.ai.clone(),
+            inner.ctx.ai(),
             inner.ctx.prompts.clone(),
             inner.ctx.db.clone(),
         );
         let material = inner.material.borrow().clone();
         let this = self.clone();
-        let provider = inner.ctx.provider;
+        let provider = inner.ctx.provider();
         let s = subject.clone();
         let t = thoughts.clone();
         ctx::background(
@@ -833,13 +837,15 @@ impl LessonUi {
         // S3: the lesson becomes units in the background; a quiet notice says how many.
         let inner = &self.0;
         let (ai, prompts, db) = (
-            inner.ctx.ai.clone(),
+            inner.ctx.ai(),
             inner.ctx.prompts.clone(),
             inner.ctx.db.clone(),
         );
         let lesson_id = lesson.to_string();
         let notice = inner.notice.clone();
-        let provider = inner.ctx.provider;
+        let pill = inner.pill.clone();
+        let consent_db = inner.ctx.db.clone();
+        let provider = inner.ctx.provider();
         ctx::background(
             move || -> Result<Option<String>, String> {
                 let journal =
@@ -856,7 +862,34 @@ impl LessonUi {
                 Ok(summary.notification())
             },
             move |result| match result {
-                Ok(Some(text)) => notice.show("Учебные единицы", &text),
+                Ok(Some(text)) => {
+                    // INV-09: the review pill is asked for once, when the first
+                    // units appear (HIG: ask when the feature is first used).
+                    let asked = Nudges::open(&consent_db)
+                        .and_then(|n| n.consent_asked(Consent::Reviews))
+                        .unwrap_or(true);
+                    if asked {
+                        return notice.show("Учебные единицы", &text);
+                    }
+                    let answer = |granted: bool| -> Box<dyn Fn()> {
+                        let (db, pill) = (consent_db.clone(), pill.clone());
+                        Box::new(move || {
+                            if let Err(e) = Nudges::open(&db).and_then(|mut n| {
+                                n.set_consent(Consent::Reviews, granted, ctx::now())
+                            }) {
+                                eprintln!("nudges: {e}");
+                            }
+                            pill.refresh();
+                        })
+                    };
+                    notice.show_asking(
+                        "Учебные единицы",
+                        &format!(
+                            "{text}\nПоказывать тихую пилюлю «FSRS! N», когда подойдёт срок повторить? Её можно сдвинуть, звука нет."
+                        ),
+                        vec![("Показывать", answer(true)), ("Не надо", answer(false))],
+                    );
+                }
                 Ok(None) => {}
                 Err(message) => notice.show("Единицы урока не собраны", &message),
             },

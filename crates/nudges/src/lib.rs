@@ -49,6 +49,9 @@ pub enum Consent {
     BackgroundRecording,
     /// Taking part in micro-randomized trials.
     Experiments,
+    /// The quiet «FSRS! N» pill when reviews are due (B50: asked when the
+    /// first units appear).
+    Reviews,
 }
 
 impl Consent {
@@ -58,6 +61,7 @@ impl Consent {
             Consent::Daily => "daily",
             Consent::BackgroundRecording => "background_recording",
             Consent::Experiments => "experiments",
+            Consent::Reviews => "reviews",
         }
     }
 
@@ -67,6 +71,7 @@ impl Consent {
             "daily" => Some(Consent::Daily),
             "background_recording" => Some(Consent::BackgroundRecording),
             "experiments" => Some(Consent::Experiments),
+            "reviews" => Some(Consent::Reviews),
             _ => None,
         }
     }
@@ -313,6 +318,15 @@ impl Nudges {
             )
             .optional()?
             .unwrap_or(false))
+    }
+
+    /// Whether the reader has answered at all: a question is asked once.
+    pub fn consent_asked(&self, kind: Consent) -> Result<bool, NudgeError> {
+        Ok(self.connection.query_row(
+            "SELECT EXISTS (SELECT 1 FROM nudge_consent WHERE kind = ?1)",
+            [kind.as_str()],
+            |r| r.get(0),
+        )?)
     }
 
     /// May the window classes and keystroke rhythm be recorded at all?

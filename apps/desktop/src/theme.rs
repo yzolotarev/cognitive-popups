@@ -146,6 +146,8 @@ mod tests {
             ("practice.rs", include_str!("practice.rs")),
             ("lesson.rs", include_str!("lesson.rs")),
             ("notice.rs", include_str!("notice.rs")),
+            ("pill.rs", include_str!("pill.rs")),
+            ("hub.rs", include_str!("hub.rs")),
         ] {
             for bad in ["#", "rgb(", "rgba("] {
                 let hit = source

@@ -325,7 +325,7 @@ impl UnderstandWindow {
             inner.state.borrow_mut().words_in_flight = true;
         }
         let known = known(&inner.ctx);
-        let (ai, prompts) = (inner.ctx.ai.clone(), inner.ctx.prompts.clone());
+        let (ai, prompts) = (inner.ctx.ai(), inner.ctx.prompts.clone());
         let work = move || -> Result<(Outcome, Option<serde_json::Value>), UnderstandError> {
             let foreground = cognitive_exoskeleton_ai::Priority::Foreground;
             Ok(match mechanic {
@@ -358,7 +358,7 @@ impl UnderstandWindow {
             })
         };
         let this = self.clone();
-        let provider = inner.ctx.provider;
+        let provider = inner.ctx.provider();
         ctx::background(work, move |result| {
             let result = result.map(|(outcome, cached)| {
                 if let Some(value) = cached {

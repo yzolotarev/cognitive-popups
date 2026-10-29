@@ -73,6 +73,8 @@ pub struct SavedTask {
     pub status: TaskStatus,
     pub saved_at: i64,
     pub updated_at: i64,
+    /// Window class where the task was made (B69); None when it was not known.
+    pub window_class: Option<String>,
 }
 
 pub struct TaskStore {
@@ -80,7 +82,7 @@ pub struct TaskStore {
 }
 
 const COLUMNS: &str = "task_id, type_id, type_title, operations_json, condition, solution, draft,
-                       status, saved_at, updated_at";
+                       status, saved_at, updated_at, window_class";
 
 impl TaskStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, TaskError> {
@@ -109,6 +111,18 @@ impl TaskStore {
                  updated_at      INTEGER NOT NULL
              );",
         )?;
+        // B69: older databases get the column; the old rows stay NULL (unknown).
+        let has_class = {
+            let mut statement = connection.prepare("PRAGMA table_info(practice_tasks)")?;
+            let names = statement.query_map([], |r| r.get::<_, String>(1))?;
+            names
+                .collect::<rusqlite::Result<Vec<_>>>()?
+                .iter()
+                .any(|n| n == "window_class")
+        };
+        if !has_class {
+            connection.execute_batch("ALTER TABLE practice_tasks ADD COLUMN window_class TEXT;")?;
+        }
         Ok(Self { connection })
     }
 
@@ -121,12 +135,24 @@ impl TaskStore {
         draft: &str,
         now: i64,
     ) -> Result<i64, TaskError> {
+        self.save_in(key, task, draft, now, None)
+    }
+
+    /// Like `save`, remembering the window class the task was made in (B69).
+    pub fn save_in(
+        &mut self,
+        key: &str,
+        task: &NewTask,
+        draft: &str,
+        now: i64,
+        window_class: Option<&str>,
+    ) -> Result<i64, TaskError> {
         let operations = serde_json::to_string(&task.operations).unwrap_or_else(|_| "[]".into());
         self.connection.execute(
             "INSERT INTO practice_tasks
                  (key, type_id, type_title, operations_json, condition, solution, draft,
-                  saved_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+                  saved_at, updated_at, window_class)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9)
              ON CONFLICT (key) DO UPDATE SET draft = ?7, updated_at = ?8
              WHERE status = 'open'",
             params![
@@ -137,7 +163,8 @@ impl TaskStore {
                 task.condition,
                 task.solution,
                 draft,
-                now
+                now,
+                window_class.filter(|c| !c.trim().is_empty())
             ],
         )?;
         Ok(self.connection.query_row(
@@ -180,6 +207,16 @@ impl TaskStore {
                 from_row,
             )
             .optional()?)
+    }
+
+    /// Every open task, the one worked on last first.
+    pub fn list_open(&self) -> Result<Vec<SavedTask>, TaskError> {
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT {COLUMNS} FROM practice_tasks WHERE status = 'open'
+             ORDER BY updated_at DESC, task_id DESC"
+        ))?;
+        let rows = statement.query_map([], from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn count_open(&self) -> Result<usize, TaskError> {
@@ -241,6 +278,7 @@ fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SavedTask> {
         status: TaskStatus::parse(&status),
         saved_at: row.get(8)?,
         updated_at: row.get(9)?,
+        window_class: row.get(10)?,
     })
 }
 

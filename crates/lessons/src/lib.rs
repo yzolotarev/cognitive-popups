@@ -25,9 +25,5 @@ pub use rules::{
 };
 pub use store::{
     FeynmanRecord, FeynmanStatus, ItemStatus, Journey, Lesson, LessonStore, Outcome, PlanItem,
-<<<<<<< HEAD
     Step, StoreError, Subject, Topic, end_of_day,
-=======
-    Step, StoreError, Subject, Topic,
->>>>>>> origin/main
 };

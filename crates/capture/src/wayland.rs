@@ -6,10 +6,12 @@ use std::process::{Command, Stdio};
 
 use crate::{Desktop, Window};
 
-/// Ctrl+C to the active window: Hyprland 0.56 (Lua) and the classic form.
+/// Ctrl+C to the active window: Hyprland 0.56 (Lua) and the classic form. The key
+/// is the keycode (54 = the C key), not the letter: with a Russian layout active
+/// the letter «C» is not found («key not found») and nothing is copied.
 const LUA_COPY: &str =
-    "hl.dsp.send_shortcut({ mods = \"CTRL\", key = \"C\", window = \"activewindow\" })";
-const CLASSIC_COPY: &str = "sendshortcut CTRL,C,activewindow";
+    "hl.dsp.send_shortcut({ mods = \"CTRL\", key = \"code:54\", window = \"activewindow\" })";
+const CLASSIC_COPY: &str = "sendshortcut CTRL,code:54,activewindow";
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Wayland;

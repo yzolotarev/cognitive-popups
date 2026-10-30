@@ -2124,7 +2124,6 @@ impl FeedPage {
                     card.answer
                 );
                 t.note(next, &title, attempt, shown_at, serial, &line, &last);
-                t.show_next();
             })
         };
         let m = mark.clone();

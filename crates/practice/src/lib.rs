@@ -43,6 +43,10 @@ use crate::numeric::Template;
 
 pub const GENERATE_PROMPT: &str = "NEW_probes_generate";
 pub const VERIFY_PROMPT: &str = "NEW_probe_verify";
+/// [Сложнее] (B83): the same operation one level up.
+pub const HARDER_PROMPT: &str = "NEW_probes_harder";
+/// Probe levels: 1 is what the text gives, 5 is transfer.
+pub const MAX_LEVEL: u8 = 5;
 pub const GROUPS: usize = 3;
 pub const CARDS: usize = 3;
 /// Cards kept beyond the first three, for [Ещё 3] and the diagnostic case.
@@ -144,6 +148,9 @@ pub enum PracticeError {
     Prompt(String),
     #[error("the text is empty")]
     EmptyText,
+    /// [Сложнее]: the code rejected every attempt of the model.
+    #[error("rejected: {0}")]
+    Rejected(String),
 }
 
 impl PracticeError {
@@ -153,6 +160,10 @@ impl PracticeError {
             PracticeError::Ai(error) => error.user_message(provider),
             PracticeError::EmptyText => "Выдели материал для практики.".into(),
             PracticeError::Prompt(error) => format!("Промпт: {error}"),
+            PracticeError::Rejected(_) => {
+                "Не вышло собрать задания сложнее: проверка их не пропустила. Попробуй ещё раз."
+                    .into()
+            }
         }
     }
 }
@@ -366,6 +377,83 @@ pub fn probe_tree<T: Transport>(
         );
     }
     Ok(tree)
+}
+
+/// [Сложнее] (B83): one branch with the same operation at `level`, which the
+/// code chose. The same checks as the tree: verbatim quote, arithmetic by the
+/// code, the verifier for other pairs. The title stays the category's own.
+pub fn harder_group<T: Transport>(
+    client: &Client<T>,
+    prompts: &PromptStore,
+    text: &str,
+    group: &ProbeGroup,
+    level: u8,
+    priority: Priority,
+) -> Result<ProbeGroup, PracticeError> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(PracticeError::EmptyText);
+    }
+    let prompt = |key: &str| -> Result<String, PracticeError> {
+        prompts
+            .get(key)
+            .map(str::to_string)
+            .map_err(|e| PracticeError::Prompt(e.to_string()))
+    };
+    let verifier = prompt(VERIFY_PROMPT)?;
+    let cards: Vec<String> = group
+        .cards
+        .iter()
+        .map(|c| format!("- {} → {}", c.prompt, c.answer))
+        .collect();
+    let category = format!(
+        "КАТЕГОРИЯ:\ntitle: {}\ninvariant: {}\nsource_span: {}\nвид: {}\nобразец: {} → {}\nзадания уровнем ниже:\n{}\n\nУРОВЕНЬ: {level} из {MAX_LEVEL}",
+        group.title,
+        group.invariant,
+        group.source_span,
+        match group.kind {
+            Kind::Numeric => "numeric",
+            Kind::Drill => "drill",
+        },
+        group.example.prompt,
+        group.example.answer,
+        cards.join("\n")
+    );
+    let mut request = Request {
+        system: prompt(HARDER_PROMPT)?,
+        input: format!("ТЕКСТ:\n{text}\n\n{category}"),
+        max_tokens: 2000,
+        json: true,
+        priority,
+    };
+    let seed = fnv(text).wrapping_add(u64::from(level) * 1000);
+    let mut reasons: Vec<String> = Vec::new();
+    for round in 0..REPAIR_ROUNDS + 1 {
+        let raw = client.complete_json(&request, schema_check)?;
+        let first = &raw["groups"][0];
+        let mut fresh: Vec<Candidate> = Vec::new();
+        match accept(first, text, seed.wrapping_add(round as u64)) {
+            Ok(candidate) => fresh.push(candidate),
+            Err(reason) => reasons.push(reason),
+        }
+        let mut notes = Vec::new();
+        verify(client, &verifier, &mut fresh, &mut notes, priority)?;
+        reasons.extend(notes);
+        if let Some(candidate) = fresh.pop() {
+            match finish(candidate) {
+                Ok(mut harder) => {
+                    harder.title = group.title.clone();
+                    return Ok(harder);
+                }
+                Err(reason) => reasons.push(reason),
+            }
+        }
+        request.input = format!(
+            "ТЕКСТ:\n{text}\n\n{category}\n\nОТКЛОНЕНО:\n- {}",
+            reasons.join("\n- ")
+        );
+    }
+    Err(PracticeError::Rejected(reasons.join("; ")))
 }
 
 /// A verified candidate becomes a group, or the reason it cannot be shown.

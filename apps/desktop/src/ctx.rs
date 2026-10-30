@@ -16,6 +16,7 @@ use cognitive_exoskeleton_ai::{
 use cognitive_exoskeleton_capture::Captured;
 use cognitive_exoskeleton_domain::{LessonId, NewEvent, OperationId, SourceKind, SourceSnapshot};
 use cognitive_exoskeleton_journal::Journal;
+use cognitive_exoskeleton_materials::Materials;
 use gtk::{gio, glib};
 use serde_json::Value;
 
@@ -76,21 +77,24 @@ impl Ctx {
         *self.client.borrow_mut() = Arc::new(client(&self.prompts));
     }
 
-    /// Writes what happened in one operation: the source, the reader's words,
-    /// the model's answer (S1; INV-01 keeps them apart). Returns the journal
-    /// sequences of the reader's words and the answer. A failed write is
-    /// logged, never shown over the help itself.
+    /// Writes what happened in one operation: the source with the window it
+    /// was used in (`materials::window`), the reader's words, the model's
+    /// answer (S1; INV-01 keeps them apart). A source carrying block marks
+    /// during a lesson with a study text is also an observed interaction with
+    /// those blocks (B78). Returns the journal sequences of the reader's words
+    /// and the answer. A failed write is logged, never shown over the help
+    /// itself.
     pub fn record(
         &self,
         operation: &OperationId,
-        source: Option<&Captured>,
+        source: Option<(&Captured, &'static str)>,
         user: Option<&str>,
         ai: Option<&str>,
     ) -> Vec<i64> {
         let at = time::OffsetDateTime::now_utc();
         let key = |part: &str| format!("{}:{part}", operation.as_str());
         let mut events = Vec::new();
-        if let Some(captured) = source {
+        if let Some((captured, _)) = source {
             let snapshot = SourceSnapshot {
                 kind: SourceKind::Selection,
                 text: captured.text.clone(),
@@ -141,12 +145,30 @@ impl Ctx {
             for key in &keys {
                 sequences.extend(journal.find_by_key(key)?);
             }
-            Ok(sequences)
+            Ok((sequences, journal.find_by_key(&key("source"))?))
         });
-        written.unwrap_or_else(|e| {
+        let (sequences, source_sequence) = written.unwrap_or_else(|e| {
             eprintln!("journal: {e}");
-            Vec::new()
-        })
+            (Vec::new(), None)
+        });
+        if let Some((captured, window)) = source.filter(|(c, _)| !c.blocks.is_empty())
+            && let Some(lesson) = self.lesson.borrow().clone()
+        {
+            let observed = Materials::open(&self.db).and_then(|mut m| {
+                m.record_interaction(
+                    lesson.as_str(),
+                    operation.as_str(),
+                    window,
+                    &captured.blocks,
+                    source_sequence,
+                    at.unix_timestamp(),
+                )
+            });
+            if let Err(e) = observed {
+                eprintln!("materials: {e}");
+            }
+        }
+        sequences
     }
 }
 

@@ -9,6 +9,9 @@ use cognitive_exoskeleton_domain::{
 };
 use cognitive_exoskeleton_hypotheses::{Hypothesis, HypothesisError, Store as Hypotheses};
 use cognitive_exoskeleton_journal::{Journal, JournalError};
+use cognitive_exoskeleton_materials::{
+    BlockState, Interaction, Material, MaterialError, Materials, block_states,
+};
 use cognitive_exoskeleton_notes::{Note, NoteError, Notes};
 use serde::Serialize;
 use time::{OffsetDateTime, UtcOffset};
@@ -29,6 +32,17 @@ pub enum ExportError {
     Notes(#[from] NoteError),
     #[error("гипотезы: {0}")]
     Hypotheses(#[from] HypothesisError),
+    #[error("материалы: {0}")]
+    Materials(#[from] MaterialError),
+}
+
+/// The lesson's study text (B78): its blocks with what was observed — a
+/// status per block and the interactions in order. Never a reading report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MaterialExport {
+    pub material: Material,
+    pub blocks: Vec<BlockState>,
+    pub interactions: Vec<Interaction>,
 }
 
 /// One journal event of the lesson. `payload` names the kind (`source`,
@@ -64,6 +78,7 @@ pub struct LessonExport {
     pub timeline: Vec<TimelineEntry>,
     pub hypotheses: Vec<Hypothesis>,
     pub notes: Vec<Note>,
+    pub material: Option<MaterialExport>,
 }
 
 /// Gathers one lesson from the database: `lesson` by id, or the newest one.
@@ -107,7 +122,25 @@ pub fn export_lesson(
             .collect(),
         Err(_) => Vec::new(),
     };
+    let materials = Materials::open(db)?;
+    let material = match materials.latest_for_lesson(&lesson.id)? {
+        Some(material) => {
+            let interactions: Vec<Interaction> = materials
+                .interactions(&lesson.id)?
+                .into_iter()
+                .filter(|i| i.material == material.id)
+                .collect();
+            Some(MaterialExport {
+                blocks: block_states(&material, &interactions),
+                interactions,
+                material,
+            })
+        }
+        None => None,
+    };
+    drop(materials);
     Ok(LessonExport {
+        material,
         number: store.lesson_number(&lesson)?,
         subject: store.subject(&lesson.subject)?,
         topic: match lesson.topic {
@@ -223,6 +256,11 @@ impl LessonExport {
             }
         }
 
+        if let Some(material) = &self.material {
+            out.push(String::new());
+            out.extend(self.material_section(material));
+        }
+
         if !self.timeline.is_empty() {
             out.push(String::new());
             out.push("## Хронология с ИИ".into());
@@ -278,6 +316,47 @@ impl LessonExport {
         let mut text = out.join("\n");
         text.push('\n');
         text
+    }
+
+    fn material_section(&self, export: &MaterialExport) -> Vec<String> {
+        let material = &export.material;
+        let mut out = vec![
+            "## Материал".to_string(),
+            String::new(),
+            format!(
+                "Id: {}, зарегистрирован в {}. Статус блока — только наблюдаемое: \
+                 observed_interaction (было выделение с меткой блока) или unknown \
+                 (не записано; чтение без выделения не видно).",
+                material.id,
+                self.stamp(material.registered_at)
+            ),
+            String::new(),
+        ];
+        out.extend(export.blocks.iter().map(|state| {
+            let first = material
+                .block(&state.block)
+                .and_then(|b| b.text.lines().next())
+                .unwrap_or_default();
+            format!(
+                "- {} · {} · {}: {first}",
+                state.block,
+                state.role,
+                state.status.as_str()
+            )
+        }));
+        out.push(String::new());
+        if export.interactions.is_empty() {
+            out.push("**Взаимодействия:** не записано.".into());
+        } else {
+            out.push("**Взаимодействия по порядку:**".into());
+            out.extend(
+                export
+                    .interactions
+                    .iter()
+                    .map(|i| format!("- {} {} — {}", self.stamp(i.at), i.block, i.window)),
+            );
+        }
+        out
     }
 
     fn event(&self, entry: &TimelineEntry) -> Vec<String> {

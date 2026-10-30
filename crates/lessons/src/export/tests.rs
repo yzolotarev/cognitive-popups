@@ -2,6 +2,8 @@ use cognitive_exoskeleton_domain::{NewEvent, OperationId, SourceSnapshot};
 use cognitive_exoskeleton_hypotheses::{Check, Verdict};
 use time::macros::datetime;
 
+use cognitive_exoskeleton_materials::Materials;
+
 use super::*;
 use crate::plan::{Criterion, Plan, PlanItemDraft};
 use crate::store::Outcome;
@@ -119,6 +121,32 @@ fn a_lesson_is_exported_with_its_events_guesses_and_notes() {
         .unwrap()
         .unwrap();
 
+    let mut materials = Materials::open(&db).unwrap();
+    let tag = cognitive_exoskeleton_domain::marks::tagged;
+    let (material, _) = materials
+        .register(
+            Some(&lesson.id),
+            Some(&subject),
+            &format!(
+                "⟦b1 · проблема⟧\n{b1}Зачем?\n⟦b2 · механизм⟧\n{b2}Во всех случаях приходится решать.\n⟦b3 · пример⟧\n{b3}Монета.",
+                b1 = tag("b1"),
+                b2 = tag("b2"),
+                b3 = tag("b3")
+            ),
+            at(20),
+        )
+        .unwrap();
+    materials
+        .record_interaction(
+            &lesson.id,
+            "op-1",
+            cognitive_exoskeleton_materials::window::ALT_T,
+            &["b2".into()],
+            Some(1),
+            at(23),
+        )
+        .unwrap();
+
     let export = export_lesson(&db, None, at(60), 3 * 3600).unwrap();
     assert_eq!(export.lesson.id, lesson.id);
     assert_eq!(export.number, 1);
@@ -140,6 +168,13 @@ fn a_lesson_is_exported_with_its_events_guesses_and_notes() {
         "- «читаю», 15 мин, 08:23 - 08:38",
         "- Итог: ✓ done",
         "- Что вынес: что надо опять девелопить",
+        "## Материал",
+        &format!("Id: {}, зарегистрирован в 08:21.", material.id),
+        "- b1 · проблема · unknown: Зачем?",
+        "- b2 · механизм · observed_interaction: Во всех случаях приходится решать.",
+        "- b3 · пример · unknown: Монета.",
+        "**Взаимодействия по порядку:**",
+        "- 08:24 b2 — alt_t",
         "## Хронология с ИИ",
         "### 08:24 Выделенный текст (selection)",
         "Окно: firefox — Урок 1 · контекст: study · блок: b2",
@@ -168,12 +203,23 @@ fn a_lesson_is_exported_with_its_events_guesses_and_notes() {
     assert_eq!(json["timeline"][0]["blocks"][0], "b2");
     assert_eq!(json["timeline"][2]["model"], "gemini-2.5-flash");
     assert_eq!(json["hypotheses"][0]["verdict"], "partly");
+    assert_eq!(
+        json["material"]["material"]["blocks"][1]["role"],
+        "механизм"
+    );
+    assert_eq!(json["material"]["blocks"][0]["status"], "unknown");
+    assert_eq!(
+        json["material"]["blocks"][1]["status"],
+        "observed_interaction"
+    );
+    assert_eq!(json["material"]["interactions"][0]["window"], "alt_t");
+    assert!(!text.contains("not_read"));
 
     assert!(matches!(
         export_lesson(&db, Some("нет-такого"), at(60), 0),
         Err(ExportError::NotFound(_))
     ));
     // Windows keeps an open database file locked.
-    drop((store, guesses, notes));
+    drop((store, guesses, notes, materials));
     std::fs::remove_dir_all(dir).unwrap();
 }

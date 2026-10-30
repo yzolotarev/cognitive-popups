@@ -10,6 +10,7 @@ cognitive-exoskeleton-ai = { path = "../ai" }
 cognitive-exoskeleton-domain = { path = "../domain" }
 cognitive-exoskeleton-hypotheses = { path = "../hypotheses" }
 cognitive-exoskeleton-journal = { path = "../journal" }
+cognitive-exoskeleton-materials = { path = "../materials" }
 cognitive-exoskeleton-memory = { path = "../memory" }
 cognitive-exoskeleton-notes = { path = "../notes" }
 cognitive-exoskeleton-units = { path = "../units" }

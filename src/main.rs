@@ -84,6 +84,8 @@ usage:
   cognitive-exoskeleton subject topic --db <path> <topic-id> done|todo   the reader's mark on a topic
   cognitive-exoskeleton lesson plan --db <path> --prompts <dir> --subject <id> [--thoughts <text>] [--text <file>] | show | item <id> <status> | close [--remaining <text>]
   cognitive-exoskeleton step start --db <path> [--path 1|3|5|inf] [<minutes> <text>] | finish done|partly|not [--takeaway <text>] | bridge
+  cognitive-exoskeleton material register --db <path> --lesson <id> --file <txt>   a study text with blocks (B78)
+  cognitive-exoskeleton material show --db <path> <material-id>
   cognitive-exoskeleton resume --db <path>
   cognitive-exoskeleton formula <LaTeX>
   cognitive-exoskeleton understand pick|words|explain|example|ladder|character --text <file> --prompts <dir> [--mine <four words>] [--target <text>] [<terms or question>]
@@ -163,6 +165,7 @@ fn run(args: &[String]) -> Result<String, String> {
         Some("note") => return run_note(&args[1..]),
         Some("understand") => return run_understand(&args[1..]),
         Some("resume") => return run_resume(&args[1..]),
+        Some("material") => return run_material(&args[1..]),
         Some("formula") => return run_formula(&args[1..]),
         Some("hypothesis") => return run_hypothesis(&args[1..]),
         Some("lesson") | Some("subject") | Some("step") => return run_lesson(&args[0], &args[1..]),
@@ -1204,6 +1207,54 @@ fn run_understand(args: &[String]) -> Result<String, String> {
 }
 
 /// Alt+I and Alt+S without windows: subjects, lessons with their plan, steps.
+/// Study materials (B78): register a text with blocks, show it.
+fn run_material(args: &[String]) -> Result<String, String> {
+    use cognitive_exoskeleton_lessons::LessonStore;
+    use cognitive_exoskeleton_materials::Materials;
+    let (command, rest) = args.split_first().ok_or("needs a command")?;
+    let (options, _, positional) = parse_options(
+        rest,
+        &["--db", "--lesson", "--file", "--block", "--now"],
+        &[],
+    )?;
+    let db = options.get("--db").ok_or("--db is required")?;
+    let at = now(options.get("--now").map(String::as_str))?;
+    let e = |e: cognitive_exoskeleton_materials::MaterialError| e.to_string();
+    let mut materials = Materials::open(db).map_err(e)?;
+    match command.as_str() {
+        "register" => {
+            let lesson = options.get("--lesson").ok_or("--lesson is required")?;
+            let path = options.get("--file").ok_or("--file is required")?;
+            let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+            let subject = LessonStore::open(db)
+                .map_err(|e| e.to_string())?
+                .lesson(lesson)
+                .map_err(|e| e.to_string())?
+                .ok_or(format!("нет урока {lesson}"))?
+                .subject;
+            let (material, new) = materials
+                .register(Some(lesson), Some(&subject), &text, at)
+                .map_err(e)?;
+            Ok(json(&serde_json::json!({
+                "id": material.id,
+                "new": new,
+                "summary": material.summary(),
+            })))
+        }
+        "show" => {
+            let [id] = positional.as_slice() else {
+                return Err("material show needs <material-id>".into());
+            };
+            let material = materials
+                .material(id)
+                .map_err(e)?
+                .ok_or(format!("материал {id} не найден"))?;
+            Ok(json(&material))
+        }
+        other => Err(format!("unknown material command {other}")),
+    }
+}
+
 fn run_lesson(group: &str, args: &[String]) -> Result<String, String> {
     use cognitive_exoskeleton_lessons::{self as lessons, ItemStatus, LessonStore, Outcome};
     let (command, rest) = args.split_first().ok_or("needs a command")?;

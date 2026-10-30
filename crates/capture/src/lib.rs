@@ -296,27 +296,7 @@ fn finish(text: String, origin: Origin, window: Option<Window>) -> Captured {
 /// characters (U+E0020–U+E007E). Returns the text without any tag
 /// characters and the distinct marks in order of appearance.
 pub fn read_marks(text: &str) -> (String, Vec<String>) {
-    let mut clean = String::with_capacity(text.len());
-    let mut marks: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let close = |current: &mut String, marks: &mut Vec<String>| {
-        if !current.is_empty() && !marks.contains(current) {
-            marks.push(current.clone());
-        }
-        current.clear();
-    };
-    for c in text.chars() {
-        match c as u32 {
-            0xE0020..=0xE007E => current.push(char::from((c as u32 - 0xE0000) as u8)),
-            0xE0000..=0xE007F => close(&mut current, &mut marks),
-            _ => {
-                close(&mut current, &mut marks);
-                clean.push(c);
-            }
-        }
-    }
-    close(&mut current, &mut marks);
-    (clean, marks)
+    cognitive_exoskeleton_domain::marks::read(text)
 }
 
 /// Study, development tool, or a chat with an AI.

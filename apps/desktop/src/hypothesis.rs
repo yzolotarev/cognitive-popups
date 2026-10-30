@@ -18,6 +18,7 @@ use gtk::{gdk, glib};
 use crate::ctx::{self, Ctx};
 use crate::popup::{self, Opened};
 use crate::ui;
+use cognitive_exoskeleton_materials::window;
 
 pub const WIDTH: i32 = 420;
 /// Width and the tallest it gets: keeps it on screen near the cursor.
@@ -260,7 +261,7 @@ impl HypothesisWindow {
             match &state.operation {
                 Some(operation) => inner.ctx.record(
                     operation,
-                    state.captured.as_ref(),
+                    state.captured.as_ref().map(|c| (c, window::CTRL_ALT_P)),
                     Some(text),
                     Some(&check.reply),
                 ),

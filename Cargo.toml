@@ -20,6 +20,7 @@ cognitive-exoskeleton-resume = { path = "crates/resume" }
 cognitive-exoskeleton-formula = { path = "crates/formula" }
 cognitive-exoskeleton-domain = { path = "crates/domain" }
 cognitive-exoskeleton-journal = { path = "crates/journal" }
+cognitive-exoskeleton-materials = { path = "crates/materials" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 time = { workspace = true }

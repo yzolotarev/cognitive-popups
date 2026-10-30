@@ -9,9 +9,7 @@ use cognitive_exoskeleton_domain::{
 };
 use cognitive_exoskeleton_hypotheses::{Hypothesis, HypothesisError, Store as Hypotheses};
 use cognitive_exoskeleton_journal::{Journal, JournalError};
-use cognitive_exoskeleton_materials::{
-    BlockState, Interaction, Material, MaterialError, Materials, block_states,
-};
+use cognitive_exoskeleton_materials::{BlockView, Interaction, Material, MaterialError, Materials};
 use cognitive_exoskeleton_notes::{Note, NoteError, Notes};
 use serde::Serialize;
 use time::{OffsetDateTime, UtcOffset};
@@ -36,12 +34,15 @@ pub enum ExportError {
     Materials(#[from] MaterialError),
 }
 
-/// The lesson's study text (B78): its blocks with what was observed — a
-/// status per block and the interactions in order. Never a reading report.
+/// The lesson's study text (B78) as far as it is known: each block's role,
+/// how much of its text is known, the text itself, its status, and the
+/// interactions in order. How complete the text is says nothing about how
+/// much was read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MaterialExport {
-    pub material: Material,
-    pub blocks: Vec<BlockState>,
+    /// The registered full text, if there is one.
+    pub registered: Option<Material>,
+    pub blocks: Vec<BlockView>,
     pub interactions: Vec<Interaction>,
 }
 
@@ -123,21 +124,13 @@ pub fn export_lesson(
         Err(_) => Vec::new(),
     };
     let materials = Materials::open(db)?;
-    let material = match materials.latest_for_lesson(&lesson.id)? {
-        Some(material) => {
-            let interactions: Vec<Interaction> = materials
-                .interactions(&lesson.id)?
-                .into_iter()
-                .filter(|i| i.material == material.id)
-                .collect();
-            Some(MaterialExport {
-                blocks: block_states(&material, &interactions),
-                interactions,
-                material,
-            })
-        }
-        None => None,
-    };
+    let blocks = materials.reconstruct(&lesson.id)?;
+    let interactions = materials.interactions(&lesson.id)?;
+    let material = (!blocks.is_empty() || !interactions.is_empty()).then(|| MaterialExport {
+        registered: materials.latest_for_lesson(&lesson.id).ok().flatten(),
+        blocks,
+        interactions,
+    });
     drop(materials);
     Ok(LessonExport {
         material,
@@ -319,42 +312,52 @@ impl LessonExport {
     }
 
     fn material_section(&self, export: &MaterialExport) -> Vec<String> {
-        let material = &export.material;
+        let source = match &export.registered {
+            Some(m) => format!(
+                "Полный текст {} зарегистрирован в {}; остальное — из выделений.",
+                m.id,
+                self.stamp(m.registered_at)
+            ),
+            None => "Текст восстановлен из выделений; пропуски не заполняются.".to_string(),
+        };
         let mut out = vec![
             "## Материал".to_string(),
             String::new(),
-            format!(
-                "Id: {}, зарегистрирован в {}. Статус блока — только наблюдаемое: \
-                 observed_interaction (было выделение с меткой блока) или unknown \
-                 (не записано; чтение без выделения не видно).",
-                material.id,
-                self.stamp(material.registered_at)
-            ),
+            source,
+            "Полнота текста — не полнота чтения: прочитано ли, неизвестно. \
+             Статус блока — только наблюдаемое: observed_interaction (было выделение) \
+             или unknown (не записано)."
+                .to_string(),
             String::new(),
         ];
-        out.extend(export.blocks.iter().map(|state| {
-            let first = material
-                .block(&state.block)
-                .and_then(|b| b.text.lines().next())
-                .unwrap_or_default();
-            format!(
-                "- {} · {} · {}: {first}",
-                state.block,
-                state.role,
-                state.status.as_str()
-            )
-        }));
+        for view in &export.blocks {
+            out.push(format!(
+                "- {} · {} — {} · {}",
+                view.block,
+                view.role.as_deref().unwrap_or("роль неизвестна"),
+                view.coverage.label(),
+                view.status.as_str()
+            ));
+            out.extend(view.fragments.iter().map(|f| {
+                format!(
+                    "  - «{}»",
+                    f.split_whitespace().collect::<Vec<_>>().join(" ")
+                )
+            }));
+        }
         out.push(String::new());
         if export.interactions.is_empty() {
             out.push("**Взаимодействия:** не записано.".into());
         } else {
             out.push("**Взаимодействия по порядку:**".into());
-            out.extend(
-                export
-                    .interactions
-                    .iter()
-                    .map(|i| format!("- {} {} — {}", self.stamp(i.at), i.block, i.window)),
-            );
+            out.extend(export.interactions.iter().map(|i| {
+                format!(
+                    "- {} {} — {}",
+                    self.stamp(i.at),
+                    i.block.as_deref().unwrap_or("блок неизвестен"),
+                    i.window
+                )
+            }));
         }
         out
     }

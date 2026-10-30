@@ -604,6 +604,7 @@ impl PracticeWindow {
             truncated: false,
             clipboard_restored: None,
             blocks: Vec::new(),
+            marks: Vec::new(),
         };
         {
             let mut state = self.0.state.borrow_mut();

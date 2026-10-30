@@ -61,6 +61,23 @@ pub fn read(text: &str) -> (String, Vec<String>) {
     (clean, marks)
 }
 
+/// The clean text and where each mark starts in it, as `(character offset,
+/// mark)`. A mark sits at the start of a sentence, so the text before the
+/// first one (a selection begun mid-sentence) has no mark of its own (B78).
+pub fn positions(text: &str) -> (String, Vec<(usize, String)>) {
+    let mut clean = String::with_capacity(text.len());
+    let mut chars = 0;
+    let mut at = Vec::new();
+    for span in spans(text) {
+        if let Some(mark) = span.mark {
+            at.push((chars, mark));
+        }
+        chars += span.text.chars().count();
+        clean.push_str(&span.text);
+    }
+    (clean, at)
+}
+
 /// `mark` spelled in tag characters (tests, demo data).
 pub fn tagged(mark: &str) -> String {
     mark.chars()
@@ -90,5 +107,14 @@ mod tests {
             )
         );
         assert_eq!(read("без меток"), ("без меток".into(), Vec::new()));
+    }
+
+    #[test]
+    fn positions_are_character_offsets_in_the_clean_text() {
+        let text = format!("ёж шёл. {}Один. {}Два.", tagged("b1"), tagged("b2"));
+        let (clean, at) = positions(&text);
+        assert_eq!(clean, "ёж шёл. Один. Два.");
+        assert_eq!(at, [(8, "b1".to_string()), (14, "b2".to_string())]);
+        assert_eq!(positions("без меток"), ("без меток".into(), Vec::new()));
     }
 }

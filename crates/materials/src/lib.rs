@@ -1,11 +1,16 @@
-//! Study materials (B78, step 1): a study text from an AI chat with blocks
-//! (`⟦b2 · механизм⟧` + invisible marks, B76), registered for a lesson, and
-//! the reader's interactions with its blocks as they are observed: a
-//! selection carrying a block's mark, recorded with the window that used it.
+//! Study materials (B78, step 1). The text of a lesson is rebuilt bit by bit
+//! from what the reader selects: every selection carrying block marks (B76)
+//! stores its clean text per block, and the window it was used in. A full
+//! text can also be registered (`register`, CLI; later from a consented
+//! clipboard watcher); then its blocks are known whole.
 //!
-//! Nothing here asks the reader to report reading. A block without a recorded
-//! interaction is `unknown`, not unread; reading order is not assumed.
+//! Two different completenesses: how much of a block's *text* is known
+//! (`Coverage`) and whether it was *read* — the latter stays unknown. Nothing
+//! asks the reader to report reading; reading order is not assumed; gaps are
+//! never filled.
 
+mod attribute;
+mod merge;
 mod parse;
 
 use std::path::Path;
@@ -13,6 +18,8 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
+pub use attribute::{Part, locate, normalize, split};
+pub use merge::{MIN_OVERLAP, merge};
 pub use parse::{Block, OTHER_ROLE, ParseError, ROLES, clean, parse};
 
 #[derive(Debug, thiserror::Error)]
@@ -72,8 +79,9 @@ pub mod window {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Interaction {
     pub lesson: String,
-    pub material: String,
-    pub block: String,
+    /// `None`: a selection from the lesson's material whose block could not
+    /// be found — kept so the gap is visible.
+    pub block: Option<String>,
     pub window: String,
     pub operation: String,
     /// The journal sequence of the source event, when it was written.
@@ -104,40 +112,55 @@ impl BlockStatus {
     }
 }
 
-/// One block with its status and the number of interactions.
+/// How much of a block's text is known — not how much of it was read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Coverage {
+    /// The whole block, from a registered text.
+    Known,
+    /// Only selected fragments.
+    Partial,
+    /// Nothing: the block exists (its number is below a seen one) but no
+    /// selection touched it.
+    Unknown,
+}
+
+impl Coverage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Coverage::Known => "known",
+            Coverage::Partial => "partial",
+            Coverage::Unknown => "unknown",
+        }
+    }
+
+    /// «известен целиком» / «есть отрывки» / «нет данных»
+    pub fn label(self) -> &'static str {
+        match self {
+            Coverage::Known => "известен целиком",
+            Coverage::Partial => "есть отрывки",
+            Coverage::Unknown => "нет данных",
+        }
+    }
+}
+
+/// One block of the lesson's material as far as it is known.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct BlockState {
+pub struct BlockView {
     pub block: String,
-    pub position: i64,
-    pub role: String,
+    /// From a registered text; selections carry no role.
+    pub role: Option<String>,
+    pub coverage: Coverage,
+    /// The whole block (`Known`) or the merged selected fragments, in
+    /// first-seen order; never filled in between.
+    pub fragments: Vec<String>,
     pub status: BlockStatus,
     pub interactions: usize,
 }
 
-/// Per-block status from the interactions. A later block says nothing about
-/// an earlier one.
-pub fn block_states(material: &Material, interactions: &[Interaction]) -> Vec<BlockState> {
-    material
-        .blocks
-        .iter()
-        .map(|block| {
-            let n = interactions
-                .iter()
-                .filter(|i| i.material == material.id && i.block == block.block)
-                .count();
-            BlockState {
-                block: block.block.clone(),
-                position: block.position,
-                role: block.role.clone(),
-                status: if n > 0 {
-                    BlockStatus::ObservedInteraction
-                } else {
-                    BlockStatus::Unknown
-                },
-                interactions: n,
-            }
-        })
-        .collect()
+/// `b12` → 12.
+fn block_number(block: &str) -> Option<u32> {
+    block.strip_prefix('b')?.parse().ok()
 }
 
 pub struct Materials {
@@ -184,12 +207,19 @@ impl Materials {
              );
              CREATE TABLE IF NOT EXISTS material_interactions (
                  lesson_id    TEXT NOT NULL,
-                 material_id  TEXT NOT NULL,
-                 block        TEXT NOT NULL,
+                 block        TEXT,
                  window       TEXT NOT NULL,
                  operation_id TEXT NOT NULL,
                  sequence     INTEGER,
                  at           INTEGER NOT NULL,
+                 key          TEXT NOT NULL UNIQUE
+             );
+             CREATE TABLE IF NOT EXISTS material_fragments (
+                 lesson_id    TEXT NOT NULL,
+                 block        TEXT NOT NULL,
+                 text         TEXT NOT NULL,
+                 at           INTEGER NOT NULL,
+                 operation_id TEXT NOT NULL,
                  key          TEXT NOT NULL UNIQUE
              );",
         )?;
@@ -288,46 +318,114 @@ impl Materials {
         }
     }
 
-    /// The marks of a selection used in `window` during a lesson: each
-    /// block of the lesson's newest material gets one row; other marks are
-    /// ignored. Returns the number of new rows.
-    pub fn record_interaction(
+    /// The parts of a selection made during a lesson, each with its block
+    /// when known (see `attribute`). The leading part without a mark is
+    /// looked up in the registered text, else in the reconstructed fragments.
+    pub fn attribute(
+        &self,
+        lesson: &str,
+        text: &str,
+        marks: &[(usize, String)],
+    ) -> Result<Vec<Part>, MaterialError> {
+        let mut parts = split(text, marks);
+        let Some(lead) = parts.first_mut().filter(|p| p.block.is_none()) else {
+            return Ok(parts);
+        };
+        let material = self.latest_for_lesson(lesson)?;
+        let mut found = material
+            .as_ref()
+            .map(|m| {
+                locate(
+                    &lead.text,
+                    m.blocks.iter().map(|b| (b.block.as_str(), b.text.as_str())),
+                )
+            })
+            .unwrap_or_default();
+        if found.is_empty() {
+            let known = self.merged_fragments(lesson)?;
+            found = locate(
+                &lead.text,
+                known
+                    .iter()
+                    .flat_map(|(b, texts)| texts.iter().map(move |t| (b.as_str(), t.as_str()))),
+            );
+        }
+        if let [block] = found.as_slice() {
+            lead.block = Some(block.clone());
+        }
+        Ok(parts)
+    }
+
+    /// Whether the lesson has any material text: registered or selected.
+    pub fn has_material(&self, lesson: &str) -> Result<bool, MaterialError> {
+        Ok(self.latest_for_lesson(lesson)?.is_some() || !self.fragments(lesson)?.is_empty())
+    }
+
+    /// A selection used in `window` during a lesson, already attributed:
+    /// its text is kept per known block, an interaction is recorded per
+    /// block found, and one with no block when none was found (the gap stays
+    /// visible). The same operation again changes nothing (INV-04). Returns
+    /// the number of new interactions.
+    pub fn record_selection(
         &mut self,
         lesson: &str,
         operation: &str,
         window: &str,
-        blocks: &[String],
+        parts: &[Part],
         sequence: Option<i64>,
         now: i64,
     ) -> Result<usize, MaterialError> {
-        let Some(material) = self.latest_for_lesson(lesson)? else {
-            return Ok(0);
-        };
+        let mut blocks: Vec<Option<&str>> = Vec::new();
+        for block in parts.iter().filter_map(|p| p.block.as_deref()) {
+            if !blocks.contains(&Some(block)) {
+                blocks.push(Some(block));
+            }
+        }
+        if blocks.is_empty() {
+            blocks.push(None);
+        }
+        let transaction = self.connection.transaction()?;
         let mut written = 0;
-        for block in blocks.iter().filter(|b| material.block(b).is_some()) {
-            written += self.connection.execute(
+        for block in blocks {
+            written += transaction.execute(
                 "INSERT OR IGNORE INTO material_interactions
-                     (lesson_id, material_id, block, window, operation_id, sequence, at, key)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                     (lesson_id, block, window, operation_id, sequence, at, key)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     lesson,
-                    material.id,
                     block,
                     window,
                     operation,
                     sequence,
                     now,
-                    format!("{operation}:{}:{block}", material.id)
+                    format!("{operation}:{}", block.unwrap_or("-"))
                 ],
             )?;
         }
+        for (n, part) in parts.iter().enumerate() {
+            let Some(block) = &part.block else { continue };
+            transaction.execute(
+                "INSERT OR IGNORE INTO material_fragments
+                     (lesson_id, block, text, at, operation_id, key)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    lesson,
+                    block,
+                    part.text,
+                    now,
+                    operation,
+                    format!("{operation}:{block}:{n}")
+                ],
+            )?;
+        }
+        transaction.commit()?;
         Ok(written)
     }
 
     /// The lesson's interactions in order: time, then journal sequence.
     pub fn interactions(&self, lesson: &str) -> Result<Vec<Interaction>, MaterialError> {
         let mut statement = self.connection.prepare(
-            "SELECT lesson_id, material_id, block, window, operation_id, sequence, at
+            "SELECT lesson_id, block, window, operation_id, sequence, at
              FROM material_interactions WHERE lesson_id = ?1
              ORDER BY at, sequence, rowid",
         )?;
@@ -335,16 +433,109 @@ impl Materials {
             .query_map(params![lesson], |row| {
                 Ok(Interaction {
                     lesson: row.get(0)?,
-                    material: row.get(1)?,
-                    block: row.get(2)?,
-                    window: row.get(3)?,
-                    operation: row.get(4)?,
-                    sequence: row.get(5)?,
-                    at: row.get(6)?,
+                    block: row.get(1)?,
+                    window: row.get(2)?,
+                    operation: row.get(3)?,
+                    sequence: row.get(4)?,
+                    at: row.get(5)?,
                 })
             })?
             .collect::<Result<_, _>>()?;
         Ok(rows)
+    }
+
+    /// The selected fragments of the lesson per block, in first-seen order.
+    fn fragments(&self, lesson: &str) -> Result<Vec<(String, String)>, MaterialError> {
+        let mut statement = self.connection.prepare(
+            "SELECT block, text FROM material_fragments WHERE lesson_id = ?1
+             ORDER BY at, rowid",
+        )?;
+        let rows = statement
+            .query_map(params![lesson], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Each block's selected fragments, merged, blocks in first-seen order.
+    fn merged_fragments(&self, lesson: &str) -> Result<Vec<(String, Vec<String>)>, MaterialError> {
+        let mut pieces: Vec<(String, Vec<String>)> = Vec::new();
+        for (block, text) in self.fragments(lesson)? {
+            match pieces.iter_mut().find(|(b, _)| *b == block) {
+                Some((_, texts)) => texts.push(text),
+                None => pieces.push((block, vec![text])),
+            }
+        }
+        Ok(pieces
+            .into_iter()
+            .map(|(block, texts)| (block, merge(&texts)))
+            .collect())
+    }
+
+    /// The lesson's material as far as it is known. With a registered text,
+    /// its blocks are known whole; otherwise each block is the merge of its
+    /// selected fragments. Blocks no selection touched are listed only up to
+    /// the highest block number seen (b1…bmax), as `Unknown`. Nothing is
+    /// filled in.
+    pub fn reconstruct(&self, lesson: &str) -> Result<Vec<BlockView>, MaterialError> {
+        let material = self.latest_for_lesson(lesson)?;
+        let interactions = self.interactions(lesson)?;
+        let pieces = self.merged_fragments(lesson)?;
+        // Every block name seen anywhere, then b1…bmax.
+        let mut names: Vec<String> = Vec::new();
+        let seen = material
+            .iter()
+            .flat_map(|m| m.blocks.iter().map(|b| b.block.clone()))
+            .chain(pieces.iter().map(|(b, _)| b.clone()))
+            .chain(interactions.iter().filter_map(|i| i.block.clone()));
+        for name in seen {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        let max = names
+            .iter()
+            .filter_map(|b| block_number(b))
+            .max()
+            .unwrap_or(0);
+        for n in 1..=max {
+            let name = format!("b{n}");
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names.sort_by_key(|b| block_number(b).unwrap_or(u32::MAX));
+        Ok(names
+            .into_iter()
+            .map(|block| {
+                let whole = material.as_ref().and_then(|m| m.block(&block));
+                let selected = pieces
+                    .iter()
+                    .find(|(b, _)| *b == block)
+                    .map(|(_, texts)| texts.clone())
+                    .unwrap_or_default();
+                let (coverage, fragments) = match whole {
+                    Some(whole) => (Coverage::Known, vec![whole.text.clone()]),
+                    None if !selected.is_empty() => (Coverage::Partial, selected),
+                    None => (Coverage::Unknown, Vec::new()),
+                };
+                let interactions = interactions
+                    .iter()
+                    .filter(|i| i.block.as_deref() == Some(block.as_str()))
+                    .count();
+                BlockView {
+                    role: whole.map(|w| w.role.clone()),
+                    coverage,
+                    fragments,
+                    status: if interactions > 0 {
+                        BlockStatus::ObservedInteraction
+                    } else {
+                        BlockStatus::Unknown
+                    },
+                    interactions,
+                    block,
+                }
+            })
+            .collect())
     }
 }
 

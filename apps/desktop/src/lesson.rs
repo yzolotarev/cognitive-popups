@@ -4,9 +4,6 @@
 //! - the end of a step (by itself at the deadline, INV-13; by key on a second
 //!   Alt+I): the mark, «что вынес», «Дальше?».
 //!
-//! B78: «Материал из буфера» registers the study text of the lesson; the
-//! reader is never asked to report reading.
-//!
 //! An open lesson and an unmarked step survive a restart (INV-08).
 
 use std::cell::RefCell;
@@ -20,7 +17,6 @@ use cognitive_exoskeleton_lessons::{
     self as lessons, FeynmanStatus, ItemStatus, Lesson, LessonStore, Outcome, Plan, PlanError,
     Step, Subject,
 };
-use cognitive_exoskeleton_materials::{Material, Materials};
 use cognitive_exoskeleton_nudges::{Consent, Nudges};
 use cognitive_exoskeleton_units::{UnitStore, extract_lesson};
 use gtk::prelude::*;
@@ -67,16 +63,6 @@ fn open_store(ctx: &Ctx) -> Option<LessonStore> {
     LessonStore::open(&ctx.db)
         .map_err(|e| eprintln!("lessons: {e}"))
         .ok()
-}
-
-/// The lesson's newest study text, if one is registered.
-fn lesson_material(ctx: &Ctx, lesson: &str) -> Option<Material> {
-    Materials::open(&ctx.db)
-        .map_err(|e| eprintln!("materials: {e}"))
-        .ok()?
-        .latest_for_lesson(lesson)
-        .ok()
-        .flatten()
 }
 
 impl LessonUi {
@@ -239,20 +225,6 @@ impl LessonUi {
             "step" => {
                 popup::show(&self.0.window, SIZE, Opened::ByKey);
                 self.start_step(rest, Some(3));
-            }
-            // `material`: the demo study text for the open lesson (fixture only).
-            "material" if crate::seed::allowed() => {
-                if let Ok(Some(lesson)) = store.open_lesson() {
-                    drop(store);
-                    let db = self.0.ctx.db.clone();
-                    if let Err(e) =
-                        crate::seed::demo_material(&db, &lesson.id, &lesson.subject, ctx::now())
-                    {
-                        eprintln!("seed: {e}");
-                    }
-                    popup::show(&self.0.window, SIZE, Opened::ByKey);
-                    self.plan_view(lesson);
-                }
             }
             // `close`: the end-of-lesson form; `close done`: the reader
             // closes it; `close passed`: ticks «Тема … пройдена» first.
@@ -537,11 +509,9 @@ impl LessonUi {
         let this = self.clone();
         step.connect_clicked(move |_| this.step_form());
         let prompt = self.study_text_button(&store, &lesson);
-        let material = self.material_button(&lesson);
         self.show(&[
             content.upcast(),
             prompt.upcast(),
-            material.upcast(),
             ui::actions(&[&other, &close, &step]).upcast(),
         ]);
         step.grab_focus();
@@ -595,63 +565,6 @@ impl LessonUi {
             });
         });
         button
-    }
-
-    /// B78: «Материал из буфера» registers the study text copied from the AI
-    /// chat for this lesson; the line under it says what was found.
-    fn material_button(&self, lesson: &Lesson) -> gtk::Box {
-        let column = ui::column(0);
-        let button = ui::button("Материал из буфера", &["flat"]);
-        button.set_halign(gtk::Align::Start);
-        button.set_tooltip_text(Some(
-            "Скопируй ответ ChatGPT целиком (с метками ⟦b1 · …⟧) и нажми: блоки запомнятся для урока",
-        ));
-        let status = ui::text("", &["cp-footnote", "cp-secondary"]);
-        status.set_margin_start(12);
-        match lesson_material(&self.0.ctx, &lesson.id) {
-            Some(material) => status.set_text(&material.summary()),
-            None => status.set_visible(false),
-        }
-        let (ctx, id, subject) = (
-            self.0.ctx.clone(),
-            lesson.id.clone(),
-            lesson.subject.clone(),
-        );
-        let s = status.clone();
-        button.connect_clicked(move |b| {
-            let (ctx, id, subject, status) = (ctx.clone(), id.clone(), subject.clone(), s.clone());
-            let clipboard = b.clipboard();
-            glib::spawn_future_local(async move {
-                let text = clipboard
-                    .read_text_future()
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|t| t.to_string())
-                    .unwrap_or_default();
-                status.remove_css_class("cp-error");
-                let line = if text.trim().is_empty() {
-                    status.add_css_class("cp-error");
-                    "В буфере нет текста".to_string()
-                } else {
-                    match Materials::open(&ctx.db)
-                        .and_then(|mut m| m.register(Some(&id), Some(&subject), &text, ctx::now()))
-                    {
-                        Ok((material, true)) => material.summary(),
-                        Ok((material, false)) => format!("{} · уже был", material.summary()),
-                        Err(e) => {
-                            status.add_css_class("cp-error");
-                            e.to_string()
-                        }
-                    }
-                };
-                status.set_text(&line);
-                status.set_visible(true);
-            });
-        });
-        column.append(&button);
-        column.append(&status);
-        column
     }
 
     /// F-25: the step field with «что ты оставил» above it (F-28) and the

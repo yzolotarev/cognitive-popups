@@ -39,7 +39,6 @@ shots=(
   "lesson-subject|lesson|"
   "lesson-new|lesson|subject Численные методы|Сдать экзамен по численным методам 20 ноября"
   "lesson-plan|lesson|generate"
-  "lesson-material|lesson|material"
   "lesson-clock|lesson|step 20 сделаю три шага для √2"
   "lesson-end|lesson|"
   "lesson-feynman|lesson|feynman"

@@ -97,7 +97,7 @@ fn slot(blocks: &mut Vec<Block>, id: &str, role: &str) -> usize {
 
 /// `⟦b2 · механизм⟧` → (`b2`, `механизм`). Markdown decoration around the
 /// brackets (`**`, `#`) is tolerated; any other text on the line is not.
-fn marker(line: &str) -> Option<(String, String)> {
+pub(crate) fn marker(line: &str) -> Option<(String, String)> {
     let start = line.find('⟦')?;
     let end = line.rfind('⟧')?;
     if end < start {

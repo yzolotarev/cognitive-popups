@@ -136,6 +136,9 @@ pub struct Captured {
     pub clipboard_restored: Option<bool>,
     /// Hidden block marks of a study text written by an outside AI (B76).
     pub blocks: Vec<String>,
+    /// Where each hidden mark starts in `text`: `(character offset, b2)`.
+    /// The text before the first one carries no mark (B78).
+    pub marks: Vec<(usize, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -262,6 +265,7 @@ fn finish(text: String, origin: Origin, window: Option<Window>) -> Captured {
     let (class, title) = window
         .map(|w| (Some(w.class), Some(w.title)))
         .unwrap_or((None, None));
+    let (_, mut marks) = cognitive_exoskeleton_domain::marks::positions(&text);
     let (text, blocks) = read_marks(&text);
     let mut context = classify(class.as_deref(), title.as_deref());
     // A marked study text is study material even when read in an AI chat.
@@ -275,6 +279,7 @@ fn finish(text: String, origin: Origin, window: Option<Window>) -> Captured {
     };
     let truncated = text.chars().count() > MAX_CHARS;
     let text = if truncated {
+        marks.retain(|(at, _)| *at < MAX_CHARS);
         text.chars().take(MAX_CHARS).collect()
     } else {
         text
@@ -288,6 +293,7 @@ fn finish(text: String, origin: Origin, window: Option<Window>) -> Captured {
         truncated,
         clipboard_restored: None,
         blocks,
+        marks,
     }
 }
 

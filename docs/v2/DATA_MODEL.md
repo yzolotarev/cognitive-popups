@@ -20,9 +20,10 @@
 | `hypotheses` | `hypothesis_id`, `text`, `fragment_id`, `verdict` (`confirmed`/`partially_confirmed`/`contradicted`/`not_supported`/`vague`/`pending`), `quote`, `correction`, `created_at` | v1 `predictions`; B21 |
 | `feynman_checks` | `id`, `question`, `explanation`, `status`, `gaps_json` | v1 |
 | `recent_passages` | файл или таблица: до 12 записей за 30 мин | F-95 |
-| `materials` | `material_id` (16 hex FNV-1a 64 от чистого текста), `lesson_id`, `subject_id`, `text` (без невидимых меток), `registered_at`; тот же текст — та же строка, новый текст — новая, старая остаётся | B78 |
+| `materials` | `material_id` (16 hex FNV-1a 64 от чистого текста), `lesson_id`, `subject_id`, `text` (без невидимых меток), `registered_at`; полный текст, если зарегистрирован (CLI; позже — наблюдатель буфера по согласию); тот же текст — та же строка, новый — новая, старая остаётся | B78 |
 | `material_blocks` | `material_id`, `block` (`b2`), `position`, `role` (6 ролей или `другое`), `text`; ключ (`material_id`, `block`) | B78 |
-| `material_interactions` | `lesson_id`, `material_id`, `block`, `window` (`alt_w`/`alt_t`/`ctrl_alt_p`/`alt_e`/…), `operation_id`, `sequence` NULL (последовательность события-источника в журнале), `at`, `key` UNIQUE (`<операция>:<материал>:<блок>`) — только наблюдаемое: выделение с меткой блока во время урока; порядок — `at`, затем `sequence`. Статус блока выводится: `observed_interaction` или `unknown` (`not_read` зарезервирован) | B78 |
+| `material_fragments` | `lesson_id`, `block`, `text` (чистый выделенный текст части выделения), `at`, `operation_id`, `key` UNIQUE (`<операция>:<блок>:<n>`) — только для частей с известным блоком; из них восстанавливается материал урока | B78 |
+| `material_interactions` | `lesson_id`, `block` NULL (блок не найден — пробел виден), `window` (`alt_w`/`alt_t`/`ctrl_alt_p`/`alt_e`/…), `operation_id`, `sequence` NULL (номер события-источника в журнале), `at`, `key` UNIQUE (`<операция>:<блок или ->`) — только наблюдаемое; порядок — `at`, затем `sequence`. Статус блока выводится: `observed_interaction` или `unknown` (`not_read` зарезервирован); полнота текста блока — `known`/`partial`/`unknown` | B78 |
 
 ## 3. Практика (S5)
 

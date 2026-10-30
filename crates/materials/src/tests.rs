@@ -96,41 +96,128 @@ fn the_same_text_registers_once_and_a_new_text_keeps_the_old() {
     assert!(store.register(Some("l1"), None, "без меток", 400).is_err());
 }
 
-#[test]
-fn interactions_are_observed_once_per_operation_and_block() {
-    let mut store = Materials::open_in_memory().unwrap();
-    let (material, _) = store.register(Some("l1"), None, &sample(), 100).unwrap();
-    let marks = vec!["b4".to_string(), "b9".to_string()];
-    let n = store
-        .record_interaction("l1", "op-1", window::ALT_T, &marks, Some(7), 110)
-        .unwrap();
-    assert_eq!(n, 1, "b9 is not in the material");
-    let again = store
-        .record_interaction("l1", "op-1", window::ALT_T, &marks, Some(7), 111)
-        .unwrap();
-    assert_eq!(again, 0, "one event, one row");
-    let elsewhere = store
-        .record_interaction("other", "op-2", window::ALT_W, &marks, None, 112)
-        .unwrap();
-    assert_eq!(elsewhere, 0, "a lesson without a material");
-    store
-        .record_interaction("l1", "op-3", window::ALT_W, &["b2".into()], Some(9), 110)
-        .unwrap();
+fn part(block: Option<&str>, text: &str) -> Part {
+    Part {
+        block: block.map(str::to_string),
+        text: text.to_string(),
+    }
+}
 
-    let interactions = store.interactions("l1").unwrap();
-    let order: Vec<(&str, &str)> = interactions
-        .iter()
-        .map(|i| (i.block.as_str(), i.window.as_str()))
+fn strings(items: &[&str]) -> Vec<String> {
+    items.iter().map(|s| s.to_string()).collect()
+}
+
+#[test]
+fn overlapping_fragments_join_without_duplication() {
+    let a = "Каждый исход умножаем на его вероятность, затем";
+    let b = "на его вероятность, затем произведения складываем.";
+    assert_eq!(
+        merge(&strings(&[a, b])),
+        ["Каждый исход умножаем на его вероятность, затем произведения складываем."]
+    );
+    // The other way round gives the same text.
+    assert_eq!(merge(&strings(&[b, a])), merge(&strings(&[a, b])));
+}
+
+#[test]
+fn a_contained_fragment_disappears() {
+    let whole = "Каждый исход умножаем на его вероятность.";
+    assert_eq!(merge(&strings(&["его вероятность", whole])), [whole]);
+    assert_eq!(merge(&strings(&[whole, "умножаем", whole])), [whole]);
+}
+
+#[test]
+fn disjoint_fragments_stay_apart_in_first_seen_order() {
+    let first = "Произведения складываем.";
+    let second = "Каждый исход умножаем на его вероятность.";
+    assert_eq!(merge(&strings(&[first, second])), [first, second]);
+    // A short overlap («ость.» = 5 characters) is not enough to join.
+    let short = "ость. И ещё одно предложение.";
+    assert_eq!(merge(&strings(&[second, short])), [second, short]);
+}
+
+#[test]
+fn a_bridge_joins_two_earlier_pieces() {
+    let left = "Первая часть длинного текста про ожидаемый";
+    let right = "убыток страховщика и его цену для клиента.";
+    let bridge = "длинного текста про ожидаемый убыток страховщика и его цену";
+    assert_eq!(
+        merge(&strings(&[left, right, bridge])),
+        ["Первая часть длинного текста про ожидаемый убыток страховщика и его цену для клиента."]
+    );
+}
+
+#[test]
+fn selections_rebuild_the_material_and_unseen_blocks_are_unknown() {
+    let mut store = Materials::open_in_memory().unwrap();
+    let a = "Каждый исход умножаем на его вероятность, затем";
+    let b = "на его вероятность, затем произведения складываем.";
+    let select = |store: &mut Materials, op: &str, window: &str, block: &str, text: &str, at| {
+        store
+            .record_selection("l1", op, window, &[part(Some(block), text)], None, at)
+            .unwrap()
+    };
+    assert_eq!(
+        select(
+            &mut store,
+            "op-1",
+            window::ALT_T,
+            "b4",
+            "Среднее — не одно событие.",
+            100
+        ),
+        1
+    );
+    assert_eq!(
+        select(
+            &mut store,
+            "op-1",
+            window::ALT_T,
+            "b4",
+            "Среднее — не одно событие.",
+            101
+        ),
+        0,
+        "one event, one row"
+    );
+    select(&mut store, "op-2", window::ALT_W, "b2", a, 102);
+    select(&mut store, "op-3", window::CTRL_ALT_P, "b2", b, 103);
+
+    let order: Vec<(String, String)> = store
+        .interactions("l1")
+        .unwrap()
+        .into_iter()
+        .map(|i| (i.block.unwrap(), i.window))
         .collect();
     assert_eq!(
         order,
-        [("b4", "alt_t"), ("b2", "alt_w")],
-        "time, then sequence"
+        [
+            ("b4".into(), "alt_t".into()),
+            ("b2".into(), "alt_w".into()),
+            ("b2".into(), "ctrl_alt_p".into())
+        ]
     );
 
-    let states = block_states(&material, &interactions);
-    let statuses: Vec<&str> = states.iter().map(|s| s.status.as_str()).collect();
+    let views = store.reconstruct("l1").unwrap();
+    let ids: Vec<&str> = views.iter().map(|v| v.block.as_str()).collect();
+    assert_eq!(ids, ["b1", "b2", "b3", "b4"], "b1…bmax, nothing beyond");
+    let coverage: Vec<Coverage> = views.iter().map(|v| v.coverage).collect();
+    assert_eq!(
+        coverage,
+        [
+            Coverage::Unknown,
+            Coverage::Partial,
+            Coverage::Unknown,
+            Coverage::Partial
+        ]
+    );
+    assert_eq!(
+        views[1].fragments,
+        ["Каждый исход умножаем на его вероятность, затем произведения складываем."]
+    );
+    assert!(views[0].fragments.is_empty() && views[0].role.is_none());
     // b4 says nothing about b1 and b3: reading order is not assumed.
+    let statuses: Vec<&str> = views.iter().map(|v| v.status.as_str()).collect();
     assert_eq!(
         statuses,
         [
@@ -140,5 +227,125 @@ fn interactions_are_observed_once_per_operation_and_block() {
             "observed_interaction"
         ]
     );
-    assert!(states.iter().all(|s| s.status != BlockStatus::NotRead));
+    assert!(views.iter().all(|v| v.status != BlockStatus::NotRead));
+    assert_eq!(views[1].interactions, 2);
+    assert!(store.reconstruct("other").unwrap().is_empty());
+}
+
+#[test]
+fn a_registered_text_makes_its_blocks_known() {
+    let mut store = Materials::open_in_memory().unwrap();
+    store.register(Some("l1"), None, &sample(), 100).unwrap();
+    store
+        .record_selection(
+            "l1",
+            "op-1",
+            window::ALT_T,
+            &[
+                part(Some("b3"), "E(L)"),
+                part(Some("b6"), "Блок из другого места."),
+            ],
+            None,
+            110,
+        )
+        .unwrap();
+    let views = store.reconstruct("l1").unwrap();
+    let ids: Vec<&str> = views.iter().map(|v| v.block.as_str()).collect();
+    assert_eq!(ids, ["b1", "b2", "b3", "b4", "b5", "b6"]);
+    assert_eq!(views[1].coverage, Coverage::Known);
+    assert_eq!(views[1].role.as_deref(), Some("механизм"));
+    assert_eq!(views[2].fragments, ["E(L) = 0,3·25 + 0,7·0 = 7,5."]);
+    assert_eq!(views[4].coverage, Coverage::Unknown);
+    assert_eq!(views[5].coverage, Coverage::Partial);
+    assert_eq!(views[2].status, BlockStatus::ObservedInteraction);
+    assert_eq!(views[0].status, BlockStatus::Unknown);
+}
+
+/// A selection of `text` with its marks, attributed and recorded.
+fn select_marked(store: &mut Materials, op: &str, text: &str) -> Vec<Part> {
+    let (clean, marks) = cognitive_exoskeleton_domain::marks::positions(text);
+    let parts = store.attribute("l1", &clean, &marks).unwrap();
+    store
+        .record_selection("l1", op, window::ALT_W, &parts, None, 200)
+        .unwrap();
+    parts
+}
+
+#[test]
+fn a_mid_sentence_selection_is_found_in_the_registered_text() {
+    let mut store = Materials::open_in_memory().unwrap();
+    store.register(Some("l1"), None, &sample(), 100).unwrap();
+    // No mark: the selection starts after «Каждый ».
+    let parts = select_marked(&mut store, "op-1", "исход   умножаем\u{00AD} на его");
+    assert_eq!(parts, [part(Some("b2"), "исход   умножаем\u{00AD} на его")]);
+    let interactions = store.interactions("l1").unwrap();
+    assert_eq!(interactions[0].block.as_deref(), Some("b2"));
+}
+
+#[test]
+fn a_mid_sentence_selection_is_found_in_the_reconstructed_fragments() {
+    let mut store = Materials::open_in_memory().unwrap();
+    let earlier = format!("{}Каждый исход умножаем на его вероятность.", tagged("b2"));
+    select_marked(&mut store, "op-1", &earlier);
+    let parts = select_marked(&mut store, "op-2", "умножаем на его");
+    assert_eq!(parts[0].block.as_deref(), Some("b2"));
+}
+
+#[test]
+fn a_selection_across_a_sentence_boundary_has_two_blocks() {
+    let mut store = Materials::open_in_memory().unwrap();
+    store.register(Some("l1"), None, &sample(), 100).unwrap();
+    // The end of b1's last sentence, then b2's first one with its mark.
+    let text = format!(
+        "нужно для цены.\n\n⟦b2 · Механизм⟧\n{}Каждый исход",
+        tagged("b2")
+    );
+    let parts = select_marked(&mut store, "op-1", &text);
+    let blocks: Vec<Option<&str>> = parts.iter().map(|p| p.block.as_deref()).collect();
+    assert_eq!(blocks, [Some("b1"), Some("b2")]);
+    assert_eq!(parts[1].text, "Каждый исход");
+    let views = store.reconstruct("l1").unwrap();
+    assert_eq!(views[0].status, BlockStatus::ObservedInteraction);
+    assert_eq!(views[1].status, BlockStatus::ObservedInteraction);
+}
+
+#[test]
+fn without_a_unique_match_the_block_stays_unknown() {
+    let mut store = Materials::open_in_memory().unwrap();
+    store.register(Some("l1"), None, &sample(), 100).unwrap();
+    // Nowhere in the text.
+    let parts = select_marked(&mut store, "op-1", "совсем другой текст");
+    assert_eq!(parts, [part(None, "совсем другой текст")]);
+    // In two blocks («полис» is in b1 and b4).
+    let parts = select_marked(&mut store, "op-2", "полис");
+    assert_eq!(parts[0].block, None);
+    let interactions = store.interactions("l1").unwrap();
+    assert_eq!(interactions.len(), 2);
+    assert!(
+        interactions.iter().all(|i| i.block.is_none()),
+        "the gap is kept"
+    );
+    // Nothing is stored as a fragment and nothing changes in the blocks.
+    let views = store.reconstruct("l1").unwrap();
+    assert!(views.iter().all(|v| v.status == BlockStatus::Unknown));
+}
+
+#[test]
+fn split_cuts_at_marks_and_joins_one_block() {
+    let text = format!(
+        "хвост. {}Один. {}Два. {}Три.",
+        tagged("b1"),
+        tagged("b1"),
+        tagged("b2")
+    );
+    let (clean, marks) = cognitive_exoskeleton_domain::marks::positions(&text);
+    assert_eq!(
+        split(&clean, &marks),
+        [
+            part(None, "хвост."),
+            part(Some("b1"), "Один. Два."),
+            part(Some("b2"), "Три.")
+        ]
+    );
+    assert_eq!(normalize(" a\u{00AD}b \n\t c "), "ab c");
 }

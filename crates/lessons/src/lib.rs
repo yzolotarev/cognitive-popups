@@ -6,12 +6,14 @@
 //! (INV-02). An unfinished lesson is resumed, never silently closed (INV-08).
 
 mod context;
+mod export;
 mod import;
 mod plan;
 mod rules;
 mod store;
 
 pub use context::gather;
+pub use export::{ExportError, LessonExport, TimelineEntry, export_lesson};
 pub use import::{
     ImportError, Imported, SubjectDraft, apply as import_subjects, export as export_subjects,
     parse as parse_subjects,

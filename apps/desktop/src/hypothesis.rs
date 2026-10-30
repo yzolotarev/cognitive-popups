@@ -20,8 +20,10 @@ use crate::popup::{self, Opened};
 use crate::ui;
 
 pub const WIDTH: i32 = 420;
-/// Width and the tallest it usually gets: keeps it on screen near the cursor.
-pub const SIZE: (i32, i32) = (WIDTH, 420);
+/// Width and the tallest it gets: keeps it on screen near the cursor.
+pub const SIZE: (i32, i32) = (WIDTH, 520);
+/// The answer scrolls past this height; the verdict and the buttons stay put.
+const ANSWER_HEIGHT: i32 = 320;
 const PROMPT: &str = "Сформулируй одну конкретную гипотезу о связи между объектами.";
 
 #[derive(Default)]
@@ -289,7 +291,6 @@ impl HypothesisWindow {
         ));
         verdict.append(&ui::ai_badge());
         let content = ui::column(8);
-        content.add_css_class("cp-content");
         content.append(&ui::rich(&check.reply, &["cp-body"], WIDTH));
         if let Some(quote) = &check.quote {
             content.append(&ui::text(&format!("Опора: «{quote}»"), &["cp-quote"]));
@@ -315,9 +316,20 @@ impl HypothesisWindow {
             button.set_sensitive(false);
             this.reframe(&c, &t);
         });
+        let scroller = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .propagate_natural_height(true)
+            .max_content_height(ANSWER_HEIGHT)
+            .child(&content)
+            .build();
+        // The card stays whole; only the text inside it scrolls.
+        let card = ui::column(0);
+        card.add_css_class("cp-content");
+        card.append(&scroller);
         self.show(&[
             verdict.upcast(),
-            content.upcast(),
+            card.upcast(),
             ui::actions(&[&more, &other, &done]).upcast(),
         ]);
         done.grab_focus();

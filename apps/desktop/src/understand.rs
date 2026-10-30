@@ -118,7 +118,7 @@ impl UnderstandWindow {
             choices.push((mechanic, button));
         }
         root.append(&footer);
-        window.set_child(Some(&root));
+        popup::set_scrollable_child(&window, &root);
 
         let this = Self(Rc::new(Inner {
             ctx,

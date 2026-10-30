@@ -47,7 +47,7 @@ pub enum Hint {
     SmallerStep,
     /// Success on a new case: three more.
     MoreThree,
-    /// Three clean in a row below the top level: one level up (B87).
+    /// Three clean in a row below the top level: one level up (B89).
     Harder,
     /// Three clean in a row at the top level: nothing highlighted.
     Nothing,
@@ -72,7 +72,7 @@ impl Default for Guidance {
 }
 
 impl Guidance {
-    /// The level of the cards on screen (B87): 1 is the text's own.
+    /// The level of the cards on screen (B89): 1 is the text's own.
     pub fn level(&self) -> u8 {
         self.level
     }

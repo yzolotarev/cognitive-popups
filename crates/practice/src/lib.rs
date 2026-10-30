@@ -43,7 +43,7 @@ use crate::numeric::Template;
 
 pub const GENERATE_PROMPT: &str = "NEW_probes_generate";
 pub const VERIFY_PROMPT: &str = "NEW_probe_verify";
-/// [Сложнее] (B87): the same operation one level up.
+/// [Сложнее] (B89): the same operation one level up.
 pub const HARDER_PROMPT: &str = "NEW_probes_harder";
 /// Probe levels: 1 is what the text gives, 5 is transfer.
 pub const MAX_LEVEL: u8 = 5;
@@ -379,7 +379,7 @@ pub fn probe_tree<T: Transport>(
     Ok(tree)
 }
 
-/// [Сложнее] (B87): one branch with the same operation at `level`, which the
+/// [Сложнее] (B89): one branch with the same operation at `level`, which the
 /// code chose. The same checks as the tree: verbatim quote, arithmetic by the
 /// code, the verifier for other pairs. The title stays the category's own.
 pub fn harder_group<T: Transport>(

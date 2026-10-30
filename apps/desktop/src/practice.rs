@@ -1344,7 +1344,7 @@ impl ProbePage {
         });
     }
 
-    /// «Уровень 2 из 5» once above the text's own level (B87).
+    /// «Уровень 2 из 5» once above the text's own level (B89).
     fn show_level(&self) {
         let level = self.guidance.get().level();
         self.level.set_text(&if level > 1 {
@@ -1355,7 +1355,7 @@ impl ProbePage {
         self.harder.set_sensitive(level < practice::MAX_LEVEL);
     }
 
-    /// [Сложнее] (B87): the code raises the level; the model writes the same
+    /// [Сложнее] (B89): the code raises the level; the model writes the same
     /// operation at it; the usual checks decide what is shown.
     fn harder(this: &Rc<Self>, button: &gtk::Button) {
         let level = this.guidance.get().level() + 1;
@@ -1430,7 +1430,7 @@ impl ProbePage {
             if let Some(row) = self.whole.parent() {
                 row.set_visible(true);
             }
-            // At the top level the whole task is the next step (B24, B87).
+            // At the top level the whole task is the next step (B24, B89).
             if hint != Hint::Harder {
                 self.whole.add_css_class("cp-default");
             }

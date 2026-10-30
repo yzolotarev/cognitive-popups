@@ -344,12 +344,7 @@ impl PracticeWindow {
         ctx::background(
             move || -> Result<(Vec<Category>, Vec<String>), PracticeError> {
                 let now = ctx::now();
-                let due = practice::due::due_units(&db, now).unwrap_or_default();
-                let recall = if due.is_empty() {
-                    practice::RecallSet::default()
-                } else {
-                    practice::recall_cards(&ai, &prompts, &due, now as u64, Priority::Foreground)?
-                };
+                let recall = practice::due::recall_with_blocks(&db, &ai, &prompts, now)?;
                 let probes = if text.trim().is_empty() {
                     practice::ProbeTree::default()
                 } else {

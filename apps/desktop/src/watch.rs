@@ -174,6 +174,8 @@ impl MaterialWatch {
     fn read(&self, selection: Selection, lesson: String) {
         let db = self.0.ctx.db.clone();
         let notice = self.0.notice.clone();
+        let ai = self.0.ctx.ai();
+        let prompts = self.0.ctx.prompts.clone();
         let handle = gio::spawn_blocking(move || {
             let text = match selection {
                 Selection::Primary => Wayland.primary_text(),
@@ -197,8 +199,14 @@ impl MaterialWatch {
             let registered = Materials::open(&db)
                 .and_then(|mut m| m.register(Some(&lesson), subject.as_deref(), &text, ctx::now()));
             match registered {
-                Ok((material, true)) => Some(material.registered_notice()),
-                Ok(_) => None,
+                Ok((material, new)) => {
+                    if let Ok(m) = Materials::open(&db)
+                        && let Err(e) = m.generate_cards(&db, &ai, &prompts)
+                    {
+                        eprintln!("block cards: {e}");
+                    }
+                    new.then(|| material.registered_notice())
+                }
                 Err(e) => {
                     eprintln!("material watch: {e}");
                     None

@@ -24,7 +24,7 @@
 | `lesson_materials` | `lesson_id`, `material_id`, `at`; ключ (`lesson_id`, `material_id`) — текст привязан к каждому уроку, где зарегистрирован; урок берёт последний привязанный | B78 |
 | `material_blocks` | `material_id`, `block` (`b2`), `position`, `role` (6 ролей или `другое`), `text`; ключ (`material_id`, `block`) | B78 |
 | `material_fragments` | `lesson_id`, `block`, `text` (чистый выделенный текст части выделения), `at`, `operation_id`, `key` UNIQUE (`<операция>:<блок>:<n>`) — только для частей с известным блоком; из них восстанавливается материал урока | B78 |
-| `material_interactions` | `lesson_id`, `block` NULL (блок не найден — пробел виден), `window` (`alt_w`/`alt_t`/`ctrl_alt_p`/`alt_e`/…), `operation_id`, `sequence` NULL (номер события-источника в журнале), `at`, `key` UNIQUE (`<операция>:<блок или ->`) — только наблюдаемое; порядок — `at`, затем `sequence`. Статус блока выводится: `observed_interaction` или `unknown` (`not_read` зарезервирован); полнота текста блока — `known`/`partial`/`unknown` | B78 |
+| `material_interactions` | `material_id` NULL (для старых записей неизвестен), `lesson_id`, `block` NULL (блок не найден — пробел виден), `window` (`alt_w`/`alt_t`/`ctrl_alt_p`/`alt_e`/…), `operation_id`, `sequence` NULL (номер события-источника в журнале), `at`, `key` UNIQUE (`<операция>:<блок или ->`) — только наблюдаемое; порядок — `at`, затем `sequence`. Статус блока выводится: `observed_interaction` или `unknown` (`not_read` зарезервирован); полнота текста блока — `known`/`partial`/`unknown` | B78 |
 
 ## 3. Практика (S5)
 
@@ -83,3 +83,15 @@
 | Положение пилюли, масштаб текста, halo, звук, «уменьшить движение» | `settings.json` |
 | Резервные копии | 3 последние перед миграцией (Q-70) |
 | Архив v1 | отдельный каталог, только чтение (A17) |
+
+## Эксперимент блоков (B80–B81)
+
+| Таблица | Поля и контракт |
+|---|---|
+| `block_assignments` | `id` PK, `experiment`, `policy`, `lesson`, `subject` NULL, `material`, `block`, `role`, `allowed` JSON, `probabilities` JSON, `arm`, `probability`, `assigned_at`, `shown_at` NULL, `skipped_at` NULL, `completed_at` NULL, `completed_operation` NULL, `card_status` (`pending`/`created`/`card_failed`), `card_reason` NULL, `question` NULL, `reference` NULL; UNIQUE (`lesson`,`material`,`block`) |
+| `block_assignment_checks` | (`lesson`,`material`) PK, `reason` (`assigned`/`no_eligible_roles`/`lesson_limit`), `at`; нет согласия — нет записи |
+| `block_attempts` | `operation` PK, `assignment`, `attempt`, `revealed_at`; CLI раскрывает эталон после непустой попытки, self-grade требует сохранённую попытку |
+
+Выполнение сохраняет триггер после вставки `material_interactions`: совпадают материал, урок, блок, назначенная функция; время строго после назначения. Старые взаимодействия с NULL material_id не подтверждают выполнение. Эксперимент не меняет таблицы прежнего MRT.
+
+Карточка: `memory_cards.unit_id = block_assignments.id`, первое due = `assigned_at + 86400`. Оценки — существующие `memory_reviews`; первая запись даёт исход (rating/source/at и интервал `at-assigned_at`), остальные — дальнейшее удержание. При сбое создания карточки назначение остаётся в экспорте с `card_failed`, проверка missing. Молчаливые ветки тоже имеют карточки; показ/пропуск/выполнение не являются оценками и не двигают FSRS.

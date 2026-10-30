@@ -6,9 +6,11 @@ CARGO ?= cargo
 
 .PHONY: build install
 build:
+	$(CARGO) build --release --locked
 	$(CARGO) build --release --locked --manifest-path apps/desktop/Cargo.toml
 
 install: build
+	install -Dm755 target/release/cognitive-exoskeleton "$(DESTDIR)$(BINDIR)/cognitive-popups-core"
 	install -Dm755 apps/desktop/target/release/cognitive-popups "$(DESTDIR)$(BINDIR)/cognitive-popups"
 	install -d "$(DESTDIR)$(DATADIR)/cognitive-popups/prompts"
 	install -m644 docs/v2/port/prompts/*.md "$(DESTDIR)$(DATADIR)/cognitive-popups/prompts/"

@@ -78,6 +78,10 @@ fn database() -> PathBuf {
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        Some("material" | "experiment" | "memory" | "nudge" | "subject" | "step" | "practice") => {
+            core_cli(&args)
+        }
+        Some("lesson") if args.get(1).map(String::as_str) != Some("export") => core_cli(&args),
         Some("daemon") => daemon(),
         Some("doctor") => doctor::run(),
         Some("subjects") => subjects(&args[1..]),
@@ -536,6 +540,41 @@ fn grab_text() -> Option<capture::Captured> {
         return None;
     }
     capture::capture(&Wayland, false).ok()
+}
+
+fn core_cli(args: &[String]) -> ExitCode {
+    let binary = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.join("cognitive-popups-core")));
+    let Some(binary) = binary else {
+        return ExitCode::FAILURE;
+    };
+    let mut command = std::process::Command::new(binary);
+    command.args(args);
+    if !args.iter().any(|a| a == "--db") {
+        command.arg("--db").arg(database());
+    }
+    let needs_prompts = matches!(
+        (
+            args.first().map(String::as_str),
+            args.get(1).map(String::as_str)
+        ),
+        (Some("material"), Some("register"))
+            | (Some("experiment"), Some("cards"))
+            | (Some("lesson"), Some("plan"))
+            | (Some("practice"), Some("tree"))
+    );
+    if needs_prompts && !args.iter().any(|a| a == "--prompts") {
+        command.arg("--prompts").arg(ctx::prompts_dir());
+    }
+    match command.status() {
+        Ok(s) if s.success() => ExitCode::SUCCESS,
+        Ok(_) => ExitCode::FAILURE,
+        Err(e) => {
+            eprintln!("core CLI: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 #[cfg(test)]

@@ -40,6 +40,7 @@ shots=(
   "lesson-new|lesson|subject Численные методы|Сдать экзамен по численным методам 20 ноября"
   "lesson-plan|lesson|generate"
   "lesson-clock|lesson|step 20 сделаю три шага для √2"
+  "lesson-clock-hint|lesson|hint"
   "lesson-end|lesson|"
   "lesson-feynman|lesson|feynman"
   "_seed|seed|"

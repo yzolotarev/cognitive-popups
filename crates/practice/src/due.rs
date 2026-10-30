@@ -75,3 +75,63 @@ pub fn sync_memory(store: &UnitStore, memory: &mut Memory, at: i64) -> Result<()
     }
     Ok(())
 }
+
+/// Already generated experimental cards retain exactly their registered question and quote.
+pub fn block_cards(
+    db: impl AsRef<Path>,
+    at: i64,
+) -> Result<Vec<crate::recall::RecallCard>, String> {
+    let db = db.as_ref();
+    let materials =
+        cognitive_exoskeleton_materials::Materials::open(db).map_err(|e| e.to_string())?;
+    let due = Memory::open(db)
+        .and_then(|m| m.due(at))
+        .map_err(|e| e.to_string())?;
+    Ok(materials
+        .assignments()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|a| a.card_status == "created" && due.iter().any(|d| d.unit == a.id))
+        .map(|a| crate::recall::RecallCard {
+            unit: a.id,
+            question: a.question.unwrap_or_default(),
+            reference: a.reference.unwrap_or_default(),
+            events: Vec::new(),
+            family: None,
+            seed: None,
+        })
+        .collect())
+}
+
+/// Stored experimental cards remain usable even if generation for ordinary units fails.
+pub fn recall_with_blocks<T: cognitive_exoskeleton_ai::Transport>(
+    db: impl AsRef<Path>,
+    client: &cognitive_exoskeleton_ai::Client<T>,
+    prompts: &cognitive_exoskeleton_ai::PromptStore,
+    at: i64,
+) -> Result<crate::recall::RecallSet, crate::PracticeError> {
+    let db = db.as_ref();
+    let stored = block_cards(db, at).unwrap_or_default();
+    let due = due_units(db, at).unwrap_or_default();
+    let generated = if due.is_empty() {
+        Ok(crate::recall::RecallSet::default())
+    } else {
+        crate::recall::recall_cards(
+            client,
+            prompts,
+            &due,
+            at as u64,
+            cognitive_exoskeleton_ai::Priority::Foreground,
+        )
+    };
+    let mut set = match generated {
+        Ok(set) => set,
+        Err(e) if !stored.is_empty() => crate::recall::RecallSet {
+            cards: Vec::new(),
+            notes: vec![e.to_string()],
+        },
+        Err(e) => return Err(e),
+    };
+    set.cards.extend(stored);
+    Ok(set)
+}

@@ -231,8 +231,9 @@ afterwards.
 Need a text to learn from? In the lesson, «Скопировать промпт для учебного
 текста» copies a prompt built from the lesson (subject, topic, 15-minute goal,
 plan). Paste it into ChatGPT and read the answer right in the chat. Alt+W,
-Alt+T and the rest work there, but text selected in an AI chat does not yet
-count towards learning units and reviews (B75). Without windows:
+Alt+T and the rest work there. The text carries an invisible block mark in every
+sentence, so a selection from it counts as study material (not AI chat) and the
+journal records which block it came from (B76). Without windows:
 `cargo run -- subject add|list|program|topic`, `lesson plan|show|item|close`, `step start|finish|bridge`.
 
 To set up all subjects at once, write them in one text file and run

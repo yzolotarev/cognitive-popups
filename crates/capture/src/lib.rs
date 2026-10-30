@@ -134,6 +134,8 @@ pub struct Captured {
     /// After an emulated Ctrl+C: whether the old clipboard was put back.
     /// `false` is shown to the reader; `None` when the clipboard was not touched.
     pub clipboard_restored: Option<bool>,
+    /// Hidden block marks of a study text written by an outside AI (B76).
+    pub blocks: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -260,7 +262,12 @@ fn finish(text: String, origin: Origin, window: Option<Window>) -> Captured {
     let (class, title) = window
         .map(|w| (Some(w.class), Some(w.title)))
         .unwrap_or((None, None));
-    let context = classify(class.as_deref(), title.as_deref());
+    let (text, blocks) = read_marks(&text);
+    let mut context = classify(class.as_deref(), title.as_deref());
+    // A marked study text is study material even when read in an AI chat.
+    if context == SourceContext::AiChat && !blocks.is_empty() {
+        context = SourceContext::Study;
+    }
     let origin = if context == SourceContext::Development {
         Origin::Dev
     } else {
@@ -280,7 +287,36 @@ fn finish(text: String, origin: Origin, window: Option<Window>) -> Captured {
         title,
         truncated,
         clipboard_restored: None,
+        blocks,
     }
+}
+
+/// B76: a study text written by an outside AI carries an invisible mark
+/// before every sentence — the block id (`b2`) spelled in Unicode tag
+/// characters (U+E0020–U+E007E). Returns the text without any tag
+/// characters and the distinct marks in order of appearance.
+pub fn read_marks(text: &str) -> (String, Vec<String>) {
+    let mut clean = String::with_capacity(text.len());
+    let mut marks: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let close = |current: &mut String, marks: &mut Vec<String>| {
+        if !current.is_empty() && !marks.contains(current) {
+            marks.push(current.clone());
+        }
+        current.clear();
+    };
+    for c in text.chars() {
+        match c as u32 {
+            0xE0020..=0xE007E => current.push(char::from((c as u32 - 0xE0000) as u8)),
+            0xE0000..=0xE007F => close(&mut current, &mut marks),
+            _ => {
+                close(&mut current, &mut marks);
+                clean.push(c);
+            }
+        }
+    }
+    close(&mut current, &mut marks);
+    (clean, marks)
 }
 
 /// Study, development tool, or a chat with an AI.

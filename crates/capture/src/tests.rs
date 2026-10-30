@@ -235,6 +235,7 @@ fn the_ring_keeps_twelve_recent_study_snippets() {
         title: None,
         truncated: false,
         clipboard_restored: None,
+        blocks: Vec::new(),
     };
     let t0 = 1_800_000_000;
     assert!(
@@ -273,4 +274,51 @@ fn selection_only_never_touches_the_clipboard() {
         ..Default::default()
     };
     assert_eq!(selection(&with).unwrap().origin, Origin::Primary);
+}
+
+fn tagged(mark: &str) -> String {
+    mark.chars()
+        .map(|c| char::from_u32(0xE0000 + c as u32).unwrap())
+        .collect()
+}
+
+#[test]
+fn hidden_block_marks_are_read_and_removed() {
+    let text = format!(
+        "{b2}Она позволяет рассуждать. {b2}Поэтому её используют. {b3}Пример: монета.",
+        b2 = tagged("b2"),
+        b3 = tagged("b3")
+    );
+    let (clean, marks) = read_marks(&text);
+    assert_eq!(
+        clean,
+        "Она позволяет рассуждать. Поэтому её используют. Пример: монета."
+    );
+    assert_eq!(marks, ["b2", "b3"]);
+    assert_eq!(
+        read_marks("без меток"),
+        ("без меток".to_string(), Vec::new())
+    );
+}
+
+#[test]
+fn a_marked_selection_from_an_ai_chat_counts_as_study() {
+    let window = |title: &str| Window {
+        class: "firefox".into(),
+        title: title.into(),
+    };
+    let marked = finish(
+        format!("{}Текст блока.", tagged("b1")),
+        Origin::Primary,
+        Some(window("ChatGPT — Mozilla Firefox")),
+    );
+    assert_eq!(marked.context, SourceContext::Study);
+    assert_eq!(marked.blocks, ["b1"]);
+    assert_eq!(marked.text, "Текст блока.");
+    let plain = finish(
+        "Текст без меток.".into(),
+        Origin::Primary,
+        Some(window("ChatGPT — Mozilla Firefox")),
+    );
+    assert_eq!(plain.context, SourceContext::AiChat);
 }

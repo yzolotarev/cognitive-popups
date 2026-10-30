@@ -19,6 +19,7 @@ fn source(
         application: Some(class.into()),
         window_title: Some(title.into()),
         context,
+        blocks: Vec::new(),
     };
     let at = OffsetDateTime::from_unix_timestamp(1_700_000_000 + n).unwrap();
     let event = NewEvent::source(

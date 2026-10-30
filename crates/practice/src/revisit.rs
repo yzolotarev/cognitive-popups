@@ -213,6 +213,7 @@ mod tests {
                 application: app.map(str::to_string),
                 window_title: None,
                 context,
+                blocks: Vec::new(),
             },
         )
         .unwrap();

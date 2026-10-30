@@ -4,6 +4,7 @@
 //!   cognitive-popups daemon            start once per session (exec-once)
 //!   cognitive-popups signal <window> [<mechanic>]   what a hotkey runs; windows: note, understand
 //!   cognitive-popups hyprland-config   the lines for hyprland.conf
+//!   cognitive-popups lesson export [--last | <id>] [--json]   one lesson for analysis
 
 mod ctx;
 mod doctor;
@@ -79,6 +80,7 @@ fn main() -> ExitCode {
         Some("daemon") => daemon(),
         Some("doctor") => doctor::run(),
         Some("subjects") => subjects(&args[1..]),
+        Some("lesson") => lesson_export(&args[1..]),
         Some("signal") => signal(
             args.get(1).map(String::as_str),
             args.get(2).map(String::as_str),
@@ -96,12 +98,61 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: cognitive-popups daemon | doctor | signal <{}> | hyprland-config [--classic|--lua] | subjects import <file> [--dry-run] | subjects export",
+                "usage: cognitive-popups daemon | doctor | signal <{}> | hyprland-config [--classic|--lua] | subjects import <file> [--dry-run] | subjects export | lesson export [--last | <lesson-id>] [--json]",
                 WINDOWS.join("|")
             );
             ExitCode::from(2)
         }
     }
+}
+
+/// `lesson export [--last | <lesson-id>] [--json]` (B77): one lesson as
+/// Markdown (or JSON) on stdout, for analysis. Reads only.
+fn lesson_export(args: &[String]) -> ExitCode {
+    let usage = || {
+        eprintln!("usage: cognitive-popups lesson export [--last | <lesson-id>] [--json]");
+        ExitCode::from(2)
+    };
+    if args.first().map(String::as_str) != Some("export") {
+        return usage();
+    }
+    let mut json = false;
+    let mut id = None;
+    for arg in &args[1..] {
+        match arg.as_str() {
+            "--json" => json = true,
+            "--last" => {}
+            other if other.starts_with('-') || id.is_some() => return usage(),
+            other => id = Some(other.to_string()),
+        }
+    }
+    let offset = glib::DateTime::now_local()
+        .map(|t| t.utc_offset().as_seconds() as i32)
+        .unwrap_or(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    use cognitive_exoskeleton_lessons::export_lesson;
+    let export = match export_lesson(&database(), id.as_deref(), now, offset) {
+        Ok(export) => export,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::from(1);
+        }
+    };
+    if json {
+        match serde_json::to_string_pretty(&export) {
+            Ok(text) => println!("{text}"),
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::from(1);
+            }
+        }
+    } else {
+        print!("{}", export.markdown());
+    }
+    ExitCode::SUCCESS
 }
 
 /// The whole study plan at once (B72): subjects, goals, deadlines and

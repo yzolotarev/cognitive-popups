@@ -91,6 +91,27 @@ impl Notes {
         Ok(rows)
     }
 
+    /// Every note, open or closed, written in `[from, to]`, oldest first
+    /// (`lesson export`, B77).
+    pub fn between(&self, from: i64, to: i64) -> Result<Vec<Note>, NoteError> {
+        let mut statement = self.connection.prepare(
+            "SELECT note_id, comment, anchor, created_at, closed_at FROM notes
+             WHERE created_at BETWEEN ?1 AND ?2 ORDER BY created_at, note_id",
+        )?;
+        let rows = statement
+            .query_map([from, to], |r| {
+                Ok(Note {
+                    id: r.get(0)?,
+                    comment: r.get(1)?,
+                    anchor: r.get(2)?,
+                    created_at: r.get(3)?,
+                    closed_at: r.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// Closed by the reader in the hub; reopening undoes it.
     pub fn set_closed(&mut self, id: i64, closed: bool, now: i64) -> Result<(), NoteError> {
         let exists: Option<i64> = self

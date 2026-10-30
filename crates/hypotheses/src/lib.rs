@@ -376,6 +376,15 @@ impl Store {
         let rows = statement.query_map([limit as i64], row)?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
+
+    /// The guesses written in `[from, to]`, oldest first (`lesson export`, B77).
+    pub fn between(&self, from: i64, to: i64) -> Result<Vec<Hypothesis>, HypothesisError> {
+        let mut statement = self.connection.prepare(&format!(
+            "{SELECT} WHERE at BETWEEN ?1 AND ?2 ORDER BY at, hypothesis_id"
+        ))?;
+        let rows = statement.query_map([from, to], row)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
 }
 
 const SELECT: &str =

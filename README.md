@@ -250,6 +250,8 @@ To set up all subjects at once, write them in one text file and run
 
 Importing again keeps your marks and removes nothing.
 
+To look back at a lesson, `cognitive-popups lesson export` (or `--last`, or a lesson id) prints it as Markdown: goal, plan, steps, the selections and AI answers in order, the guesses and the Alt+E notes written during it; `--json` gives the same data.
+
 The hub opens with Alt+S, from the tray icon (or `cognitive-popups signal hub`): AI key,
 provider and model with [Проверить]; subjects and their long-term goals; what
 may appear by itself (all off by default); units with [Освоил], [Объединить]

@@ -7,11 +7,15 @@ publish = false
 
 [dependencies]
 cognitive-exoskeleton-ai = { path = "../ai" }
+cognitive-exoskeleton-domain = { path = "../domain" }
 cognitive-exoskeleton-hypotheses = { path = "../hypotheses" }
+cognitive-exoskeleton-journal = { path = "../journal" }
 cognitive-exoskeleton-memory = { path = "../memory" }
+cognitive-exoskeleton-notes = { path = "../notes" }
 cognitive-exoskeleton-units = { path = "../units" }
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+time = { workspace = true }
 uuid = { workspace = true }

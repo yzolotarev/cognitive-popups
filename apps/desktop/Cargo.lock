@@ -394,13 +394,17 @@ name = "cognitive-exoskeleton-lessons"
 version = "0.1.0"
 dependencies = [
  "cognitive-exoskeleton-ai",
+ "cognitive-exoskeleton-domain",
  "cognitive-exoskeleton-hypotheses",
+ "cognitive-exoskeleton-journal",
  "cognitive-exoskeleton-memory",
+ "cognitive-exoskeleton-notes",
  "cognitive-exoskeleton-units",
  "rusqlite",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "time",
  "uuid",
 ]
 

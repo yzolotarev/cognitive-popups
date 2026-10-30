@@ -928,6 +928,47 @@ impl LessonStore {
         }))
     }
 
+    /// The steps taken inside one lesson, in order (`lesson export`, B77).
+    pub fn steps_for_lesson(&self, lesson: &str) -> Result<Vec<Step>, StoreError> {
+        let mut statement = self
+            .connection
+            .prepare(&format!("{STEP} WHERE lesson_id = ?1 ORDER BY step_id"))?;
+        let rows = statement.query_map([lesson], step_row)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// When the reader closed the lesson, if they did.
+    pub fn closed_at(&self, lesson: &str) -> Result<Option<i64>, StoreError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT closed_at FROM lessons WHERE lesson_id = ?1",
+                [lesson],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    /// The start of the first lesson created after `at`, if any.
+    pub fn next_lesson_start(&self, at: i64) -> Result<Option<i64>, StoreError> {
+        Ok(self.connection.query_row(
+            "SELECT min(created_at) FROM lessons WHERE created_at > ?1",
+            [at],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// The lesson's number within its subject, counted from 1 by creation.
+    pub fn lesson_number(&self, lesson: &Lesson) -> Result<i64, StoreError> {
+        Ok(self.connection.query_row(
+            "SELECT count(*) FROM lessons WHERE subject_id = ?1
+             AND (created_at < ?2 OR (created_at = ?2 AND lesson_id <= ?3))",
+            params![lesson.subject, lesson.created_at, lesson.id],
+            |r| r.get(0),
+        )?)
+    }
+
     /// Takeaways of a lesson's steps, for the plan of the next one.
     pub fn takeaways(&self, lesson: &str) -> Result<Vec<String>, StoreError> {
         let mut statement = self.connection.prepare(

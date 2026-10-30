@@ -17,6 +17,7 @@ pub mod availability;
 pub mod due;
 pub mod expr;
 pub mod families;
+pub mod feed;
 pub mod feynman;
 pub mod guidance;
 pub mod numeric;
@@ -36,7 +37,7 @@ pub use trails::{Help, MethodItem, MethodSet, Situation, method_trails, names_ac
 pub use whole::{WholeTask, load_types, whole_task};
 
 use cognitive_exoskeleton_ai::{AiError, Client, Priority, PromptStore, Request, Transport};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::numeric::Template;
@@ -57,20 +58,20 @@ pub const REPAIR_ROUNDS: usize = 2;
 /// the text itself when the two are at least this similar.
 const QUOTE_SIMILARITY: f64 = 0.9;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     Numeric,
     Drill,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Card {
     pub prompt: String,
     pub answer: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProbeGroup {
     pub title: String,
     pub invariant: String,
@@ -101,7 +102,7 @@ impl ProbeGroup {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProbeTree {
     pub groups: Vec<ProbeGroup>,
     /// What the code rejected and why: for the journal and for tuning prompts.

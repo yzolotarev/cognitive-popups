@@ -213,7 +213,7 @@ impl Hub {
         page.add(&group);
 
         let precompute_group = adw::PreferencesGroup::builder()
-            .title("Предвычисление четырёх слов")
+            .title("Предвычисление")
             .description("По умолчанию выключено. Выделенный текст отправляется провайдеру только при включении.")
             .build();
         let precompute = adw::SwitchRow::builder()
@@ -229,6 +229,19 @@ impl Hub {
             }
         });
         precompute_group.add(&precompute);
+        let feed = adw::SwitchRow::builder()
+            .title("Готовить ленту проб заранее")
+            .subtitle("Когда учебный текст зарегистрирован, пробы по нему собираются сразу: Alt+T открывает ленту без ожидания. Текст уже отправлялся провайдеру для карточек блоков.")
+            .build();
+        feed.set_active(self.0.ctx.precompute_feed.get());
+        let this = self.clone();
+        feed.connect_active_notify(move |row| {
+            if let Err(error) = this.0.ctx.set_precompute_feed(row.is_active()) {
+                row.set_active(!row.is_active());
+                this.toast(&format!("Настройка не сохранена: {error}"), None);
+            }
+        });
+        precompute_group.add(&feed);
         page.add(&precompute_group);
 
         if current.key().is_some() {

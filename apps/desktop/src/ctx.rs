@@ -37,12 +37,16 @@ pub struct Ctx {
     pub lesson: Rc<RefCell<Option<LessonId>>>,
     /// Explicit opt-in for primary-selection precomputation (off by default).
     pub precompute_words: Rc<Cell<bool>>,
+    /// Probes for a registered study text are built at once (B90; on by
+    /// default: the text already went to the provider for its block cards).
+    pub precompute_feed: Rc<Cell<bool>>,
 }
 
 impl Ctx {
     pub fn load(db: PathBuf) -> Self {
         let dir = prompts_dir();
         let precompute_words = load_precompute_words(&preferences_path());
+        let precompute_feed = load_bool(&preferences_path(), "precompute_feed", true);
         let prompts = PromptStore::from_dir(&dir).unwrap_or_else(|e| {
             eprintln!("prompts: {e}");
             PromptStore::default()
@@ -54,7 +58,14 @@ impl Ctx {
             prompts_dir: dir,
             lesson: Default::default(),
             precompute_words: Rc::new(Cell::new(precompute_words)),
+            precompute_feed: Rc::new(Cell::new(precompute_feed)),
         }
+    }
+
+    pub fn set_precompute_feed(&self, enabled: bool) -> Result<(), String> {
+        save_bool(&preferences_path(), "precompute_feed", enabled)?;
+        self.precompute_feed.set(enabled);
+        Ok(())
     }
 
     pub fn set_precompute_words(&self, enabled: bool) -> Result<(), String> {
@@ -211,20 +222,28 @@ fn preferences_path() -> PathBuf {
 }
 
 fn load_precompute_words(path: &Path) -> bool {
-    std::fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .and_then(|value| value["precompute_words"].as_bool())
-        .unwrap_or(false)
+    load_bool(path, "precompute_words", false)
 }
 
 fn save_precompute_words(path: &Path, enabled: bool) -> Result<(), String> {
+    save_bool(path, "precompute_words", enabled)
+}
+
+fn load_bool(path: &Path, key: &str, default: bool) -> bool {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|value| value[key].as_bool())
+        .unwrap_or(default)
+}
+
+fn save_bool(path: &Path, key: &str, enabled: bool) -> Result<(), String> {
     let mut preferences = std::fs::read(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .and_then(|value| value.as_object().cloned())
         .unwrap_or_default();
-    preferences.insert("precompute_words".into(), Value::Bool(enabled));
+    preferences.insert(key.into(), Value::Bool(enabled));
     let text = serde_json::to_vec_pretty(&preferences).map_err(|e| e.to_string())?;
     let parent = path.parent().ok_or("invalid preferences path")?;
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;

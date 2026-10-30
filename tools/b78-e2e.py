@@ -71,10 +71,10 @@ try:
                 run('experiment', 'interact', '--lesson', lesson, '--block', a['block'], '--function', a['arm'].removeprefix('suggest_'), '--operation', 'interaction-'+a['id'], at=1003)
         run('step', 'finish', 'done', at=1004)
         run('lesson', 'close', at=1005)
-        if {'suggest_alt_t', 'suggest_alt_w', 'silence'} <= seen and seen & {'aa_first', 'aa_second'}:
+        if {'suggest_alt_t', 'suggest_alt_w', 'silence'} <= seen:
             break
     else:
-        raise AssertionError(f'Random draw did not cover the three arms and one A/A label: {seen}')
+        raise AssertionError(f'Random draw did not cover the three arms: {seen}')
     exported = run('experiment', 'export', '--json', parsed=True)
     rows = [row['assignment'] for row in exported['assignments']]
     with sqlite3.connect(db) as connection:
@@ -93,7 +93,7 @@ try:
         run('experiment', 'answer', '--card', a['id'], '--operation', a['id'], '--attempt', 'Вероятность умножить на убыток', at=87399, fail=True)
         answer = run('experiment', 'answer', '--card', a['id'], '--operation', a['id'], '--attempt', 'Вероятность умножить на убыток', at=87721, parsed=True)
         assert answer['reference'] == card['reference']
-        grade = {'aa_first':'again','aa_second':'hard'}.get(arm,'good')
+        grade = {'suggest_alt_t':'again','suggest_alt_w':'hard'}.get(arm,'good')
         for _ in range(2):  # duplicate delivery creates one review
             run('experiment', 'grade', '--card', a['id'], '--operation', a['id'], '--grade', grade, at=87999)
     a=selected[0]

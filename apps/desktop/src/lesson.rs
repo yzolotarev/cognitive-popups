@@ -230,7 +230,7 @@ impl LessonUi {
             }
             "hint" if std::env::var_os("COGNITIVE_AI_FIXTURE").is_some() => {
                 if let Ok(Some(lesson)) = store.open_lesson() {
-                    use cognitive_exoskeleton_materials::{Materials, experiment::AA_FIRST};
+                    use cognitive_exoskeleton_materials::Materials;
                     use cognitive_exoskeleton_nudges::{Consent, Nudges};
                     if let (Ok(mut m), Ok(mut n)) = (
                         Materials::open(&self.0.ctx.db),
@@ -239,15 +239,6 @@ impl LessonUi {
                         let _ = n.set_consent(Consent::Experiments, true, ctx::now());
                         let text = "⟦b1 · проблема⟧\nПочему метод работает?\n⟦b2 · механизм⟧\nКасательная приближает функцию.\n⟦b3 · пример⟧\nТри шага метода для корня из двух.";
                         if let Ok((material, _)) = m.register(None, None, text, ctx::now()) {
-                            for i in 0..AA_FIRST / 2 {
-                                let _ = m.assign(
-                                    &format!("fixture-aa-{i}"),
-                                    Some(&lesson.subject),
-                                    &material,
-                                    ctx::now(),
-                                    || 0.1,
-                                );
-                            }
                             let _ = m.assign(
                                 &lesson.id,
                                 Some(&lesson.subject),
@@ -818,10 +809,15 @@ impl LessonUi {
             page.append(&bar);
         }
         self.0.clock_hint.append(&page);
+        let target = match a.role.as_str() {
+            "проблема" => "проблему",
+            "ошибка" => "ошибку",
+            other => other,
+        };
         let (key, line) = if a.arm == "suggest_alt_t" {
-            ("Alt+T", format!("Выдели {} и попробуй сам", a.role))
+            ("Alt+T", format!("Выдели {target} и попробуй сам"))
         } else {
-            ("Alt+W", format!("Выдели {} — 4 слова", a.role))
+            ("Alt+W", format!("Выдели {target} — 4 слова"))
         };
         self.0
             .clock_hint

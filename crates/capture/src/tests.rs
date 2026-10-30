@@ -236,6 +236,7 @@ fn the_ring_keeps_twelve_recent_study_snippets() {
         truncated: false,
         clipboard_restored: None,
         blocks: Vec::new(),
+        marks: Vec::new(),
     };
     let t0 = 1_800_000_000;
     assert!(
@@ -314,6 +315,7 @@ fn a_marked_selection_from_an_ai_chat_counts_as_study() {
     );
     assert_eq!(marked.context, SourceContext::Study);
     assert_eq!(marked.blocks, ["b1"]);
+    assert_eq!(marked.marks, [(0, "b1".to_string())]);
     assert_eq!(marked.text, "Текст блока.");
     let plain = finish(
         "Текст без меток.".into(),

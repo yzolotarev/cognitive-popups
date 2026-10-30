@@ -217,6 +217,9 @@ plan of 2–5 items, at once or from your own thoughts; items can be made curren
 or skipped, never edited, and [Другой план] replaces the whole plan. A step runs
 under a small clock in the corner; at its end a quiet window asks for one mark
 and one line «что вынес». An unfinished lesson comes back on the next Alt+I.
+During an Alt+I lesson, what you select from a study text with block marks
+rebuilds that text block by block and is noted per block and window; you are
+never asked to report what you read (B78).
 When the lesson ends, its events become learning units in the background and a
 notice in the corner says how many.
 

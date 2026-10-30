@@ -9,6 +9,7 @@ use cognitive_exoskeleton_domain::{
 };
 use cognitive_exoskeleton_hypotheses::{Hypothesis, HypothesisError, Store as Hypotheses};
 use cognitive_exoskeleton_journal::{Journal, JournalError};
+use cognitive_exoskeleton_materials::{BlockView, Interaction, Material, MaterialError, Materials};
 use cognitive_exoskeleton_notes::{Note, NoteError, Notes};
 use serde::Serialize;
 use time::{OffsetDateTime, UtcOffset};
@@ -29,6 +30,20 @@ pub enum ExportError {
     Notes(#[from] NoteError),
     #[error("гипотезы: {0}")]
     Hypotheses(#[from] HypothesisError),
+    #[error("материалы: {0}")]
+    Materials(#[from] MaterialError),
+}
+
+/// The lesson's study text (B78) as far as it is known: each block's role,
+/// how much of its text is known, the text itself, its status, and the
+/// interactions in order. How complete the text is says nothing about how
+/// much was read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MaterialExport {
+    /// The registered full text, if there is one.
+    pub registered: Option<Material>,
+    pub blocks: Vec<BlockView>,
+    pub interactions: Vec<Interaction>,
 }
 
 /// One journal event of the lesson. `payload` names the kind (`source`,
@@ -64,6 +79,7 @@ pub struct LessonExport {
     pub timeline: Vec<TimelineEntry>,
     pub hypotheses: Vec<Hypothesis>,
     pub notes: Vec<Note>,
+    pub material: Option<MaterialExport>,
 }
 
 /// Gathers one lesson from the database: `lesson` by id, or the newest one.
@@ -107,7 +123,17 @@ pub fn export_lesson(
             .collect(),
         Err(_) => Vec::new(),
     };
+    let materials = Materials::open(db)?;
+    let blocks = materials.reconstruct(&lesson.id)?;
+    let interactions = materials.interactions(&lesson.id)?;
+    let material = (!blocks.is_empty() || !interactions.is_empty()).then(|| MaterialExport {
+        registered: materials.latest_for_lesson(&lesson.id).ok().flatten(),
+        blocks,
+        interactions,
+    });
+    drop(materials);
     Ok(LessonExport {
+        material,
         number: store.lesson_number(&lesson)?,
         subject: store.subject(&lesson.subject)?,
         topic: match lesson.topic {
@@ -223,6 +249,11 @@ impl LessonExport {
             }
         }
 
+        if let Some(material) = &self.material {
+            out.push(String::new());
+            out.extend(self.material_section(material));
+        }
+
         if !self.timeline.is_empty() {
             out.push(String::new());
             out.push("## Хронология с ИИ".into());
@@ -278,6 +309,57 @@ impl LessonExport {
         let mut text = out.join("\n");
         text.push('\n');
         text
+    }
+
+    fn material_section(&self, export: &MaterialExport) -> Vec<String> {
+        let source = match &export.registered {
+            Some(m) => format!(
+                "Полный текст {} зарегистрирован в {}; остальное — из выделений.",
+                m.id,
+                self.stamp(m.registered_at)
+            ),
+            None => "Текст восстановлен из выделений; пропуски не заполняются.".to_string(),
+        };
+        let mut out = vec![
+            "## Материал".to_string(),
+            String::new(),
+            source,
+            "Полнота текста — не полнота чтения: прочитано ли, неизвестно. \
+             Статус блока — только наблюдаемое: observed_interaction (было выделение) \
+             или unknown (не записано)."
+                .to_string(),
+            String::new(),
+        ];
+        for view in &export.blocks {
+            out.push(format!(
+                "- {} · {} — {} · {}",
+                view.block,
+                view.role.as_deref().unwrap_or("роль неизвестна"),
+                view.coverage.label(),
+                view.status.as_str()
+            ));
+            out.extend(view.fragments.iter().map(|f| {
+                format!(
+                    "  - «{}»",
+                    f.split_whitespace().collect::<Vec<_>>().join(" ")
+                )
+            }));
+        }
+        out.push(String::new());
+        if export.interactions.is_empty() {
+            out.push("**Взаимодействия:** не записано.".into());
+        } else {
+            out.push("**Взаимодействия по порядку:**".into());
+            out.extend(export.interactions.iter().map(|i| {
+                format!(
+                    "- {} {} — {}",
+                    self.stamp(i.at),
+                    i.block.as_deref().unwrap_or("блок неизвестен"),
+                    i.window
+                )
+            }));
+        }
+        out
     }
 
     fn event(&self, entry: &TimelineEntry) -> Vec<String> {

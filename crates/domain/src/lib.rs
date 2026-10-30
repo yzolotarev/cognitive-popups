@@ -5,6 +5,8 @@
 //! separate authors. Nothing in this crate knows about GUI, network or storage.
 //! Constructors reject combinations that would blur that boundary.
 
+pub mod marks;
+
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;

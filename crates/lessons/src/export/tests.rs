@@ -2,6 +2,8 @@ use cognitive_exoskeleton_domain::{NewEvent, OperationId, SourceSnapshot};
 use cognitive_exoskeleton_hypotheses::{Check, Verdict};
 use time::macros::datetime;
 
+use cognitive_exoskeleton_materials::{Materials, Part, window};
+
 use super::*;
 use crate::plan::{Criterion, Plan, PlanItemDraft};
 use crate::store::Outcome;
@@ -119,6 +121,33 @@ fn a_lesson_is_exported_with_its_events_guesses_and_notes() {
         .unwrap()
         .unwrap();
 
+    // B78: no registered text — the material is rebuilt from selections.
+    let mut materials = Materials::open(&db).unwrap();
+    let part = |block: Option<&str>, text: &str| Part {
+        block: block.map(str::to_string),
+        text: text.to_string(),
+    };
+    let selections = [
+        (
+            "op-1",
+            window::ALT_T,
+            part(Some("b2"), "Во всех случаях приходится решать."),
+            at(23),
+        ),
+        ("op-2", window::ALT_W, part(Some("b3"), "Монета."), at(24)),
+        (
+            "op-3",
+            window::CTRL_ALT_P,
+            part(None, "где-то в тексте"),
+            at(25),
+        ),
+    ];
+    for (op, window, part, at) in selections {
+        materials
+            .record_selection(&lesson.id, op, window, &[part], None, at)
+            .unwrap();
+    }
+
     let export = export_lesson(&db, None, at(60), 3 * 3600).unwrap();
     assert_eq!(export.lesson.id, lesson.id);
     assert_eq!(export.number, 1);
@@ -140,6 +169,18 @@ fn a_lesson_is_exported_with_its_events_guesses_and_notes() {
         "- «читаю», 15 мин, 08:23 - 08:38",
         "- Итог: ✓ done",
         "- Что вынес: что надо опять девелопить",
+        "## Материал",
+        "Текст восстановлен из выделений; пропуски не заполняются.",
+        "Полнота текста — не полнота чтения",
+        "- b1 · роль неизвестна — нет данных · unknown",
+        "- b2 · роль неизвестна — есть отрывки · observed_interaction",
+        "  - «Во всех случаях приходится решать.»",
+        "- b3 · роль неизвестна — есть отрывки · observed_interaction",
+        "  - «Монета.»",
+        "**Взаимодействия по порядку:**",
+        "- 08:24 b2 — alt_t",
+        "- 08:25 b3 — alt_w",
+        "- 08:26 блок неизвестен — ctrl_alt_p",
         "## Хронология с ИИ",
         "### 08:24 Выделенный текст (selection)",
         "Окно: firefox — Урок 1 · контекст: study · блок: b2",
@@ -168,12 +209,24 @@ fn a_lesson_is_exported_with_its_events_guesses_and_notes() {
     assert_eq!(json["timeline"][0]["blocks"][0], "b2");
     assert_eq!(json["timeline"][2]["model"], "gemini-2.5-flash");
     assert_eq!(json["hypotheses"][0]["verdict"], "partly");
+    assert!(json["material"]["registered"].is_null());
+    assert_eq!(json["material"]["blocks"][0]["coverage"], "unknown");
+    assert_eq!(json["material"]["blocks"][0]["status"], "unknown");
+    assert_eq!(json["material"]["blocks"][1]["coverage"], "partial");
+    assert_eq!(
+        json["material"]["blocks"][1]["status"],
+        "observed_interaction"
+    );
+    assert_eq!(json["material"]["blocks"][2]["fragments"][0], "Монета.");
+    assert_eq!(json["material"]["interactions"][0]["window"], "alt_t");
+    assert!(json["material"]["interactions"][2]["block"].is_null());
+    assert!(!text.contains("not_read"));
 
     assert!(matches!(
         export_lesson(&db, Some("нет-такого"), at(60), 0),
         Err(ExportError::NotFound(_))
     ));
     // Windows keeps an open database file locked.
-    drop((store, guesses, notes));
+    drop((store, guesses, notes, materials));
     std::fs::remove_dir_all(dir).unwrap();
 }

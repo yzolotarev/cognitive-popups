@@ -16,6 +16,7 @@ use cognitive_exoskeleton_ai::{
 use cognitive_exoskeleton_capture::Captured;
 use cognitive_exoskeleton_domain::{LessonId, NewEvent, OperationId, SourceKind, SourceSnapshot};
 use cognitive_exoskeleton_journal::Journal;
+use cognitive_exoskeleton_materials::{Materials, Part};
 use gtk::{gio, glib};
 use serde_json::Value;
 
@@ -76,28 +77,50 @@ impl Ctx {
         *self.client.borrow_mut() = Arc::new(client(&self.prompts));
     }
 
-    /// Writes what happened in one operation: the source, the reader's words,
-    /// the model's answer (S1; INV-01 keeps them apart). Returns the journal
-    /// sequences of the reader's words and the answer. A failed write is
-    /// logged, never shown over the help itself.
+    /// Writes what happened in one operation: the source with the window it
+    /// was used in (`materials::window`), the reader's words, the model's
+    /// answer (S1; INV-01 keeps them apart). During a lesson a selection
+    /// from its material (marked, or the lesson has material text) is also an
+    /// observed interaction: its parts are attributed to blocks, the
+    /// snapshot gets those blocks, their text rebuilds the material (B78).
+    /// Returns the journal sequences of the reader's words
+    /// and the answer. A failed write is logged, never shown over the help
+    /// itself.
     pub fn record(
         &self,
         operation: &OperationId,
-        source: Option<&Captured>,
+        source: Option<(&Captured, &'static str)>,
         user: Option<&str>,
         ai: Option<&str>,
     ) -> Vec<i64> {
         let at = time::OffsetDateTime::now_utc();
         let key = |part: &str| format!("{}:{part}", operation.as_str());
+        let lesson = self.lesson.borrow().clone();
+        let attributed = match (source, &lesson) {
+            (Some((captured, _)), Some(lesson)) => self.attribute(lesson.as_str(), captured),
+            _ => None,
+        };
         let mut events = Vec::new();
-        if let Some(captured) = source {
+        if let Some((captured, _)) = source {
+            let blocks = match &attributed {
+                Some((_, parts)) => {
+                    let mut blocks: Vec<String> = Vec::new();
+                    for block in parts.iter().filter_map(|p| p.block.clone()) {
+                        if !blocks.contains(&block) {
+                            blocks.push(block);
+                        }
+                    }
+                    blocks
+                }
+                None => captured.blocks.clone(),
+            };
             let snapshot = SourceSnapshot {
                 kind: SourceKind::Selection,
                 text: captured.text.clone(),
                 application: captured.window_class.clone(),
                 window_title: captured.title.clone(),
                 context: captured.context,
-                blocks: captured.blocks.clone(),
+                blocks,
             };
             events.extend(NewEvent::source(operation.clone(), at, key("source"), snapshot).ok());
         }
@@ -126,7 +149,7 @@ impl Ctx {
                 .ok(),
             );
         }
-        if let Some(lesson) = self.lesson.borrow().clone() {
+        if let Some(lesson) = lesson.clone() {
             events = events
                 .into_iter()
                 .map(|e| e.with_lesson(lesson.clone()))
@@ -141,11 +164,44 @@ impl Ctx {
             for key in &keys {
                 sequences.extend(journal.find_by_key(key)?);
             }
-            Ok(sequences)
+            Ok((sequences, journal.find_by_key(&key("source"))?))
         });
-        written.unwrap_or_else(|e| {
+        let (sequences, source_sequence) = written.unwrap_or_else(|e| {
             eprintln!("journal: {e}");
-            Vec::new()
+            (Vec::new(), None)
+        });
+        if let (Some((mut materials, parts)), Some((_, window)), Some(lesson)) =
+            (attributed, source, lesson)
+            && let Err(e) = materials.record_selection(
+                lesson.as_str(),
+                operation.as_str(),
+                window,
+                &parts,
+                source_sequence,
+                at.unix_timestamp(),
+            )
+        {
+            eprintln!("materials: {e}");
+        }
+        sequences
+    }
+}
+
+impl Ctx {
+    /// A selection's parts with their blocks (B78), when it belongs to the
+    /// lesson's material: it carries marks, or the lesson already has
+    /// material text to find it in. Anything else is not about the material.
+    fn attribute(&self, lesson: &str, captured: &Captured) -> Option<(Materials, Vec<Part>)> {
+        let found = Materials::open(&self.db).and_then(|materials| {
+            if captured.marks.is_empty() && !materials.has_material(lesson)? {
+                return Ok(None);
+            }
+            let parts = materials.attribute(lesson, &captured.text, &captured.marks)?;
+            Ok(Some((materials, parts)))
+        });
+        found.unwrap_or_else(|e| {
+            eprintln!("materials: {e}");
+            None
         })
     }
 }

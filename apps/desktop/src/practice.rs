@@ -28,6 +28,7 @@ use gtk::{gdk, glib};
 use crate::ctx::{self, Ctx};
 use crate::popup::{self, Opened};
 use crate::ui;
+use cognitive_exoskeleton_materials::window;
 
 pub const WIDTH: i32 = 520;
 /// Width and the tallest it usually gets: keeps it on screen near the cursor.
@@ -313,9 +314,12 @@ impl PracticeWindow {
     fn record(&self, text: &str) {
         let state = self.0.state.borrow();
         if let Some(operation) = &state.operation {
-            self.0
-                .ctx
-                .record(operation, state.captured.as_ref(), Some(text), None);
+            self.0.ctx.record(
+                operation,
+                state.captured.as_ref().map(|c| (c, window::ALT_T)),
+                Some(text),
+                None,
+            );
         }
     }
 
@@ -600,6 +604,7 @@ impl PracticeWindow {
             truncated: false,
             clipboard_restored: None,
             blocks: Vec::new(),
+            marks: Vec::new(),
         };
         {
             let mut state = self.0.state.borrow_mut();

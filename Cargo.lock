@@ -70,6 +70,7 @@ dependencies = [
  "cognitive-exoskeleton-hypotheses",
  "cognitive-exoskeleton-journal",
  "cognitive-exoskeleton-lessons",
+ "cognitive-exoskeleton-materials",
  "cognitive-exoskeleton-memory",
  "cognitive-exoskeleton-notes",
  "cognitive-exoskeleton-nudges",
@@ -155,6 +156,7 @@ dependencies = [
  "cognitive-exoskeleton-domain",
  "cognitive-exoskeleton-hypotheses",
  "cognitive-exoskeleton-journal",
+ "cognitive-exoskeleton-materials",
  "cognitive-exoskeleton-memory",
  "cognitive-exoskeleton-notes",
  "cognitive-exoskeleton-units",
@@ -164,6 +166,16 @@ dependencies = [
  "thiserror",
  "time",
  "uuid",
+]
+
+[[package]]
+name = "cognitive-exoskeleton-materials"
+version = "0.1.0"
+dependencies = [
+ "cognitive-exoskeleton-domain",
+ "rusqlite",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]

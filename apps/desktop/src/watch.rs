@@ -176,6 +176,7 @@ impl MaterialWatch {
         let notice = self.0.notice.clone();
         let ai = self.0.ctx.ai();
         let prompts = self.0.ctx.prompts.clone();
+        let feed = self.0.ctx.precompute_feed.get();
         let handle = gio::spawn_blocking(move || {
             let text = match selection {
                 Selection::Primary => Wayland.primary_text(),
@@ -205,6 +206,9 @@ impl MaterialWatch {
                     {
                         eprintln!("block cards: {e}");
                     }
+                    if feed {
+                        prepare_feed(&db, &ai, &prompts, &material);
+                    }
                     new.then(|| material.registered_notice())
                 }
                 Err(e) => {
@@ -225,5 +229,36 @@ impl MaterialWatch {
         for watcher in self.0.watchers.borrow_mut().drain(..) {
             watcher.stop();
         }
+    }
+}
+
+/// B90: the probe tree for a registered text, built once and kept, so Alt+T
+/// opens «Лента» without waiting. Runs off the GTK thread.
+fn prepare_feed(
+    db: &std::path::Path,
+    ai: &ctx::Ai,
+    prompts: &cognitive_exoskeleton_ai::PromptStore,
+    material: &cognitive_exoskeleton_materials::Material,
+) {
+    use cognitive_exoskeleton_practice::{self as practice, feed::FeedStore};
+    let Ok(store) = FeedStore::open(db) else {
+        return;
+    };
+    if store.tree(&material.id).ok().flatten().is_some() {
+        return;
+    }
+    match practice::probe_tree(
+        ai,
+        prompts,
+        &material.text,
+        cognitive_exoskeleton_ai::Priority::Background,
+    ) {
+        Ok(tree) if !tree.groups.is_empty() => {
+            if let Err(e) = store.save_tree(&material.id, &tree, ctx::now()) {
+                eprintln!("feed: {e}");
+            }
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("feed: prepare: {e}"),
     }
 }

@@ -343,26 +343,45 @@ impl PracticeWindow {
         );
         let this = self.clone();
         let provider = inner.ctx.provider();
+        let lesson = inner
+            .ctx
+            .lesson
+            .borrow()
+            .as_ref()
+            .map(|l| l.as_str().to_string());
         ctx::background(
-            move || -> Result<(Vec<Category>, Vec<String>), PracticeError> {
+            move || -> Result<Built, PracticeError> {
                 let now = ctx::now();
                 let recall = practice::due::recall_with_blocks(&db, &ai, &prompts, now)?;
-                let probes = if text.trim().is_empty() {
-                    practice::ProbeTree::default()
-                } else {
-                    practice::probe_tree(&ai, &prompts, &text, Priority::Foreground)?
+                let prepared = lesson.as_deref().and_then(|l| prepared_tree(&db, l, &text));
+                let (probes, whole) = match prepared {
+                    Some((tree, material)) => (tree, Some(material)),
+                    None if text.trim().is_empty() => (practice::ProbeTree::default(), None),
+                    None => (
+                        practice::probe_tree(&ai, &prompts, &text, Priority::Foreground)?,
+                        None,
+                    ),
                 };
                 let mut notes = probes.notes;
                 notes.extend(recall.notes);
                 Ok((
                     practice::arrange(probes.groups, recall.cards, from_pill),
                     notes,
+                    whole,
                 ))
             },
             move |result| {
                 if !this.current(generation) {
                     return;
                 }
+                // A prepared tree is of the whole text: its cards are asked
+                // for against that text too.
+                let result = result.map(|(categories, notes, whole)| {
+                    if let Some(whole) = whole {
+                        this.0.state.borrow_mut().text = whole;
+                    }
+                    (categories, notes)
+                });
                 match result {
                     Ok((categories, _)) if categories.is_empty() => this.show(&[ui::text(
                         "Нет доступной работы: выдели материал или дождись повторений.",
@@ -1536,6 +1555,33 @@ impl ProbePage {
         let title = this.group.borrow().title.clone();
         this.window.generate_whole(vec![title], &this.cards);
     }
+}
+
+/// The categories, the notes, and the whole text when a prepared tree was used.
+type Built = (Vec<Category>, Vec<String>, Option<String>);
+
+/// B90: the tree prepared for the lesson's registered text, when the
+/// selection lies in that text or nothing is selected. The operations the
+/// selection touches come first. Returns the tree and the whole text.
+fn prepared_tree(
+    db: &std::path::Path,
+    lesson: &str,
+    selection: &str,
+) -> Option<(practice::ProbeTree, String)> {
+    use cognitive_exoskeleton_materials::{Materials, normalize};
+    let material = Materials::open(db).ok()?.latest_for_lesson(lesson).ok()??;
+    let picked = normalize(selection);
+    if !picked.is_empty() && !normalize(&material.text).contains(&picked) {
+        return None;
+    }
+    let mut tree = FeedStore::open(db).ok()?.tree(&material.id).ok()??;
+    if !picked.is_empty() {
+        tree.groups.sort_by_key(|g| {
+            let span = normalize(&g.source_span);
+            !(picked.contains(&span) || span.contains(&picked))
+        });
+    }
+    Some((tree, material.text))
 }
 
 /// A branch to ask more cards from and its cards not shown yet.

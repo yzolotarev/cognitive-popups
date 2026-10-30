@@ -27,8 +27,8 @@ use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::MAX_LEVEL;
 use crate::guidance::Attempt;
+use crate::{MAX_LEVEL, ProbeTree};
 
 /// Cards remembered for the success rate.
 pub const WINDOW: usize = 8;
@@ -432,9 +432,38 @@ impl FeedStore {
                  -- later, never used to change the level (B90).
                  seconds    INTEGER NOT NULL,
                  at         INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS probe_trees (
+                 material_id TEXT PRIMARY KEY,
+                 tree_json   TEXT NOT NULL,
+                 made_at     INTEGER NOT NULL
              );",
         )?;
         Ok(Self { connection })
+    }
+
+    /// The probe tree prepared for a registered material (B90), if any.
+    pub fn tree(&self, material: &str) -> rusqlite::Result<Option<ProbeTree>> {
+        let json: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT tree_json FROM probe_trees WHERE material_id = ?1",
+                [material],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(json.and_then(|j| serde_json::from_str(&j).ok()))
+    }
+
+    /// Keeps a tree prepared in the background; a material keeps its first.
+    pub fn save_tree(&self, material: &str, tree: &ProbeTree, now: i64) -> rusqlite::Result<()> {
+        let json = serde_json::to_string(tree).unwrap_or_default();
+        self.connection.execute(
+            "INSERT OR IGNORE INTO probe_trees (material_id, tree_json, made_at)
+             VALUES (?1, ?2, ?3)",
+            params![material, json, now],
+        )?;
+        Ok(())
     }
 
     /// The saved level of an operation; 1 when it is new.
@@ -731,6 +760,32 @@ mod tests {
         f.record(whole, false);
         assert_eq!(f.success_rate(), None);
         assert_eq!(f.format_paused_until[2], 1 + 2 * FORMAT_PAUSE);
+    }
+
+    #[test]
+    fn a_prepared_tree_reads_back_and_the_first_one_stays() {
+        let store = FeedStore::open_in_memory().unwrap();
+        assert_eq!(store.tree("m1").unwrap(), None);
+        let card = crate::Card {
+            prompt: "2 + 3".into(),
+            answer: "5".into(),
+        };
+        let tree = ProbeTree {
+            groups: vec![crate::ProbeGroup {
+                title: "Сложение".into(),
+                invariant: "складываем".into(),
+                source_span: "сложи".into(),
+                relevance: String::new(),
+                kind: crate::Kind::Drill,
+                example: card.clone(),
+                cards: vec![card.clone()],
+                reserve: Vec::new(),
+            }],
+            notes: Vec::new(),
+        };
+        store.save_tree("m1", &tree, 1).unwrap();
+        store.save_tree("m1", &ProbeTree::default(), 2).unwrap();
+        assert_eq!(store.tree("m1").unwrap(), Some(tree));
     }
 
     #[test]

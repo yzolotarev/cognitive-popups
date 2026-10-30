@@ -19,7 +19,8 @@
 //! them): two operations at level 3 or higher → «Какая операция тут нужна?»;
 //! a settled operation → «В двух словах: почему так?» on it; two settled →
 //! «Собери вместе». About one card in seven is one of them. Two misses in a
-//! row in a format put it aside for the next eight cards.
+//! row in a format put it aside for the next eight cards; after a whole task
+//! the next one waits sixteen.
 
 use std::collections::VecDeque;
 use std::path::Path;
@@ -177,6 +178,11 @@ impl Feed {
         }
     }
 
+    /// How many operations the feed has.
+    pub fn ops(&self) -> usize {
+        self.ops.len()
+    }
+
     pub fn current(&self) -> usize {
         self.current
     }
@@ -280,8 +286,9 @@ impl Feed {
     /// before the answer was opened.
     pub fn record(&mut self, next: Next, clean: bool) {
         self.done += 1;
-        // A review is graded in its own card (FSRS); it does not steer the feed.
-        if next.pick != Pick::Recall {
+        // A review is graded in its own card (FSRS) and a whole task in its own
+        // window: neither steers the feed.
+        if !matches!(next.pick, Pick::Recall | Pick::Whole) {
             self.recent.push_back(clean);
             if self.recent.len() > WINDOW {
                 self.recent.pop_front();
@@ -289,7 +296,13 @@ impl Feed {
         }
         match next.pick {
             Pick::Recall => {}
-            Pick::Which | Pick::Explain | Pick::Whole => {
+            // A whole task is long: the next one waits twice the pause.
+            Pick::Whole => {
+                if let Some(i) = Self::format_index(next.pick) {
+                    self.format_paused_until[i] = self.done + 2 * FORMAT_PAUSE;
+                }
+            }
+            Pick::Which | Pick::Explain => {
                 let Some(i) = Self::format_index(next.pick) else {
                     return;
                 };
@@ -705,6 +718,19 @@ mod tests {
                 .attempt("k1", "Формула Байеса", next, clean, 1, 2)
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn a_whole_task_does_not_steer_and_the_next_one_waits() {
+        let mut f = feed(&[1]).with_formats();
+        let whole = Next {
+            op: 0,
+            level: 1,
+            pick: Pick::Whole,
+        };
+        f.record(whole, false);
+        assert_eq!(f.success_rate(), None);
+        assert_eq!(f.format_paused_until[2], 1 + 2 * FORMAT_PAUSE);
     }
 
     #[test]

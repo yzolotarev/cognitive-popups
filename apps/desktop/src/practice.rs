@@ -1597,7 +1597,7 @@ impl FeedPage {
         page.append(&ui::actions(&[&smaller, &skip]));
         let this = Rc::new(Self {
             window: window.clone(),
-            feed: RefCell::new(Feed::new(saved)),
+            feed: RefCell::new(Feed::new(saved).with_formats()),
             stock: RefCell::new(stock),
             asked: RefCell::new(HashSet::new()),
             recall: RefCell::new(recall.into()),
@@ -1719,9 +1719,22 @@ impl FeedPage {
             Self::fill(self);
             return;
         }
-        // What the feed asked for is not ready yet: the current operation at
-        // its level instead, rather than a wait.
-        if self.ready(next.op, next.level) == 0 {
+        let shown = match next.pick {
+            Pick::Which => self.show_which(next),
+            Pick::Explain => self.show_explain(next),
+            Pick::Whole => self.show_whole(next),
+            _ => false,
+        };
+        if shown {
+            self.waiting.set(false);
+            Self::fill(self);
+            return;
+        }
+        // What the feed asked for is not ready yet (or a format could not be
+        // shown): the current operation at its level instead, rather than a wait.
+        if matches!(next.pick, Pick::Which | Pick::Explain | Pick::Whole)
+            || self.ready(next.op, next.level) == 0
+        {
             let feed = self.feed.borrow();
             next = feed::Next {
                 op: feed.current(),
@@ -1744,6 +1757,244 @@ impl FeedPage {
         };
         self.waiting.set(false);
         self.show_card(next, card);
+    }
+
+    /// One marked card: the feed's rules, the saved levels, `probe_attempts`,
+    /// the journal, the «Прошлая» line; then the next card.
+    #[allow(clippy::too_many_arguments)]
+    fn note(
+        self: &Rc<Self>,
+        next: feed::Next,
+        title: &str,
+        attempt: practice::Attempt,
+        shown_at: i64,
+        serial: u32,
+        journal: &str,
+        last: &str,
+    ) {
+        let clean = attempt.correct && attempt.attempt_before_reveal;
+        self.feed.borrow_mut().record(next, clean);
+        self.save_levels();
+        let operation = self
+            .window
+            .0
+            .state
+            .borrow()
+            .operation
+            .as_ref()
+            .map(|o| o.as_str().to_string())
+            .unwrap_or_default();
+        if let Ok(store) = FeedStore::open(&self.window.0.ctx.db) {
+            let key = format!("feed:{operation}:{serial}");
+            if let Err(e) = store.attempt(&key, title, next, attempt, shown_at, ctx::now()) {
+                eprintln!("feed: {e}");
+            }
+        }
+        self.window.record(journal);
+        self.last.set_text(last);
+        self.last.set_visible(true);
+        self.show_next();
+    }
+
+    fn serial(&self) -> u32 {
+        let serial = self.shown.get() + 1;
+        self.shown.set(serial);
+        serial
+    }
+
+    fn caption(&self, title: &str, tag: &str) {
+        let caption = ui::row(8);
+        let name = ui::text(title, &["cp-headline"]);
+        name.set_hexpand(true);
+        name.set_xalign(0.0);
+        caption.append(&name);
+        caption.append(&ui::text(tag, &["cp-footnote", "cp-secondary"]));
+        self.slot.append(&caption);
+    }
+
+    /// «Какая операция тут нужна?»: a card of some operation without its name;
+    /// the reader picks the operation, the code knows which one wrote it.
+    fn show_which(self: &Rc<Self>, next: feed::Next) -> bool {
+        let n = self.feed.borrow().ops();
+        let ready: Vec<usize> = (0..n)
+            .filter(|op| self.ready(*op, self.feed.borrow().level(*op)) > 0)
+            .collect();
+        if n < 2 || ready.is_empty() {
+            return false;
+        }
+        let op = ready[((understand_roll() * ready.len() as f64) as usize).min(ready.len() - 1)];
+        let level = self.feed.borrow().level(op);
+        let Some(card) = self
+            .stock
+            .borrow_mut()
+            .get_mut(&(op, level))
+            .and_then(|(_, cards)| cards.pop_front())
+        else {
+            return false;
+        };
+        let serial = self.serial();
+        let shown_at = ctx::now();
+        ui::clear(&self.slot);
+        self.caption("Какая операция тут нужна?", "узнай сам");
+        let content = ui::column(6);
+        content.add_css_class("cp-content");
+        content.append(&ui::text(&card.prompt, &["cp-body"]));
+        let titles: Vec<String> = (0..n)
+            .map(|i| self.feed.borrow().key(i).to_string())
+            .collect();
+        let choices = ui::column(4);
+        let done = Rc::new(Cell::new(false));
+        for (i, choice) in titles.iter().enumerate() {
+            let button = ui::button(choice, &[]);
+            let (t, done, titles, card) =
+                (self.clone(), done.clone(), titles.clone(), card.clone());
+            button.connect_clicked(move |_| {
+                if done.replace(true) {
+                    return;
+                }
+                let correct = i == op;
+                let attempt = practice::Attempt {
+                    correct,
+                    attempt_before_reveal: true,
+                };
+                let journal = format!(
+                    "Какая операция: {} — {} (выбрал «{}», нужна «{}»; проверено кодом)",
+                    card.prompt,
+                    if correct {
+                        "верно"
+                    } else {
+                        "неверно"
+                    },
+                    titles[i],
+                    titles[op]
+                );
+                let last = format!(
+                    "{} Прошлая: нужна «{}»; {} → {}",
+                    if correct { "✓" } else { "✗" },
+                    titles[op],
+                    card.prompt,
+                    card.answer
+                );
+                t.note(
+                    feed::Next { op, level, ..next },
+                    &titles[op],
+                    attempt,
+                    shown_at,
+                    serial,
+                    &journal,
+                    &last,
+                );
+            });
+            choices.append(&button);
+        }
+        content.append(&choices);
+        self.slot.append(&content);
+        true
+    }
+
+    /// «В двух словах: почему так?» on a settled operation: the reader writes
+    /// first, then compares with the invariant and the quote and marks it.
+    fn show_explain(self: &Rc<Self>, next: feed::Next) -> bool {
+        let Some(group) = self.template(next.op, 1) else {
+            return false;
+        };
+        let title = self.feed.borrow().key(next.op).to_string();
+        let serial = self.serial();
+        let shown_at = ctx::now();
+        ui::clear(&self.slot);
+        self.caption("В двух словах: почему так?", "своими словами");
+        let content = ui::column(6);
+        content.add_css_class("cp-content");
+        content.append(&ui::text(
+            &format!("Почему «{title}» делается именно так? Пара фраз."),
+            &["cp-body"],
+        ));
+        let (area, view) = ui::text_area("своими словами", 72);
+        content.append(&area);
+        let compare = ui::button("Сверить", &["cp-default"]);
+        let row = ui::actions(&[&compare]);
+        content.append(&row);
+        self.slot.append(&content);
+        view.grab_focus();
+        let t = self.clone();
+        compare.connect_clicked(move |_| {
+            let buffer = view.buffer();
+            let own = buffer
+                .text(&buffer.start_iter(), &buffer.end_iter(), false)
+                .trim()
+                .to_string();
+            if own.is_empty() {
+                return;
+            }
+            view.set_editable(false);
+            row.set_visible(false);
+            content.append(&ui::text(&group.invariant, &["cp-callout"]));
+            if !group.source_span.is_empty() {
+                content.append(&ui::text(
+                    &format!("«{}»", group.source_span),
+                    &["cp-quote"],
+                ));
+            }
+            let matched = ui::button("✓ Совпало", &["cp-default"]);
+            let missed = ui::button("✗ Не то", &[]);
+            let mark = {
+                let (t, title, own) = (t.clone(), title.clone(), own.clone());
+                Rc::new(move |correct: bool| {
+                    let attempt = practice::Attempt {
+                        correct,
+                        attempt_before_reveal: true,
+                    };
+                    let journal = format!(
+                        "В двух словах «{title}»: {own} — {} (сверил сам)",
+                        if correct {
+                            "совпало"
+                        } else {
+                            "не то"
+                        }
+                    );
+                    let last = format!(
+                        "{} Прошлая: почему «{title}»",
+                        if correct { "✓" } else { "✗" }
+                    );
+                    t.note(next, &title, attempt, shown_at, serial, &journal, &last);
+                })
+            };
+            let (m1, m2) = (mark.clone(), mark);
+            matched.connect_clicked(move |b| {
+                b.set_sensitive(false);
+                m1(true)
+            });
+            missed.connect_clicked(move |b| {
+                b.set_sensitive(false);
+                m2(false)
+            });
+            content.append(&ui::actions(&[&missed, &matched]));
+        });
+        true
+    }
+
+    /// «Собери вместе» on the settled operations: the whole-task view of the
+    /// window, then [Дальше]. It does not steer the feed.
+    fn show_whole(self: &Rc<Self>, next: feed::Next) -> bool {
+        let settled = self.feed.borrow().settled();
+        if settled.len() < 2 {
+            return false;
+        }
+        let titles: Vec<String> = settled
+            .iter()
+            .map(|op| self.feed.borrow().key(*op).to_string())
+            .collect();
+        self.feed.borrow_mut().record(next, true);
+        ui::clear(&self.slot);
+        self.caption("Собери вместе", "целая задача");
+        let body = ui::column(8);
+        self.slot.append(&body);
+        self.window.generate_whole(titles, &body);
+        let on = ui::button("Дальше", &[]);
+        let t = self.clone();
+        on.connect_clicked(move |_| t.show_next());
+        self.slot.append(&ui::actions(&[&on]));
+        true
     }
 
     fn show_card(self: &Rc<Self>, next: feed::Next, card: Card) {
@@ -1788,8 +2039,7 @@ impl FeedPage {
         content.append(&ui::text(&card.prompt, &["cp-body"]));
         let session = Rc::new(Cell::new(CardSession::default()));
         let shown_at = ctx::now();
-        let serial = self.shown.get() + 1;
-        self.shown.set(serial);
+        let serial = self.serial();
         let right = ui::button("✓", &[]);
         right.set_tooltip_text(Some("Решил сам, верно"));
         let wrong = ui::button("✗", &[]);
@@ -1806,33 +2056,7 @@ impl FeedPage {
                     return;
                 };
                 s.set(current);
-                let clean = attempt.correct && attempt.attempt_before_reveal;
-                t.feed.borrow_mut().record(next, clean);
-                t.save_levels();
-                let now = ctx::now();
-                let operation = t
-                    .window
-                    .0
-                    .state
-                    .borrow()
-                    .operation
-                    .as_ref()
-                    .map(|o| o.as_str().to_string())
-                    .unwrap_or_default();
-                if let Ok(store) = FeedStore::open(&t.window.0.ctx.db) {
-                    let key = format!("feed:{operation}:{serial}");
-                    if let Err(e) = store.attempt(
-                        &key,
-                        &title,
-                        next,
-                        attempt,
-                        shown_at,
-                        now,
-                    ) {
-                        eprintln!("feed: {e}");
-                    }
-                }
-                t.window.record(&format!(
+                let line = format!(
                     "Проба «{title}» (уровень {}, лента): {} — {}{}",
                     next.level,
                     card.prompt,
@@ -1846,14 +2070,14 @@ impl FeedPage {
                     } else {
                         " (после ответа)"
                     }
-                ));
-                t.last.set_text(&format!(
+                );
+                let last = format!(
                     "{} Прошлая: {} → {}",
                     if correct { "✓" } else { "✗" },
                     card.prompt,
                     card.answer
-                ));
-                t.last.set_visible(true);
+                );
+                t.note(next, &title, attempt, shown_at, serial, &line, &last);
                 t.show_next();
             })
         };

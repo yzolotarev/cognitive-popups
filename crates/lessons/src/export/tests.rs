@@ -171,5 +171,7 @@ fn a_lesson_is_exported_with_its_events_guesses_and_notes() {
         export_lesson(&db, Some("нет-такого"), at(60), 0),
         Err(ExportError::NotFound(_))
     ));
+    // Windows keeps an open database file locked.
+    drop((store, guesses, notes));
     std::fs::remove_dir_all(dir).unwrap();
 }

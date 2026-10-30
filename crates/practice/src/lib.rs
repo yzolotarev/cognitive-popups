@@ -17,6 +17,7 @@ pub mod availability;
 pub mod due;
 pub mod expr;
 pub mod families;
+pub mod feed;
 pub mod feynman;
 pub mod guidance;
 pub mod numeric;

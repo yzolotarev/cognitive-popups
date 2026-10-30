@@ -32,8 +32,11 @@ use crate::{MAX_LEVEL, ProbeTree};
 
 /// Cards remembered for the success rate.
 pub const WINDOW: usize = 8;
-/// Ready cards the window keeps for the current operation.
-pub const BUFFER: usize = 5;
+/// Ready cards the window keeps for the current operation. A refill takes 10-30 s
+/// and a card takes a few seconds, so the refill starts while many are still left.
+pub const BUFFER: usize = 10;
+/// Ready cards kept for the next other operation.
+pub const OTHER_BUFFER: usize = 4;
 /// Clean in a row before a step up is tried.
 pub const STEP_UP_AFTER: u32 = 3;
 

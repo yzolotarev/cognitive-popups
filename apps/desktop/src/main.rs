@@ -26,6 +26,7 @@ mod theme;
 mod tray;
 mod ui;
 mod understand;
+mod watch;
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -320,6 +321,8 @@ fn daemon() -> ExitCode {
         pill.start();
         let lesson = lesson::LessonUi::new(app, ctx.clone(), notice.clone(), pill.clone());
         lesson.restore();
+        let material_watch = watch::MaterialWatch::start(ctx.clone(), notice.clone());
+        app.connect_shutdown(move |_| material_watch.stop());
         let hub = hub::Hub::new(app, ctx.clone(), {
             let pill = pill.clone();
             move || pill.refresh()

@@ -303,3 +303,18 @@ fn the_review_pill_is_asked_once_and_off_by_default() {
     assert!(nudges.consent_asked(Consent::Reviews).unwrap());
     assert!(!nudges.consented(Consent::Reviews).unwrap());
 }
+
+#[test]
+fn the_study_clipboard_is_off_by_default_and_parses() {
+    let mut nudges = Nudges::open_in_memory().unwrap();
+    assert!(!nudges.consented(Consent::StudyClipboard).unwrap());
+    assert_eq!(
+        Consent::parse("study_clipboard"),
+        Some(Consent::StudyClipboard)
+    );
+    assert_eq!(Consent::StudyClipboard.as_str(), "study_clipboard");
+    nudges
+        .set_consent(Consent::StudyClipboard, true, 1)
+        .unwrap();
+    assert!(nudges.consented(Consent::StudyClipboard).unwrap());
+}

@@ -69,7 +69,7 @@ usage:
   cognitive-exoskeleton practice skill --db <path> [--now <t>]   units admitted to «умение», and the refusals
   cognitive-exoskeleton practice skill list|suspend|resume|retire [<unit>] --db <path>   the reader's pause/снятие (B67)
   cognitive-exoskeleton practice check --family <name> --seed <n> --answer <text>
-  cognitive-exoskeleton nudge consent --db <path> <opportunity|daily|background_recording|experiments> <on|off>
+  cognitive-exoskeleton nudge consent --db <path> <opportunity|daily|background_recording|experiments|reviews|study_clipboard> <on|off>
   cognitive-exoskeleton nudge check --db <path> --kind <opportunity|daily> --topic <t> [--busy] [--media]
   cognitive-exoskeleton nudge shown --db <path> --kind <k> --topic <t>
   cognitive-exoskeleton nudge respond --db <path> <show-id> <opened|not_now|ignored>
@@ -85,6 +85,7 @@ usage:
   cognitive-exoskeleton lesson plan --db <path> --prompts <dir> --subject <id> [--thoughts <text>] [--text <file>] | show | item <id> <status> | close [--remaining <text>]
   cognitive-exoskeleton step start --db <path> [--path 1|3|5|inf] [<minutes> <text>] | finish done|partly|not [--takeaway <text>] | bridge
   cognitive-exoskeleton material register --db <path> --lesson <id> --file <txt>   a study text with blocks (B78)
+  cognitive-exoskeleton material check --file <txt>   would the clipboard watcher take it as a full text
   cognitive-exoskeleton material show --db <path> <material-id>
   cognitive-exoskeleton resume --db <path>
   cognitive-exoskeleton formula <LaTeX>
@@ -997,7 +998,7 @@ fn run_nudges(group: &str, args: &[String]) -> Result<String, String> {
         ("nudge", "consent") => {
             let [what, value] = positional.as_slice() else {
                 return Err(
-                    "consent <opportunity|daily|background_recording|experiments> <on|off>".into(),
+                    "consent <opportunity|daily|background_recording|experiments|reviews|study_clipboard> <on|off>".into(),
                 );
             };
             let what = NudgeConsent::parse(what).ok_or("unknown consent")?;
@@ -1217,6 +1218,12 @@ fn run_material(args: &[String]) -> Result<String, String> {
         &["--db", "--lesson", "--file", "--block", "--now"],
         &[],
     )?;
+    if command == "check" {
+        let path = options.get("--file").ok_or("--file is required")?;
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+        let full = cognitive_exoskeleton_materials::watch::is_full_text(&text);
+        return Ok(json(&serde_json::json!({ "full": full })));
+    }
     let db = options.get("--db").ok_or("--db is required")?;
     let at = now(options.get("--now").map(String::as_str))?;
     let e = |e: cognitive_exoskeleton_materials::MaterialError| e.to_string();

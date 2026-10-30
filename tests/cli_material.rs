@@ -102,4 +102,9 @@ fn a_material_is_registered_and_shown() {
     assert_ne!(second["id"], first["id"]);
     // The old material stays (INV-12).
     assert_eq!(json(&db, &["material", "show", id])["id"], id);
+    // Two marked blocks qualify even when their text is short.
+    assert_eq!(
+        json(&db, &["material", "check", "--file", path])["full"],
+        true
+    );
 }

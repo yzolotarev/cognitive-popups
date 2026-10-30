@@ -50,6 +50,17 @@ pub const HARDER_PROMPT: &str = "NEW_probes_harder";
 /// Probe levels: 1 is what the text gives, 5 is transfer.
 pub const MAX_LEVEL: u8 = 5;
 pub const GROUPS: usize = 3;
+
+/// What the window says when the text has no mechanical operation to drill.
+pub const NO_OPERATIONS: &str = "В этом тексте нет операций для механической отработки. Выдели фрагмент с формулой, расчётом или правилом.";
+
+/// The subject and goals go in front of the text: data for the model, not instructions.
+fn with_focus(focus: Option<&str>, input: String) -> String {
+    match focus.map(str::trim).filter(|f| !f.is_empty()) {
+        Some(focus) => format!("ПРЕДМЕТ И ЦЕЛЬ УРОКА:\n{focus}\n\n{input}"),
+        None => input,
+    }
+}
 pub const CARDS: usize = 3;
 /// Cards kept beyond the first three, for [Ещё 3] and the diagnostic case.
 pub const RESERVE: usize = 9;
@@ -172,10 +183,8 @@ impl PracticeError {
 
 /// Shape check inside the model call, so a malformed answer gets one repair.
 pub fn schema_check(value: &Value) -> Result<(), String> {
+    // An empty list is an honest answer: the text has no operation to drill.
     let groups = value["groups"].as_array().ok_or("нет массива groups")?;
-    if groups.is_empty() {
-        return Err("groups пуст".into());
-    }
     for (i, group) in groups.iter().enumerate() {
         for field in ["title", "source_span", "kind"] {
             if !group[field].is_string() {
@@ -314,6 +323,19 @@ pub fn probe_tree<T: Transport>(
     text: &str,
     priority: Priority,
 ) -> Result<ProbeTree, PracticeError> {
+    probe_tree_for(client, prompts, text, None, priority)
+}
+
+/// The tree for a text of a lesson: `focus` names the subject, its goal and the
+/// lesson's own goal, so that the operations are skills of that subject and not
+/// whatever the words of the text allow (a language drill in a probability text).
+pub fn probe_tree_for<T: Transport>(
+    client: &Client<T>,
+    prompts: &PromptStore,
+    text: &str,
+    focus: Option<&str>,
+    priority: Priority,
+) -> Result<ProbeTree, PracticeError> {
     let text = text.trim();
     if text.is_empty() {
         return Err(PracticeError::EmptyText);
@@ -329,13 +351,20 @@ pub fn probe_tree<T: Transport>(
     let mut tree = ProbeTree::default();
     let mut request = Request {
         system: prompt(GENERATE_PROMPT)?,
-        input: format!("ТЕКСТ:\n{text}"),
+        input: with_focus(focus, format!("ТЕКСТ:\n{text}")),
         max_tokens: 4000,
         json: true,
         priority,
     };
     for round in 0..REPAIR_ROUNDS + 1 {
         let raw = client.complete_json(&request, schema_check)?;
+        if raw["groups"].as_array().is_some_and(Vec::is_empty) {
+            // The model found nothing worth drilling: no operation is made up.
+            if tree.groups.is_empty() {
+                tree.notes.push(NO_OPERATIONS.into());
+            }
+            break;
+        }
         let mut fresh: Vec<Candidate> = Vec::new();
         let mut rejected: Vec<String> = Vec::new();
         for (i, group) in raw["groups"].as_array().into_iter().flatten().enumerate() {
@@ -363,19 +392,30 @@ pub fn probe_tree<T: Transport>(
             }
         }
         tree.notes.extend(rejected.iter().cloned());
-        if tree.groups.len() >= GROUPS || round == REPAIR_ROUNDS {
+        // Up to three; a second round only repairs what the checks threw out, it does
+        // not ask for more just to reach three.
+        if tree.groups.len() >= GROUPS
+            || round == REPAIR_ROUNDS
+            || (rejected.is_empty() && !tree.groups.is_empty())
+        {
+            if tree.groups.is_empty() {
+                tree.notes.push(NO_OPERATIONS.into());
+            }
             break;
         }
         let titles: Vec<&str> = tree.groups.iter().map(|g| g.title.as_str()).collect();
-        request.input = format!(
-            "ТЕКСТ:\n{text}\n\nУЖЕ ПРИНЯТО: {}\nОТКЛОНЕНО ({} шт.):\n- {}",
-            if titles.is_empty() {
-                "—".into()
-            } else {
-                titles.join("; ")
-            },
-            GROUPS - tree.groups.len(),
-            rejected.join("\n- ")
+        request.input = with_focus(
+            focus,
+            format!(
+                "ТЕКСТ:\n{text}\n\nУЖЕ ПРИНЯТО: {}\nОТКЛОНЕНО ({} шт.):\n- {}",
+                if titles.is_empty() {
+                    "—".into()
+                } else {
+                    titles.join("; ")
+                },
+                GROUPS - tree.groups.len(),
+                rejected.join("\n- ")
+            ),
         );
     }
     Ok(tree)

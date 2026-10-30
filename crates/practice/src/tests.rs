@@ -556,3 +556,55 @@ fn stuck_asks_for_concepts_and_a_question_and_never_takes_the_answer() {
         "a leaked answer goes back with the reason"
     );
 }
+
+#[test]
+fn an_empty_answer_is_a_valid_tree_with_the_reason_and_costs_one_call() {
+    let client = client(&[json!({"groups": []})]);
+    let tree = probe_tree_for(
+        &client,
+        &prompts(),
+        TEXT,
+        Some("Теория вероятностей"),
+        Priority::Foreground,
+    )
+    .unwrap();
+    assert!(tree.groups.is_empty());
+    assert_eq!(tree.notes, vec![NO_OPERATIONS.to_string()]);
+    assert_eq!(client.transport().calls.get(), 1);
+}
+
+#[test]
+fn the_subject_goes_before_the_text_and_one_good_branch_is_not_padded_to_three() {
+    let client = client(&[json!({"groups":[numeric("r == a*b")]}), json!({"bad":[]})]);
+    let tree = probe_tree_for(
+        &client,
+        &prompts(),
+        TEXT,
+        Some("Теория вероятностей. Цель: считать вероятности"),
+        Priority::Foreground,
+    )
+    .unwrap();
+    assert_eq!(tree.groups.len(), 1, "{:#?}", tree.notes);
+    let first = client.transport().inputs.borrow()[0].clone();
+    assert!(
+        first.contains("ПРЕДМЕТ И ЦЕЛЬ УРОКА:\nТеория вероятностей. Цель: считать вероятности")
+    );
+    assert!(first.find("ПРЕДМЕТ").unwrap() < first.find("ТЕКСТ:").unwrap());
+    // No second round that asks for two more to reach three.
+    assert!(
+        !client
+            .transport()
+            .inputs
+            .borrow()
+            .iter()
+            .any(|i| i.contains("УЖЕ ПРИНЯТО"))
+    );
+}
+
+#[test]
+fn without_a_subject_the_input_is_the_text_as_before() {
+    let client = client(&[json!({"groups": []})]);
+    probe_tree(&client, &prompts(), TEXT, Priority::Foreground).unwrap();
+    let first = client.transport().inputs.borrow()[0].clone();
+    assert!(!first.contains("ПРЕДМЕТ И ЦЕЛЬ"));
+}

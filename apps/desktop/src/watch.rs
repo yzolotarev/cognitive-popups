@@ -247,10 +247,11 @@ fn prepare_feed(
     if store.tree(&material.id).ok().flatten().is_some() {
         return;
     }
-    match practice::probe_tree(
+    match practice::probe_tree_for(
         ai,
         prompts,
         &material.text,
+        crate::practice::lesson_focus(db).as_deref(),
         cognitive_exoskeleton_ai::Priority::Background,
     ) {
         Ok(tree) if !tree.groups.is_empty() => {

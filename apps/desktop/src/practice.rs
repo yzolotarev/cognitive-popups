@@ -369,7 +369,13 @@ impl PracticeWindow {
                     Some((tree, material)) => (tree, Some(material)),
                     None if text.trim().is_empty() => (practice::ProbeTree::default(), None),
                     None => (
-                        practice::probe_tree(&ai, &prompts, &text, Priority::Foreground)?,
+                        practice::probe_tree_for(
+                            &ai,
+                            &prompts,
+                            &text,
+                            lesson_focus(&db).as_deref(),
+                            Priority::Foreground,
+                        )?,
                         None,
                     ),
                 };
@@ -394,11 +400,14 @@ impl PracticeWindow {
                     (categories, notes)
                 });
                 match result {
-                    Ok((categories, _)) if categories.is_empty() => this.show(&[ui::text(
-                        "Нет доступной работы: выдели материал или дождись повторений.",
-                        &["cp-body"],
-                    )
-                    .upcast()]),
+                    Ok((categories, notes)) if categories.is_empty() => {
+                        let why = if notes.iter().any(|n| n == practice::NO_OPERATIONS) {
+                            practice::NO_OPERATIONS
+                        } else {
+                            "Нет доступной работы: выдели материал или дождись повторений."
+                        };
+                        this.show(&[ui::text(why, &["cp-body"]).upcast()])
+                    }
                     Ok((categories, _)) => this.tree(categories),
                     Err(e) => this.failed(&e.user_message(provider), Route::Probes),
                 }
@@ -1736,6 +1745,24 @@ type Built = (Vec<Category>, Vec<String>, Option<String>);
 /// B90: the tree prepared for the lesson's registered text, when the
 /// selection lies in that text or nothing is selected. The operations the
 /// selection touches come first. Returns the tree and the whole text.
+/// The subject, its goal and the lesson's own goal, as data for the probe generator:
+/// the operations must be skills of this subject (note: a probability lesson got
+/// plural forms and arithmetic). None without an open lesson.
+pub(crate) fn lesson_focus(db: &std::path::Path) -> Option<String> {
+    use cognitive_exoskeleton_lessons::LessonStore;
+    let store = LessonStore::open(db).ok()?;
+    let lesson = store.open_lesson().ok()??;
+    let subject = store.subject(&lesson.subject).ok()??;
+    let mut focus = format!(
+        "Предмет: {}. Цель предмета: {}.",
+        subject.name, subject.goal
+    );
+    if !lesson.goal.trim().is_empty() {
+        focus.push_str(&format!(" Цель этого урока: {}", lesson.goal.trim()));
+    }
+    Some(focus)
+}
+
 fn prepared_tree(
     db: &std::path::Path,
     lesson: &str,
@@ -1800,6 +1827,42 @@ const STUCK_AFTER_S: i64 = 75;
 
 /// A branch to ask more cards from and its cards not shown yet.
 type Stock = (ProbeGroup, VecDeque<Card>);
+/// One tree's stock by operation title and level.
+type StockByTitle = HashMap<(String, u8), Stock>;
+/// The trees kept in the cache, newest last.
+type StockCache = Vec<(String, StockByTitle)>;
+
+thread_local! {
+    /// Cards made ahead, by the tree they belong to (its operation titles). They stay
+    /// in the daemon when the window closes, so a reopened feed neither repeats
+    /// cards nor waits for them; a refill that finishes after the close lands here.
+    static STOCK_CACHE: RefCell<StockCache> = const { RefCell::new(Vec::new()) };
+}
+
+fn stock_key(titles: &[String]) -> String {
+    titles.join("\u{1f}")
+}
+
+fn stock_saved(key: &str) -> StockByTitle {
+    STOCK_CACHE.with(|c| {
+        c.borrow()
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, stock)| stock.clone())
+            .unwrap_or_default()
+    })
+}
+
+fn stock_store(key: &str, stock: StockByTitle) {
+    STOCK_CACHE.with(|c| {
+        let mut cache = c.borrow_mut();
+        cache.retain(|(k, _)| k != key);
+        cache.push((key.to_string(), stock));
+        if cache.len() > 3 {
+            cache.remove(0);
+        }
+    });
+}
 
 /// «Лента» (B90): one card at a time; the code picks the operation, its level
 /// and when to try a step up (`practice::feed`). Cards come ready from a stock
@@ -1810,6 +1873,8 @@ struct FeedPage {
     /// Per operation and level: the branch the next cards are asked from and
     /// the cards not shown yet.
     stock: RefCell<HashMap<(usize, u8), Stock>>,
+    /// The key of this tree in `STOCK_CACHE`.
+    stock_key: String,
     asked: RefCell<HashSet<(usize, u8)>>,
     recall: RefCell<VecDeque<RecallCard>>,
     page: gtk::Box,
@@ -1857,6 +1922,8 @@ impl FeedPage {
                 (g.title.clone(), level)
             })
             .collect();
+        let titles: Vec<String> = groups.iter().map(|g| g.title.clone()).collect();
+        let stock_key = stock_key(&titles);
         let mut stock = HashMap::new();
         for (i, group) in groups.into_iter().enumerate() {
             let cards: VecDeque<Card> = group
@@ -1866,6 +1933,13 @@ impl FeedPage {
                 .cloned()
                 .collect();
             stock.insert((i, 1), (group, cards));
+        }
+        // What an earlier window of this tree left (and made since) replaces the
+        // tree's first cards: the used ones are gone from it.
+        for ((title, level), entry) in stock_saved(&stock_key) {
+            if let Some(i) = titles.iter().position(|t| *t == title) {
+                stock.insert((i, level), entry);
+            }
         }
         // Above: the card just answered, small and dim, as if scrolled past.
         let last = ui::text("", &["cp-footnote", "cp-secondary", "cp-feed-past"]);
@@ -1891,6 +1965,7 @@ impl FeedPage {
         hint.set_hexpand(true);
         hint.set_xalign(0.0);
         let footer = ui::row(12);
+        footer.add_css_class("cp-feed-footer");
         footer.append(&hint);
         footer.append(&smaller);
         footer.append(&skip);
@@ -1900,6 +1975,7 @@ impl FeedPage {
             window: window.clone(),
             feed: RefCell::new(Feed::new(saved).with_formats()),
             stock: RefCell::new(stock),
+            stock_key,
             asked: RefCell::new(HashSet::new()),
             recall: RefCell::new(recall.into()),
             page: page.clone(),
@@ -2019,6 +2095,22 @@ impl FeedPage {
             .find_map(|l| stock.get(&(op, l)).map(|(group, _)| group.clone()))
     }
 
+    /// Puts the stock into the daemon's cache (after a card is taken or made).
+    fn persist(&self) {
+        let saved = self
+            .stock
+            .borrow()
+            .iter()
+            .map(|((_, level), (group, cards))| {
+                (
+                    (group.title.clone(), *level),
+                    (group.clone(), cards.clone()),
+                )
+            })
+            .collect();
+        stock_store(&self.stock_key, saved);
+    }
+
     fn ready(&self, op: usize, level: u8) -> usize {
         self.stock
             .borrow()
@@ -2034,13 +2126,18 @@ impl FeedPage {
             (feed.wanted(), feed.current())
         };
         for (op, level) in wanted {
-            let enough = if op == current { feed::BUFFER } else { 2 };
+            let enough = if op == current {
+                feed::BUFFER
+            } else {
+                feed::OTHER_BUFFER
+            };
             if this.ready(op, level) >= enough || this.asked.borrow().contains(&(op, level)) {
                 continue;
             }
             let Some(group) = this.template(op, level) else {
                 continue;
             };
+            let title = group.title.clone();
             this.asked.borrow_mut().insert((op, level));
             let inner = &this.window.0;
             let text = inner.state.borrow().text.clone();
@@ -2069,8 +2166,10 @@ impl FeedPage {
                                 .1
                                 .extend(group.cards.iter().chain(group.reserve.iter()).cloned());
                             entry.0 = group;
+                            drop(stock);
+                            t.persist();
                         }
-                        Err(e) => eprintln!("feed: level {level}: {e}"),
+                        Err(e) => eprintln!("feed: «{title}» level {level}: {e}"),
                     }
                     if t.waiting.get() {
                         t.show_next();
@@ -2141,6 +2240,7 @@ impl FeedPage {
             .borrow_mut()
             .get_mut(&(next.op, next.level))
             .and_then(|(_, cards)| cards.pop_front());
+        self.persist();
         Self::fill(self);
         let Some(card) = card else {
             self.waiting.set(true);
@@ -2628,4 +2728,28 @@ fn days_ago(seconds: i64) -> String {
 
 fn understand_roll() -> f64 {
     cognitive_exoskeleton_understand::roll()
+}
+
+#[cfg(test)]
+mod stock_cache_tests {
+    use super::*;
+
+    #[test]
+    fn the_cache_keeps_a_tree_between_windows_and_forgets_the_oldest() {
+        let key = |n: u8| stock_key(&[format!("операция {n}"), "вторая".to_string()]);
+        assert_eq!(key(1), "операция 1\u{1f}вторая");
+        assert!(
+            stock_saved(&key(1)).is_empty(),
+            "nothing before the first close"
+        );
+        for n in 1..=4 {
+            stock_store(&key(n), HashMap::new());
+        }
+        // Three trees are kept; the first one is gone.
+        STOCK_CACHE.with(|c| assert_eq!(c.borrow().len(), 3));
+        STOCK_CACHE.with(|c| assert!(c.borrow().iter().all(|(k, _)| *k != key(1))));
+        // Storing a tree again replaces it instead of adding a copy.
+        stock_store(&key(4), HashMap::new());
+        STOCK_CACHE.with(|c| assert_eq!(c.borrow().len(), 3));
+    }
 }

@@ -131,12 +131,18 @@ textview.cp-rich, textview.cp-rich text {
 /* «Лента» (B90): the card just answered, dim above; the edge of the next
    one below; a short tint after a mark. */
 .cp-feed-past { opacity: 0.6; }
+/* The edge of the next card: a surface that fades out downwards, so it reads as
+   "more below" and not as a card cut off; the text keeps full contrast. */
 .cp-feed-peek {
-  background: @cp_surface;
+  background-image: linear-gradient(to bottom, @cp_surface, transparent);
   border-radius: 10px 10px 0 0;
-  padding: 4px 12px;
-  opacity: 0.5;
+  padding: 6px 12px 14px;
+  color: @cp_text_secondary;
 }
+/* Skip and a smaller step are how the feed moves on: stronger than a rare link. */
+.cp-feed-footer button.cp-quiet-link { opacity: 0.8; }
+.cp-feed-footer button.cp-quiet-link:hover,
+.cp-feed-footer button.cp-quiet-link:focus { opacity: 1; }
 .cp-feed-card { border-radius: 10px; }
 .cp-feed-card.cp-flash-right { box-shadow: inset 0 0 0 2px @cp_success; }
 .cp-feed-card.cp-flash-wrong { box-shadow: inset 0 0 0 2px @cp_error; }

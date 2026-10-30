@@ -280,6 +280,16 @@ impl Materials {
         }
         Ok(None)
     }
+    /// True when the lesson had suggestions and every one is done or skipped: the clock
+    /// then says so instead of going silently empty.
+    pub fn hints_exhausted(&self, lesson: &str) -> Result<bool, MaterialError> {
+        Ok(self.experiments_consented()?
+            && self.hint(lesson)?.is_none()
+            && self
+                .assignments()?
+                .iter()
+                .any(|a| a.lesson == lesson && a.function().is_some()))
+    }
     pub fn mark_shown(&self, id: &str, now: i64) -> Result<(), MaterialError> {
         if self.experiments_consented()? {
             self.connection.execute("UPDATE block_assignments SET shown_at=COALESCE(shown_at,?2) WHERE id=?1 AND shown_at IS NULL AND arm IN ('suggest_alt_t','suggest_alt_w')", params![id,now])?;
@@ -659,6 +669,19 @@ mod tests {
         assert_eq!(rows[5].selection_probability, Some(0.0));
         let export = m.export().unwrap();
         assert_eq!(export["assignments"][0]["selection_weight"], 2.5);
+    }
+    #[test]
+    fn hints_are_exhausted_only_after_every_suggestion_is_done() {
+        let mut m = Materials::open_in_memory().unwrap();
+        assign(&mut m, "t", 0.0);
+        assert!(!m.hints_exhausted("t").unwrap());
+        for a in m.assignments().unwrap() {
+            m.mark_shown(&a.id, 100).unwrap();
+            m.skip(&a.id, 101).unwrap();
+        }
+        assert!(m.hints_exhausted("t").unwrap());
+        assign(&mut m, "s", 0.99);
+        assert!(!m.hints_exhausted("s").unwrap(), "silence promised nothing");
     }
     #[test]
     fn hint_ignores_assignments_of_a_replaced_material() {

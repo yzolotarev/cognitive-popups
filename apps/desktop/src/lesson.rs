@@ -786,7 +786,17 @@ impl LessonUi {
             let material = m.material(&a.material).ok().flatten()?;
             Some((m, a, material))
         });
-        let id = found.as_ref().map(|(_, a, _)| a.id.clone());
+        let exhausted = found.is_none()
+            && lesson.is_some_and(|l| {
+                Materials::open(&self.0.ctx.db)
+                    .ok()
+                    .is_some_and(|m| m.hints_exhausted(l).unwrap_or(false))
+            });
+        let id = if exhausted {
+            Some("hints-finished".to_string())
+        } else {
+            found.as_ref().map(|(_, a, _)| a.id.clone())
+        };
         if *self.0.hint_id.borrow() == id {
             if self.0.clock.is_visible()
                 && let Some((m, a, _)) = found
@@ -797,6 +807,13 @@ impl LessonUi {
         }
         ui::clear(&self.0.clock_hint);
         *self.0.hint_id.borrow_mut() = id;
+        if exhausted {
+            self.0.clock_hint.append(&ui::text(
+                "Подсказки по этому тексту закончились",
+                &["cp-footnote"],
+            ));
+            return;
+        }
         let Some((materials, a, material)) = found else {
             return;
         };

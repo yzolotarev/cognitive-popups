@@ -348,6 +348,15 @@ impl Feed {
         }
     }
 
+    /// An answer reached with «Застрял» (B91): done, never clean, never a
+    /// miss — it neither raises nor lowers anything.
+    pub fn record_helped(&mut self, next: Next) {
+        self.done += 1;
+        if let Some(op) = self.ops.get_mut(next.op) {
+            op.seen += 1;
+        }
+    }
+
     /// «Шаг поменьше» pressed by the reader: one level down now.
     pub fn smaller_step(&mut self) {
         let op = &mut self.ops[self.current];
@@ -786,6 +795,20 @@ mod tests {
         store.save_tree("m1", &tree, 1).unwrap();
         store.save_tree("m1", &ProbeTree::default(), 2).unwrap();
         assert_eq!(store.tree("m1").unwrap(), Some(tree));
+    }
+
+    #[test]
+    fn help_neither_raises_nor_puts_a_format_aside() {
+        let mut f = feed(&[4, 4]).with_formats();
+        let which = f.next(0.2, false);
+        f.record(which, false);
+        f.record_helped(which);
+        f.record_helped(which);
+        assert!(
+            f.open_formats().contains(&Pick::Which),
+            "help is not a miss"
+        );
+        assert_eq!(f.success_rate(), None, "nor a clean card");
     }
 
     #[test]

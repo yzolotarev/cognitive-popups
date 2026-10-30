@@ -68,7 +68,7 @@ impl HypothesisWindow {
         header.append(&source);
         root.append(&header);
         let quote = ui::text("", &["cp-quote"]);
-        quote.set_lines(2);
+        quote.set_lines(6);
         quote.set_ellipsize(gtk::pango::EllipsizeMode::End);
         root.append(&quote);
         let body = ui::column(8);

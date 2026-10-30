@@ -334,6 +334,7 @@ mod tests {
                 application: Some("Firefox".into()),
                 window_title: Some("Article".into()),
                 context: SourceContext::Study,
+                blocks: Vec::new(),
             },
         )
         .unwrap()
@@ -541,6 +542,7 @@ mod tests {
             application: Some("kitty".into()),
             window_title: None,
             context: SourceContext::Development,
+            blocks: Vec::new(),
         };
         let first = NewEvent::source(operation(), at(0), "k-1", dev.clone()).unwrap();
         dev.context = SourceContext::AiChat;

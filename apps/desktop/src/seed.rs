@@ -94,6 +94,7 @@ pub fn demo(db: &Path, now: i64) -> Result<(), String> {
             application: Some("okular".into()),
             window_title: Some("Численные методы — Okular".into()),
             context: SourceContext::Study,
+            blocks: Vec::new(),
         },
     )
     .map_err(|x| e(&x))?;

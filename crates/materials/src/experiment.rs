@@ -220,8 +220,10 @@ impl Materials {
         if !self.experiments_consented()? {
             return Ok(None);
         }
+        let latest = self.latest_for_lesson(lesson)?.map(|m| m.id);
         for a in self.assignments()? {
             if a.lesson == lesson
+                && latest.as_deref() == Some(a.material.as_str())
                 && a.function().is_some()
                 && a.skipped_at.is_none()
                 && self.completion(&a)?.is_none()
@@ -342,16 +344,15 @@ impl Materials {
                     self.card_failed(&a.id, &e).map_err(|e| e.to_string())?;
                 }
             }
-            // Reconcile after interrupted enrollment without changing the original due.
-            let created: bool = self
-                .connection
-                .query_row(
-                    "SELECT card_status='created' FROM block_assignments WHERE id=?1",
-                    [&a.id],
-                    |r| r.get(0),
-                )
-                .map_err(|e| e.to_string())?;
-            if created {
+        }
+        self.reconcile_cards(&mut memory)
+    }
+
+    /// Enrolls every created card that an interrupted run left without a schedule row,
+    /// keeping the original due (assignment + 24 h). Enrolling twice changes nothing.
+    pub fn reconcile_cards(&self, memory: &mut Memory) -> Result<(), String> {
+        for a in self.assignments().map_err(|e| e.to_string())? {
+            if a.card_status == "created" {
                 memory
                     .enroll(
                         &a.id,
@@ -555,6 +556,45 @@ mod tests {
         m.register(Some("no-consent"), Some("s"), TEXT, 100)
             .unwrap();
         assert_eq!(m.assignments().unwrap().len(), 18);
+    }
+    #[test]
+    fn hint_ignores_assignments_of_a_replaced_material() {
+        let mut m = Materials::open_in_memory().unwrap();
+        for n in 0..6 {
+            assign(&mut m, &format!("aa{n}"), 0.1);
+        }
+        assign(&mut m, "t", 0.0);
+        assert!(m.hint("t").unwrap().is_some());
+        consent(&m, false);
+        m.register(
+            Some("t"),
+            Some("subject"),
+            "⟦b1 · механизм⟧\nДругой текст.",
+            200,
+        )
+        .unwrap();
+        consent(&m, true);
+        assert!(m.hint("t").unwrap().is_none());
+    }
+    #[test]
+    fn created_card_without_schedule_row_is_enrolled_with_original_due() {
+        let db = std::env::temp_dir().join(format!("block-reconcile-{}.db", uuid::Uuid::new_v4()));
+        {
+            let mut m = Materials::open(&db).unwrap();
+            assign(&mut m, "l", 0.1);
+            let id = m.assignments().unwrap()[0].id.clone();
+            assert!(
+                m.accept_card(&id, "Что умножаем?", "Умножаем вероятность на убыток.")
+                    .unwrap()
+            );
+            let mut memory = Memory::open(&db).unwrap();
+            assert!(memory.due(100 + DAY).unwrap().is_empty());
+            m.reconcile_cards(&mut memory).unwrap();
+            m.reconcile_cards(&mut memory).unwrap();
+            assert_eq!(memory.due(100 + DAY).unwrap().len(), 1);
+            assert_eq!(memory.card(&id).unwrap().due, 100 + DAY);
+        }
+        let _ = std::fs::remove_file(&db);
     }
     #[test]
     fn completion_needs_exact_material_block_function_and_later_time() {

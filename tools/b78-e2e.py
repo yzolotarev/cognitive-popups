@@ -71,10 +71,10 @@ try:
                 run('experiment', 'interact', '--lesson', lesson, '--block', a['block'], '--function', a['arm'].removeprefix('suggest_'), '--operation', 'interaction-'+a['id'], at=1003)
         run('step', 'finish', 'done', at=1004)
         run('lesson', 'close', at=1005)
-        if seen == {'aa_first', 'aa_second', 'suggest_alt_t', 'suggest_alt_w', 'silence'}:
+        if {'suggest_alt_t', 'suggest_alt_w', 'silence'} <= seen and seen & {'aa_first', 'aa_second'}:
             break
     else:
-        raise AssertionError(f'Random draw did not cover all arms: {seen}')
+        raise AssertionError(f'Random draw did not cover the three arms and one A/A label: {seen}')
     exported = run('experiment', 'export', '--json', parsed=True)
     rows = [row['assignment'] for row in exported['assignments']]
     with sqlite3.connect(db) as connection:

@@ -18,3 +18,5 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
 
+
+cognitive-exoskeleton-materials = { path = "../materials" }

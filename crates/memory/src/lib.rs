@@ -347,6 +347,11 @@ impl Memory {
         if paused {
             return Err(MemoryError::Paused(unit.into()));
         }
+        if unit.starts_with("block:") && card.last_review.is_none() && now < card.due {
+            return Err(MemoryError::Corrupt(
+                "experimental first review is not due yet".into(),
+            ));
+        }
         let state = next_state(&card, grade, now, &parameters_in(&tx, &subject)?)?;
         tx.execute(
             "INSERT INTO memory_reviews (key, unit_id, at, rating, source) VALUES (?1, ?2, ?3, ?4, ?5)",

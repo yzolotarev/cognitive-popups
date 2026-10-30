@@ -11,6 +11,7 @@
 //! never filled.
 
 mod attribute;
+pub mod experiment;
 mod merge;
 mod parse;
 pub mod watch;
@@ -91,6 +92,7 @@ pub mod window {
 /// `window` during the lesson. One per operation and block (INV-04).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Interaction {
+    pub material: Option<String>,
     pub lesson: String,
     /// `None`: a selection from the lesson's material whose block could not
     /// be found — kept so the gap is visible.
@@ -245,6 +247,19 @@ impl Materials {
                  SELECT lesson_id, material_id, registered_at FROM materials
                  WHERE lesson_id IS NOT NULL;",
         )?;
+        let has_material: bool = connection
+            .prepare("PRAGMA table_info(material_interactions)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|c| c == "material_id");
+        if !has_material {
+            connection.execute(
+                "ALTER TABLE material_interactions ADD COLUMN material_id TEXT",
+                [],
+            )?;
+        }
+        experiment::migrate(&connection)?;
         Ok(Self { connection })
     }
 
@@ -293,6 +308,13 @@ impl Materials {
         let material = self
             .material(&id)?
             .ok_or_else(|| MaterialError::NotFound(id.clone()))?;
+        if let Some(lesson) = lesson {
+            self.assign(lesson, subject, &material, now, || {
+                let bytes = uuid::Uuid::new_v4().into_bytes();
+                (u32::from_le_bytes(bytes[..4].try_into().unwrap()) as f64)
+                    / (u32::MAX as f64 + 1.0)
+            })?;
+        }
         Ok((material, new))
     }
 
@@ -418,13 +440,14 @@ impl Materials {
         if blocks.is_empty() {
             blocks.push(None);
         }
+        let material_id = self.latest_for_lesson(lesson)?.map(|m| m.id);
         let transaction = self.connection.transaction()?;
         let mut written = 0;
         for block in blocks {
             written += transaction.execute(
                 "INSERT OR IGNORE INTO material_interactions
-                     (lesson_id, block, window, operation_id, sequence, at, key)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                     (lesson_id, block, window, operation_id, sequence, at, key, material_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     lesson,
                     block,
@@ -432,7 +455,8 @@ impl Materials {
                     operation,
                     sequence,
                     now,
-                    format!("{operation}:{}", block.unwrap_or("-"))
+                    format!("{operation}:{}", block.unwrap_or("-")),
+                    material_id
                 ],
             )?;
         }
@@ -459,13 +483,14 @@ impl Materials {
     /// The lesson's interactions in order: time, then journal sequence.
     pub fn interactions(&self, lesson: &str) -> Result<Vec<Interaction>, MaterialError> {
         let mut statement = self.connection.prepare(
-            "SELECT lesson_id, block, window, operation_id, sequence, at
+            "SELECT lesson_id, block, window, operation_id, sequence, at, material_id
              FROM material_interactions WHERE lesson_id = ?1
              ORDER BY at, sequence, rowid",
         )?;
         let rows = statement
             .query_map(params![lesson], |row| {
                 Ok(Interaction {
+                    material: row.get(6)?,
                     lesson: row.get(0)?,
                     block: row.get(1)?,
                     window: row.get(2)?,

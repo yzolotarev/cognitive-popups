@@ -54,6 +54,9 @@ jobs:
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --locked --workspace --all-targets --all-features
       - run: cargo build --locked --workspace --release
+      - name: Block trial CLI acceptance
+        if: matrix.platform == 'Linux'
+        run: python3 tools/b78-e2e.py target/release/cognitive-exoskeleton /tmp/b78-ci.db
       - name: Smoke test executable
         run: ./target/release/${{ matrix.executable }}
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

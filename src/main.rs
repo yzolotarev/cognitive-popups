@@ -21,8 +21,7 @@ use cognitive_exoskeleton_nudges::{
 };
 use cognitive_exoskeleton_practice::families::{self, Family};
 use cognitive_exoskeleton_practice::{
-    DueUnit, PracticeError, ProbeTree, RecallSet, arrange, load_types, method_trails, probe_tree,
-    recall_cards, whole_task,
+    PracticeError, ProbeTree, arrange, load_types, method_trails, probe_tree, whole_task,
 };
 use cognitive_exoskeleton_units::{ExtractError, UnitStore, extract_lesson};
 use serde::Deserialize;
@@ -85,6 +84,10 @@ usage:
   cognitive-exoskeleton lesson plan --db <path> --prompts <dir> --subject <id> [--thoughts <text>] [--text <file>] | show | item <id> <status> | close [--remaining <text>]
   cognitive-exoskeleton step start --db <path> [--path 1|3|5|inf] [<minutes> <text>] | finish done|partly|not [--takeaway <text>] | bridge
   cognitive-exoskeleton material register --db <path> --lesson <id> --file <txt>   a study text with blocks (B78)
+  cognitive-exoskeleton experiment export --db <path> [--json]   block trial assignments and FSRS outcomes (ITT)
+  cognitive-exoskeleton experiment hint --db <path> --lesson <id> [--now <t>]
+  cognitive-exoskeleton experiment answer --db <path> --card <id> --operation <key> --attempt <text> [--now <t>]
+  cognitive-exoskeleton experiment grade --db <path> --card <id> --operation <key> --grade <again|hard|good> [--now <t>]
   cognitive-exoskeleton material check --file <txt>   would the clipboard watcher take it as a full text
   cognitive-exoskeleton material show --db <path> <material-id>
   cognitive-exoskeleton resume --db <path>
@@ -167,6 +170,7 @@ fn run(args: &[String]) -> Result<String, String> {
         Some("understand") => return run_understand(&args[1..]),
         Some("resume") => return run_resume(&args[1..]),
         Some("material") => return run_material(&args[1..]),
+        Some("experiment") => return run_experiment(&args[1..]),
         Some("formula") => return run_formula(&args[1..]),
         Some("hypothesis") => return run_hypothesis(&args[1..]),
         Some("lesson") | Some("subject") | Some("step") => return run_lesson(&args[0], &args[1..]),
@@ -576,13 +580,9 @@ fn run_practice(args: &[String]) -> Result<String, String> {
             let config = ai_config_from_env()?;
             let provider = config.provider_name();
             let client = Client::new(config, UreqTransport::default());
-            let due = due_units(db, at)?;
-            let recall = if due.is_empty() {
-                RecallSet::default()
-            } else {
-                recall_cards(&client, &prompts, &due, at as u64, Priority::Foreground)
-                    .map_err(ai_error(provider))?
-            };
+            let recall =
+                cognitive_exoskeleton_practice::due::recall_with_blocks(db, &client, &prompts, at)
+                    .map_err(ai_error(provider))?;
             let probes = match options.get("--text") {
                 Some(path) => {
                     let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
@@ -1215,7 +1215,14 @@ fn run_material(args: &[String]) -> Result<String, String> {
     let (command, rest) = args.split_first().ok_or("needs a command")?;
     let (options, _, positional) = parse_options(
         rest,
-        &["--db", "--lesson", "--file", "--block", "--now"],
+        &[
+            "--db",
+            "--lesson",
+            "--file",
+            "--block",
+            "--now",
+            "--prompts",
+        ],
         &[],
     )?;
     if command == "check" {
@@ -1242,7 +1249,22 @@ fn run_material(args: &[String]) -> Result<String, String> {
             let (material, new) = materials
                 .register(Some(lesson), Some(&subject), &text, at)
                 .map_err(e)?;
+            if materials.experiments_consented().map_err(e)? {
+                let prompts = cognitive_exoskeleton_ai::PromptStore::from_dir(
+                    options
+                        .get("--prompts")
+                        .map(String::as_str)
+                        .unwrap_or("docs/v2/port/prompts"),
+                )
+                .map_err(|e| e.to_string())?;
+                let client = cognitive_exoskeleton_ai::Client::new(
+                    ai_config_from_env()?,
+                    cognitive_exoskeleton_ai::UreqTransport::default(),
+                );
+                materials.generate_cards(std::path::Path::new(db), &client, &prompts)?;
+            }
             Ok(json(&serde_json::json!({
+                "assignments": materials.assignments().map_err(e)?,
                 "id": material.id,
                 "new": new,
                 "summary": material.summary(),
@@ -1568,17 +1590,13 @@ fn unit_material(db: &str, unit: &str) -> Result<(String, bool), String> {
     Ok((material.join("\n\n"), has_correct))
 }
 
-/// Due units with their evidence, most overdue first (input of «Достань из памяти»).
-fn due_units(db: &str, at: i64) -> Result<Vec<DueUnit>, String> {
-    cognitive_exoskeleton_practice::due::due_units(db, at).map_err(|e| e.to_string())
-}
-
 fn sync_memory(store: &UnitStore, memory: &mut Memory, at: i64) -> Result<(), String> {
     cognitive_exoskeleton_practice::due::sync_memory(store, memory, at).map_err(|e| e.to_string())
 }
 
 fn now(value: Option<&str>) -> Result<i64, String> {
     match value {
+        Some(text) if text.parse::<i64>().is_ok() => text.parse::<i64>().map_err(|e| e.to_string()),
         Some(text) => OffsetDateTime::parse(text, &Rfc3339)
             .map(|t| t.unix_timestamp())
             .map_err(|e| format!("time {text}: {e}")),
@@ -1638,6 +1656,132 @@ fn parse_event(json: &str) -> Result<NewEvent, String> {
         event = event.with_lesson(LessonId::new(lesson).map_err(|e| e.to_string())?);
     }
     Ok(event)
+}
+
+fn run_experiment(args: &[String]) -> Result<String, String> {
+    use cognitive_exoskeleton_materials::{Materials, Part};
+    let (command, rest) = args.split_first().ok_or("needs export|interact|cards")?;
+    let (o, flags, _) = parse_options(
+        rest,
+        &[
+            "--db",
+            "--lesson",
+            "--block",
+            "--function",
+            "--operation",
+            "--now",
+            "--prompts",
+            "--card",
+            "--attempt",
+            "--grade",
+        ],
+        &["--json"],
+    )?;
+    let db = o
+        .get("--db")
+        .cloned()
+        .or_else(|| std::env::var("COGNITIVE_DB").ok())
+        .ok_or("--db or COGNITIVE_DB required")?;
+    let at = now(o.get("--now").map(String::as_str))?;
+    let mut m = Materials::open(&db).map_err(|e| e.to_string())?;
+    match command.as_str() {
+        "hint" => {
+            let lesson = o.get("--lesson").ok_or("--lesson required")?;
+            let step = cognitive_exoskeleton_lessons::LessonStore::open(&db)
+                .and_then(|s| s.open_step())
+                .map_err(|e| e.to_string())?;
+            if !step.is_some_and(|s| s.lesson.as_deref() == Some(lesson) && s.deadline > at) {
+                return Ok("null".into());
+            }
+            let hint = m.hint(lesson).map_err(|e| e.to_string())?;
+            if let Some(a) = &hint {
+                m.mark_shown(&a.id, at).map_err(|e| e.to_string())?;
+            }
+            Ok(json(&hint))
+        }
+        "skip" => {
+            let id = o.get("--card").ok_or("--card required")?;
+            m.skip(id, at).map_err(|e| e.to_string())?;
+            Ok("skipped".into())
+        }
+
+        "answer" => {
+            let get = |k| {
+                o.get(k)
+                    .map(String::as_str)
+                    .ok_or_else(|| format!("{k} required"))
+            };
+            Ok(json(&m.attempt(
+                get("--card")?,
+                get("--operation")?,
+                get("--attempt")?,
+                at,
+            )?))
+        }
+        "grade" => {
+            let get = |k| {
+                o.get(k)
+                    .map(String::as_str)
+                    .ok_or_else(|| format!("{k} required"))
+            };
+            let grade = cognitive_exoskeleton_memory::Grade::parse(get("--grade")?)
+                .ok_or("grade is again|hard|good")?;
+            m.grade_attempt(
+                std::path::Path::new(&db),
+                get("--card")?,
+                get("--operation")?,
+                grade,
+                at,
+            )?;
+            Ok("recorded self_graded".into())
+        }
+        "export" => {
+            let v = m.export().map_err(|e| e.to_string())?;
+            if flags.contains("--json") {
+                Ok(json(&v))
+            } else {
+                Ok(format!(
+                    "# Эксперимент: фрагмент + функция\n\n{}\n\nСводка intention-to-treat:\n\n```json\n{}\n```\n\nНазначения (null = unknown/missing):\n\n```json\n{}\n```",
+                    v["limitations"].as_str().unwrap_or_default(),
+                    json(&v["summary"]),
+                    json(&v["assignments"])
+                ))
+            }
+        }
+        "interact" => {
+            let get = |k| {
+                o.get(k)
+                    .map(String::as_str)
+                    .ok_or_else(|| format!("{k} required"))
+            };
+            let n = m
+                .record_selection(
+                    get("--lesson")?,
+                    get("--operation")?,
+                    get("--function")?,
+                    &[Part {
+                        block: Some(get("--block")?.into()),
+                        text: String::new(),
+                    }],
+                    None,
+                    at,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(json(&serde_json::json!({"recorded":n})))
+        }
+        "cards" => {
+            let p = PromptStore::from_dir(
+                o.get("--prompts")
+                    .map(String::as_str)
+                    .unwrap_or("docs/v2/port/prompts"),
+            )
+            .map_err(|e| e.to_string())?;
+            let c = Client::new(ai_config_from_env()?, UreqTransport::default());
+            m.generate_cards(std::path::Path::new(&db), &c, &p)?;
+            Ok(json(&m.assignments().map_err(|e| e.to_string())?))
+        }
+        _ => Err("unknown experiment command".into()),
+    }
 }
 
 #[cfg(test)]

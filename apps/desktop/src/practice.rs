@@ -344,12 +344,7 @@ impl PracticeWindow {
         ctx::background(
             move || -> Result<(Vec<Category>, Vec<String>), PracticeError> {
                 let now = ctx::now();
-                let due = practice::due::due_units(&db, now).unwrap_or_default();
-                let recall = if due.is_empty() {
-                    practice::RecallSet::default()
-                } else {
-                    practice::recall_cards(&ai, &prompts, &due, now as u64, Priority::Foreground)?
-                };
+                let recall = practice::due::recall_with_blocks(&db, &ai, &prompts, now)?;
                 let probes = if text.trim().is_empty() {
                     practice::ProbeTree::default()
                 } else {
@@ -479,8 +474,29 @@ impl PracticeWindow {
         let (c, e, r, this) = (content.clone(), entry.clone(), row.clone(), self.clone());
         let reference = card.reference.clone();
         let review_a = review.clone();
+        let block_attempt = card
+            .unit
+            .starts_with("block:")
+            .then(|| (db.clone(), card.unit.clone(), key.clone()));
         answer.connect_clicked(move |_| {
             let given = e.text().trim().to_string();
+            if let Some((db, unit, key)) = &block_attempt {
+                if given.is_empty() {
+                    e.set_placeholder_text(Some("Сначала напиши свою попытку"));
+                    return;
+                }
+                let saved = cognitive_exoskeleton_materials::Materials::open(db)
+                    .map_err(|e| e.to_string())
+                    .and_then(|m| m.attempt(unit, key, &given, ctx::now()));
+                if let Err(error) = saved {
+                    eprintln!("block attempt: {error}");
+                    c.append(&ui::text(
+                        "Не удалось сохранить ответ. Попробуй ещё раз.",
+                        &["cp-footnote"],
+                    ));
+                    return;
+                }
+            }
             r.set_visible(false);
             e.set_sensitive(false);
             if !given.is_empty() {

@@ -50,6 +50,8 @@ struct Inner {
     clock: gtk::ApplicationWindow,
     clock_time: gtk::Label,
     clock_info: gtk::Label,
+    clock_hint: gtk::Box,
+    hint_id: RefCell<Option<String>>,
     end: gtk::ApplicationWindow,
     end_body: gtk::Box,
     timer: RefCell<Option<glib::SourceId>>,
@@ -90,6 +92,8 @@ impl LessonUi {
         clock_info.set_ellipsize(gtk::pango::EllipsizeMode::End);
         clock_root.append(&clock_time);
         clock_root.append(&clock_info);
+        let clock_hint = ui::column(6);
+        clock_root.append(&clock_hint);
         clock.set_child(Some(&clock_root));
 
         let end = popup::corner(app, "cognitive-step-end", END_WIDTH, 12);
@@ -107,6 +111,8 @@ impl LessonUi {
             clock,
             clock_time,
             clock_info,
+            clock_hint,
+            hint_id: RefCell::default(),
             end,
             end_body,
             timer: RefCell::default(),
@@ -220,6 +226,35 @@ impl LessonUi {
                 {
                     popup::show(&self.0.window, SIZE, Opened::ByKey);
                     self.generate(subject, String::new(), None);
+                }
+            }
+            "hint" if std::env::var_os("COGNITIVE_AI_FIXTURE").is_some() => {
+                if let Ok(Some(lesson)) = store.open_lesson() {
+                    use cognitive_exoskeleton_materials::Materials;
+                    use cognitive_exoskeleton_nudges::{Consent, Nudges};
+                    if let (Ok(mut m), Ok(mut n)) = (
+                        Materials::open(&self.0.ctx.db),
+                        Nudges::open(&self.0.ctx.db),
+                    ) {
+                        let _ = n.set_consent(Consent::Experiments, true, ctx::now());
+                        let text = "⟦b1 · проблема⟧\nПочему метод работает?\n⟦b2 · механизм⟧\nКасательная приближает функцию.\n⟦b3 · пример⟧\nТри шага метода для корня из двух.";
+                        if let Ok((material, _)) = m.register(None, None, text, ctx::now()) {
+                            let _ = m.assign(
+                                &lesson.id,
+                                Some(&lesson.subject),
+                                &material,
+                                ctx::now(),
+                                || 0.1,
+                            );
+                            let _ = m.register(
+                                Some(&lesson.id),
+                                Some(&lesson.subject),
+                                text,
+                                ctx::now(),
+                            );
+                        }
+                    }
+                    self.tick_start();
                 }
             }
             "step" => {
@@ -685,6 +720,11 @@ impl LessonUi {
         }
         self.tick();
         popup::show_corner(&self.0.clock, Opened::ByItself);
+        if let Some(id) = self.0.hint_id.borrow().as_deref()
+            && let Ok(m) = cognitive_exoskeleton_materials::Materials::open(&self.0.ctx.db)
+        {
+            let _ = m.mark_shown(id, ctx::now());
+        }
         let this = self.clone();
         let id = glib::timeout_add_local(Duration::from_secs(1), move || {
             if this.tick() {
@@ -735,7 +775,76 @@ impl LessonUi {
             "{progress} · {}{current}",
             formula::plain(&step.text)
         ));
+        self.update_hint(step.lesson.as_deref());
         true
+    }
+
+    fn update_hint(&self, lesson: Option<&str>) {
+        use cognitive_exoskeleton_materials::Materials;
+        let found = Materials::open(&self.0.ctx.db).ok().and_then(|m| {
+            let a = lesson.and_then(|l| m.hint(l).ok().flatten())?;
+            let material = m.material(&a.material).ok().flatten()?;
+            Some((m, a, material))
+        });
+        let id = found.as_ref().map(|(_, a, _)| a.id.clone());
+        if *self.0.hint_id.borrow() == id {
+            if self.0.clock.is_visible()
+                && let Some((m, a, _)) = found
+            {
+                let _ = m.mark_shown(&a.id, ctx::now());
+            }
+            return;
+        }
+        ui::clear(&self.0.clock_hint);
+        *self.0.hint_id.borrow_mut() = id;
+        let Some((materials, a, material)) = found else {
+            return;
+        };
+        let page = ui::column(3);
+        page.add_css_class("cp-content");
+        for block in &material.blocks {
+            let bar = gtk::ProgressBar::new();
+            bar.set_fraction(if block.block == a.block { 1.0 } else { 0.25 });
+            bar.set_tooltip_text(Some(&format!("{} · {}", block.block, block.role)));
+            page.append(&bar);
+        }
+        self.0.clock_hint.append(&page);
+        let target = match a.role.as_str() {
+            "проблема" => "проблему",
+            "ошибка" => "ошибку",
+            other => other,
+        };
+        let (key, line) = if a.arm == "suggest_alt_t" {
+            ("Alt+T", format!("Выдели {target} и попробуй сам"))
+        } else {
+            ("Alt+W", format!("Выдели {target} — 4 слова"))
+        };
+        self.0
+            .clock_hint
+            .append(&ui::text(&format!("{} → {key}", a.block), &["cp-headline"]));
+        let action = ui::text(&line, &["cp-footnote"]);
+        action.set_wrap(false);
+        self.0.clock_hint.append(&action);
+        let skip = ui::button("Пропустить", &[]);
+        let this = self.clone();
+        let assignment = a.id.clone();
+        skip.connect_clicked(move |_| {
+            if let Ok(m) = Materials::open(&this.0.ctx.db) {
+                let _ = m.skip(&assignment, ctx::now());
+            }
+            let lesson = this
+                .0
+                .ctx
+                .lesson
+                .borrow()
+                .as_ref()
+                .map(|l| l.as_str().to_string());
+            this.update_hint(lesson.as_deref());
+        });
+        self.0.clock_hint.append(&skip);
+        if self.0.clock.is_visible() {
+            let _ = materials.mark_shown(&a.id, ctx::now());
+        }
     }
 
     // ---------- the end of a step ----------

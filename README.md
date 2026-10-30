@@ -5,14 +5,12 @@ you work in a browser, a PDF, an editor or an external trainer. The product cont
 the [versioned specification](docs/spec/cognitive_exoskeleton_v0_2_full_spec.md);
 decisions in it are not replaced by this README.
 
-Current state: **P2 in progress**. P0 delivered the versioned specification and the
-traceability baseline; the first P2 slice provides the typed event journal with
-provenance and idempotent writes. There is still no working desktop application and no
-GUI framework has been selected. Legacy Python code remains in Git history.
+Current state: Rust + GTK 4 desktop application for Hyprland, P0–P9 implemented.
+The remaining manual acceptance day is documented in `docs/v2/E2E_P7.md`.
 
 ## Пакет v2 (30.10.2026)
 
-Актуальный пакет для разработки — [`docs/v2/`](docs/v2/README.md): спецификация `SPEC.md`, план `ROADMAP.md` (этапы P0–P9, P0 — проба Rust + GTK 4), модель данных, приёмочный день, журнал решений B1–B73, карта 101 функции v1 и промпты v1 для переноса. Где пакет расходится со спецификацией v0.2 ниже, действует пакет; сверка — [`docs/v2/reconcile-rust-spec.md`](docs/v2/reconcile-rust-spec.md). Инструкция для агента — [`CLAUDE.md`](CLAUDE.md).
+Актуальный пакет для разработки — [`docs/v2/`](docs/v2/README.md): спецификация `SPEC.md`, план `ROADMAP.md` (этапы P0–P9, P0 — проба Rust + GTK 4), модель данных, приёмочный день, журнал решений B1–B81, карта 101 функции v1 и промпты v1 для переноса. Где пакет расходится со спецификацией v0.2 ниже, действует пакет; сверка — [`docs/v2/reconcile-rust-spec.md`](docs/v2/reconcile-rust-spec.md). Инструкция для агента — [`CLAUDE.md`](CLAUDE.md).
 ## Journal from the command line
 
 ```sh
@@ -331,3 +329,19 @@ Repository administrators must require these checks in the `main` branch rule:
 - `Dependency audit`
 
 Installer packaging, code signing and GitHub Releases are not configured yet.
+
+## Эксперимент «фрагмент + функция» (B78–B82)
+
+Полный материал урока регистрируется через наблюдатель буфера при согласии «Учебный текст из буфера» или явно через CLI. При согласии «Эксперименты» назначается каждый блок: Alt+T или Alt+W из допустимых для роли либо silence с вероятностью 0,2. Подсказки показываются с первого урока по порядку блоков. Карточки FSRS — не больше двух на урок, блоки выбираются по жребию с записанной вероятностью отбора. Подсказка живёт в часах активного шага, её можно пропустить.
+
+```sh
+cognitive-popups material register --lesson <id> --file lesson.txt
+cognitive-popups experiment export --json
+# CLI для своей попытки, затем сверки (в обычной работе — Alt+T):
+cognitive-popups experiment answer --card <id> --operation answer-1 --attempt 'мой ответ' --now <unix-seconds>
+cognitive-popups experiment grade --card <id> --operation answer-1 --grade good --now <unix-seconds>
+```
+
+Каждый назначенный блок во всех ветках получает вопрос модели с проверенной дословной цитатой из полного блока. Ошибка генерации остаётся `card_failed` с причиной. Первая проверка — не раньше чем через 24 часа; карточка входит в общую очередь FSRS и «Достань из памяти». Экспорт сохраняет все назначения, missing/unknown, фактическое выполнение, интервал первого ответа и последующие повторы. n=1: измеряется эффект назначения, а не выполнения.
+
+Воспроизводимый сквозной CLI-прогон на локальной HTTP-фикстуре модели: `cargo build --locked && python3 tools/b78-e2e.py`. По умолчанию создаёт `/tmp/b78-test.db`, существующую базу не перезаписывает. Светлая/тёмная подсказка снимается в CI «Desktop (Linux)»: `lesson-clock-hint-light.png`, `lesson-clock-hint-dark.png`.

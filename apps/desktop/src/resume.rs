@@ -31,7 +31,7 @@ impl Resume {
         root.append(&ui::text("Ты там, где остановился", &["cp-headline"]));
         let body = ui::column(8);
         root.append(&body);
-        window.set_child(Some(&root));
+        popup::set_scrollable_child(&window, &root);
         let keys = gtk::EventControllerKey::new();
         let w = window.clone();
         keys.connect_key_pressed(move |_, key, _, _| {

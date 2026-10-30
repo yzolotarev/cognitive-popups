@@ -73,7 +73,7 @@ impl HypothesisWindow {
         root.append(&quote);
         let body = ui::column(8);
         root.append(&body);
-        window.set_child(Some(&root));
+        popup::set_scrollable_child(&window, &root);
         let (input_box, input) = ui::text_area("Если …, то …, потому что …", 64);
 
         let this = Self(Rc::new(Inner {

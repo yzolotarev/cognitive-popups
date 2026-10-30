@@ -194,7 +194,15 @@ impl<T: Transport> Client<T> {
             request.input
         );
         let second = self.complete(&request)?;
-        check(&second, &validate).map_err(AiError::InvalidJson)
+        check(&second, &validate).map_err(|problem| {
+            // The reader only sees "answer failed"; the reason goes to the log.
+            let start: String = second.chars().take(200).collect();
+            eprintln!(
+                "ai: ответ не принят после повтора: {problem}; начало ответа: {}",
+                start.replace('\n', " ")
+            );
+            AiError::InvalidJson(problem)
+        })
     }
 }
 

@@ -124,6 +124,12 @@ impl LessonUi {
         clock_root.append(&clock_info);
         let clock_hint = ui::column(6);
         clock_root.append(&clock_hint);
+        // The way out of a lesson, where the reader is looking (note 14): the step
+        // ends first, then «Закончить урок» is offered.
+        let clock_close = ui::button("Закончить урок…", &["flat"]);
+        clock_close.set_halign(gtk::Align::Start);
+        clock_close.set_tooltip_text(Some("Сначала завершится текущий шаг"));
+        clock_root.append(&clock_close);
         clock.set_child(Some(&clock_root));
 
         let end = popup::corner(app, "cognitive-step-end", END_WIDTH, 12);
@@ -148,6 +154,14 @@ impl LessonUi {
             timer: RefCell::default(),
             material: RefCell::default(),
         }));
+        let t = this.clone();
+        clock_close.connect_clicked(move |_| {
+            if let Some(store) = open_store(&t.0.ctx)
+                && let Ok(Some(step)) = store.open_step()
+            {
+                t.step_end(step, true, Opened::ByKey);
+            }
+        });
         for window in [&this.0.window, &this.0.end] {
             let keys = gtk::EventControllerKey::new();
             let w = window.clone();

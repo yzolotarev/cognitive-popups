@@ -1,8 +1,8 @@
 //! «Застрял» (B91): help on an open question one step at a time, never the
-//! answer first. Steps 1, 4 and 5 come from the probe category without a
-//! model; steps 2 and 3 (a skeleton of concepts, a leading question) are
-//! written by the model and checked by code. An answer given with help is
-//! marked «с помощью»: not clean, never a miss.
+//! answer first. The quote, the solved example and the answer come from what
+//! the window already has, without a model; the skeleton of concepts and the
+//! leading question are written by the model and checked by code. An answer
+//! given with help is marked «с помощью»: not clean, never a miss.
 
 use cognitive_exoskeleton_ai::{Client, Priority, PromptStore, Request, Transport};
 use serde::Serialize;
@@ -62,6 +62,27 @@ impl Step {
     }
 }
 
+/// The open question the reader is stuck on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Target {
+    pub question: String,
+    /// What must not be told: the answer, or the names that are the answer.
+    pub hidden: Vec<String>,
+}
+
+impl Target {
+    /// «В двух словах: почему так?» on one operation of the probe tree.
+    pub fn operation(group: &ProbeGroup) -> Self {
+        Self {
+            question: format!(
+                "Почему «{}» делается именно так? (операция; цитата: «{}»)",
+                group.title, group.source_span
+            ),
+            hidden: vec![group.invariant.clone()],
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Scaffold {
     pub concepts: Vec<String>,
@@ -76,8 +97,8 @@ fn squash(text: &str) -> String {
 }
 
 /// The code's checks: the right number of short concepts, one question that
-/// does not retell the answer.
-pub fn check(value: &Value, invariant: &str) -> Result<(), String> {
+/// does not tell what is hidden.
+pub fn check(value: &Value, hidden: &[String]) -> Result<(), String> {
     let concepts: Vec<&str> = value["concepts"]
         .as_array()
         .map(|a| a.iter().filter_map(Value::as_str).collect())
@@ -97,19 +118,23 @@ pub fn check(value: &Value, invariant: &str) -> Result<(), String> {
     if question.is_empty() {
         return Err("question пусто".into());
     }
-    let answer = squash(invariant);
-    if !answer.is_empty() && squash(question).contains(&answer) {
+    let asked = squash(question);
+    if hidden
+        .iter()
+        .map(|h| squash(h))
+        .any(|h| h.chars().count() >= 3 && asked.contains(&h))
+    {
         return Err("вопрос пересказывает ответ".into());
     }
     Ok(())
 }
 
-/// Steps 2 and 3 for one operation of the text.
+/// The skeleton and the leading question for an open question on the text.
 pub fn scaffold<T: Transport>(
     client: &Client<T>,
     prompts: &PromptStore,
     text: &str,
-    group: &ProbeGroup,
+    target: &Target,
     priority: Priority,
 ) -> Result<Scaffold, PracticeError> {
     let text = text.trim();
@@ -120,10 +145,11 @@ pub fn scaffold<T: Transport>(
         .with_formulas(STUCK_PROMPT)
         .map_err(|e| PracticeError::Prompt(e.to_string()))?;
     let input = format!(
-        "ТЕКСТ:\n{text}\n\nОПЕРАЦИЯ:\ntitle: {}\ninvariant: {}\nsource_span: {}",
-        group.title, group.invariant, group.source_span
+        "ТЕКСТ:\n{text}\n\nВОПРОС:\n{}\n\nНЕ ГОВОРИТЬ (это ответ):\n{}",
+        target.question,
+        target.hidden.join("\n")
     );
-    let invariant = group.invariant.clone();
+    let hidden = target.hidden.clone();
     let value = client.complete_json(
         &Request {
             system,
@@ -132,7 +158,7 @@ pub fn scaffold<T: Transport>(
             json: true,
             priority,
         },
-        |value| check(value, &invariant),
+        |value| check(value, &hidden),
     )?;
     Ok(Scaffold {
         concepts: value["concepts"]
@@ -173,18 +199,24 @@ mod tests {
 
     #[test]
     fn the_code_rejects_a_skeleton_that_gives_the_answer_away() {
-        let invariant = "Ошибка возводится в квадрат на каждом шаге";
+        let invariant = ["Ошибка возводится в квадрат на каждом шаге".to_string()];
         let good = json!({"concepts": ["ошибка", "шаг", "квадрат"], "question": "Что происходит с ошибкой за один шаг?"});
-        assert!(check(&good, invariant).is_ok());
+        assert!(check(&good, &invariant).is_ok());
         let two = json!({"concepts": ["ошибка", "шаг"], "question": "Что?"});
-        assert!(check(&two, invariant).unwrap_err().contains("понятий 2"));
+        assert!(check(&two, &invariant).unwrap_err().contains("понятий 2"));
         let leak = json!({"concepts": ["a", "b", "c"], "question": "Почему ошибка возводится в  квадрат на каждом шаге?"});
         assert!(
-            check(&leak, invariant)
+            check(&leak, &invariant)
                 .unwrap_err()
                 .contains("пересказывает")
         );
         let long = json!({"concepts": ["a", "b", "очень длинное понятие, которое уже целое объяснение"], "question": "?"});
-        assert!(check(&long, invariant).is_err());
+        assert!(check(&long, &invariant).is_err());
+        let methods = ["метод Ньютона".to_string(), "бисекция".to_string()];
+        let named = json!({"concepts": ["a", "b", "c"], "question": "Подойдёт ли тут Бисекция?"});
+        assert!(
+            check(&named, &methods).is_err(),
+            "a method choice keeps its names"
+        );
     }
 }

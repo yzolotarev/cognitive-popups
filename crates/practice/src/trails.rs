@@ -55,6 +55,8 @@ pub enum Help {
     None,
     OptionsRevealed,
     SolutionRevealed,
+    /// «Застрял» (B91): a skeleton or a leading question was taken.
+    Scaffold,
 }
 
 impl Help {

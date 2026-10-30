@@ -357,6 +357,14 @@ impl Feed {
         }
     }
 
+    /// Two misses in a row at the text's own level: nothing lower to give, so
+    /// the window offers an explanation (Alt+W, B91).
+    pub fn struggling(&self, op: usize) -> bool {
+        self.ops
+            .get(op)
+            .is_some_and(|o| o.level == 1 && o.misses_in_row >= 2)
+    }
+
     /// «Шаг поменьше» pressed by the reader: one level down now.
     pub fn smaller_step(&mut self) {
         let op = &mut self.ops[self.current];
@@ -809,6 +817,21 @@ mod tests {
             "help is not a miss"
         );
         assert_eq!(f.success_rate(), None, "nor a clean card");
+    }
+
+    #[test]
+    fn two_misses_at_the_bottom_ask_for_an_explanation() {
+        let mut f = feed(&[3]);
+        assert_eq!(f.level(0), 2);
+        run(&mut f, false);
+        assert!(!f.struggling(0));
+        run(&mut f, false);
+        assert!(!f.struggling(0), "level 2 → 1 first");
+        run(&mut f, false);
+        run(&mut f, false);
+        assert!(f.struggling(0));
+        run(&mut f, true);
+        assert!(!f.struggling(0));
     }
 
     #[test]

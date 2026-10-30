@@ -537,8 +537,14 @@ fn stuck_asks_for_concepts_and_a_question_and_never_takes_the_answer() {
         json!({"concepts": ["a", "b", "c"], "question": format!("Почему {}?", group.invariant)});
     let good = json!({"concepts": ["ошибка", "шаг", "квадрат"], "question": "Что происходит с ошибкой за один шаг?"});
     let client = client(&[leak, good]);
-    let scaffold =
-        stuck::scaffold(&client, &prompts(), TEXT, &group, Priority::Foreground).unwrap();
+    let scaffold = stuck::scaffold(
+        &client,
+        &prompts(),
+        TEXT,
+        &stuck::Target::operation(&group),
+        Priority::Foreground,
+    )
+    .unwrap();
     assert_eq!(scaffold.concepts, ["ошибка", "шаг", "квадрат"]);
     let inputs = client.transport().inputs.borrow();
     assert!(

@@ -22,7 +22,7 @@ use cognitive_exoskeleton_practice::{
     revisit,
     routes::{self, Route},
     skill::{self, Candidate},
-    stuck::{self, Scaffold, Step},
+    stuck::{self, Scaffold, Step, Target},
     tasks::{NewTask, SavedTask, TaskStore},
 };
 use gtk::prelude::*;
@@ -806,6 +806,24 @@ impl PracticeWindow {
         let draft = saved.as_ref().map(|s| s.draft.clone()).unwrap_or_default();
         input.buffer().set_text(&draft);
         content.append(&area);
+        // B91: the solution stays behind [Решение]; «Застрял» gives what
+        // comes before it.
+        let stuck = self.stuck(
+            Ladder {
+                context: "целая задача".into(),
+                target: Target {
+                    question: task.condition.clone(),
+                    hidden: Vec::new(),
+                },
+                quote: Some(format!("Операции: {}", task.operations.join(", "))),
+                example: None,
+                answer: None,
+                on_step: None,
+            },
+            input.upcast_ref(),
+        );
+        content.append(&stuck.help);
+        content.append(&stuck.button);
         let later = ui::button("Отложить", &[]);
         let reveal = ui::button("Решение", &["cp-default"]);
         reveal.set_sensitive(!draft.trim().is_empty());
@@ -1105,6 +1123,29 @@ impl PracticeWindow {
         let entry = ui::field("метод и почему");
         content.append(&entry);
         let help = Rc::new(Cell::new(Help::None));
+        // B91: the skeleton and a first question before the options; either
+        // makes the attempt not independent.
+        let marked = help.clone();
+        let stuck = self.stuck(
+            Ladder {
+                context: "выбор метода".into(),
+                target: Target {
+                    question: format!("{} — какой метод применить первым?", item.main.condition),
+                    hidden: item.main.acceptable.clone(),
+                },
+                quote: None,
+                example: None,
+                answer: None,
+                on_step: Some(Box::new(move |_| {
+                    if marked.get() == Help::None {
+                        marked.set(Help::Scaffold);
+                    }
+                })),
+            },
+            entry.upcast_ref(),
+        );
+        content.append(&stuck.help);
+        content.append(&stuck.button);
         let options = ui::button("Показать варианты (подсказка)", &[]);
         let answer = ui::button("Ответ", &["cp-default"]);
         let row = ui::actions(&[&options, &answer]);
@@ -1175,6 +1216,127 @@ impl PracticeWindow {
             c.append(&ui::actions(&[&reveal]));
         });
         content
+    }
+
+    /// «Застрял» (B91) under an open question: each press gives the next step
+    /// the ladder has, the answer (when there is one) last. The model's steps
+    /// are asked for at the first press, so they are usually ready by the
+    /// second. A minute and a quarter without typing in `typing` only lights
+    /// the link up; nothing opens by itself. Every step goes to the journal.
+    fn stuck(&self, ladder: Ladder, typing: &gtk::Widget) -> Stuck {
+        let steps: Vec<Step> = stuck::STEPS
+            .into_iter()
+            .filter(|step| match step {
+                Step::Quote => ladder.quote.is_some(),
+                Step::Example => ladder.example.is_some(),
+                Step::Answer => ladder.answer.is_some(),
+                Step::Skeleton | Step::Lead => true,
+            })
+            .collect();
+        let button = ui::button(
+            &format!("Застрял: {}", steps[0].label().to_lowercase()),
+            &["cp-quiet-link"],
+        );
+        button.set_tooltip_text(Some("Одна подсказка за нажатие, ответ — последней"));
+        button.set_hexpand(true);
+        button.set_halign(gtk::Align::Start);
+        let help = ui::column(6);
+        let used: Rc<RefCell<Vec<Step>>> = Rc::default();
+        let scaffold: Rc<RefCell<Option<Result<Scaffold, String>>>> = Rc::default();
+        // Where a model step waits for the scaffold.
+        let pending: Rc<RefCell<Vec<(Step, gtk::Box)>>> = Rc::default();
+        let index = Rc::new(Cell::new(0usize));
+        let ladder = Rc::new(ladder);
+        let (this, h, u, focus) = (self.clone(), help.clone(), used.clone(), typing.clone());
+        button.connect_clicked(move |b| {
+            let Some(step) = steps.get(index.get()).copied() else {
+                return;
+            };
+            b.remove_css_class("cp-stuck-glow");
+            if index.get() == 0 {
+                let inner = &this.0;
+                let text = inner.state.borrow().text.clone();
+                let (ai, prompts) = (inner.ctx.ai(), inner.ctx.prompts.clone());
+                let (slot, pending, target) =
+                    (scaffold.clone(), pending.clone(), ladder.target.clone());
+                ctx::background(
+                    move || {
+                        stuck::scaffold(&ai, &prompts, &text, &target, Priority::Foreground)
+                            .map_err(|e| e.to_string())
+                    },
+                    move |result| {
+                        *slot.borrow_mut() = Some(result);
+                        for (step, place) in pending.borrow_mut().drain(..) {
+                            ui::clear(&place);
+                            fill_model_step(&place, step, slot.borrow().as_ref());
+                        }
+                    },
+                );
+            }
+            u.borrow_mut().push(step);
+            if let Some(on_step) = &ladder.on_step {
+                on_step(step);
+            }
+            this.record(&format!("Застрял ({}): {}", ladder.context, step.label()));
+            let place = ui::column(4);
+            place.append(&ui::text(step.label(), &["cp-footnote", "cp-secondary"]));
+            let body = ui::column(4);
+            place.append(&body);
+            match step {
+                Step::Quote => body.append(&ui::text(
+                    ladder.quote.as_deref().unwrap_or_default(),
+                    &["cp-quote"],
+                )),
+                Step::Skeleton | Step::Lead => match scaffold.borrow().as_ref() {
+                    Some(ready) => fill_model_step(&body, step, Some(ready)),
+                    None => {
+                        body.append(&ui::waiting("Готовлю…"));
+                        pending.borrow_mut().push((step, body.clone()));
+                    }
+                },
+                Step::Example => body.append(&ui::text(
+                    ladder.example.as_deref().unwrap_or_default(),
+                    &["cp-body"],
+                )),
+                Step::Answer => {
+                    body.append(&ui::text(
+                        ladder.answer.as_deref().unwrap_or_default(),
+                        &["cp-callout"],
+                    ));
+                    body.append(&ui::text(
+                        "Теперь перескажи своими словами выше и сверь.",
+                        &["cp-footnote", "cp-secondary"],
+                    ));
+                    focus.grab_focus();
+                }
+            }
+            h.append(&place);
+            index.set(index.get() + 1);
+            match steps.get(index.get()) {
+                Some(s) => b.set_label(&format!("Ещё: {}", s.label().to_lowercase())),
+                None => b.set_visible(false),
+            }
+        });
+        // The soft light after a quiet stretch.
+        let last_typed = Rc::new(Cell::new(ctx::now()));
+        let typed = last_typed.clone();
+        if let Some(view) = typing.downcast_ref::<gtk::TextView>() {
+            view.buffer()
+                .connect_changed(move |_| typed.set(ctx::now()));
+        } else if let Some(entry) = typing.downcast_ref::<gtk::Entry>() {
+            entry.connect_changed(move |_| typed.set(ctx::now()));
+        }
+        let (b, u) = (button.clone(), used.clone());
+        glib::timeout_add_seconds_local(15, move || {
+            if b.root().is_none() || !b.is_visible() {
+                return glib::ControlFlow::Break;
+            }
+            if u.borrow().is_empty() && ctx::now() - last_typed.get() >= STUCK_AFTER_S {
+                b.add_css_class("cp-stuck-glow");
+            }
+            glib::ControlFlow::Continue
+        });
+        Stuck { button, help, used }
     }
 
     // ---------- «своими словами» ----------
@@ -1593,6 +1755,26 @@ fn prepared_tree(
         });
     }
     Some((tree, material.text))
+}
+
+/// What «Застрял» can give on one open question (B91). A step without its
+/// text is left out; the skeleton and the leading question are always there.
+struct Ladder {
+    /// For the journal: «в двух словах «…»», «целая задача», «выбор метода».
+    context: String,
+    target: Target,
+    quote: Option<String>,
+    example: Option<String>,
+    answer: Option<String>,
+    /// Told about every step taken (the method choice marks its attempt).
+    on_step: Option<Box<dyn Fn(Step)>>,
+}
+
+/// The link, the place where the steps appear, and the steps taken.
+struct Stuck {
+    button: gtk::Button,
+    help: gtk::Box,
+    used: Rc<RefCell<Vec<Step>>>,
 }
 
 /// Steps 2 and 3 of «Застрял» once the scaffold is there (or did not come).
@@ -2141,21 +2323,29 @@ impl FeedPage {
         ));
         let (area, view) = ui::text_area("своими словами", 72);
         content.append(&area);
-        let help = ui::column(6);
-        content.append(&help);
+        let stuck = self.window.stuck(
+            Ladder {
+                context: format!("в двух словах «{title}»"),
+                target: Target::operation(&group),
+                quote: Some(format!("«{}»", group.source_span)),
+                example: Some(format!(
+                    "{} → {}",
+                    group.example.prompt, group.example.answer
+                )),
+                answer: Some(group.invariant.clone()),
+                on_step: None,
+            },
+            view.upcast_ref(),
+        );
+        content.append(&stuck.help);
         let compare = ui::button("Сверить", &["cp-default"]);
-        let stuck_button = ui::button("Застрял: что дано", &["cp-quiet-link"]);
-        stuck_button.set_tooltip_text(Some("Одна подсказка за нажатие, ответ — последней"));
         let row = ui::row(8);
-        stuck_button.set_hexpand(true);
-        stuck_button.set_halign(gtk::Align::Start);
-        row.append(&stuck_button);
+        row.append(&stuck.button);
         row.append(&compare);
         content.append(&row);
         self.slot().append(&content);
         view.grab_focus();
-        let used: Rc<RefCell<Vec<Step>>> = Rc::default();
-        Self::wire_stuck(self, &group, &stuck_button, &help, &view, &used);
+        let used = stuck.used;
         let t = self.clone();
         compare.connect_clicked(move |_| {
             let buffer = view.buffer();
@@ -2220,103 +2410,6 @@ impl FeedPage {
             content.append(&ui::actions(&[&missed, &matched]));
         });
         true
-    }
-
-    /// «Застрял» (B91): each press gives the next step of the ladder, the
-    /// answer last. The model's steps are asked for at the first press, so
-    /// they are usually ready by the second. A minute and a quarter without
-    /// typing only lights the button up; nothing opens by itself.
-    fn wire_stuck(
-        this: &Rc<Self>,
-        group: &ProbeGroup,
-        button: &gtk::Button,
-        help: &gtk::Box,
-        view: &gtk::TextView,
-        used: &Rc<RefCell<Vec<Step>>>,
-    ) {
-        let scaffold: Rc<RefCell<Option<Result<Scaffold, String>>>> = Rc::default();
-        // Where a model step waits for the scaffold.
-        let pending: Rc<RefCell<Vec<(Step, gtk::Box)>>> = Rc::default();
-        let next_step = Rc::new(Cell::new(Some(Step::Quote)));
-        let (t, group, help, steps) = (this.clone(), group.clone(), help.clone(), used.clone());
-        let view_for_answer = view.clone();
-        button.connect_clicked(move |b| {
-            let Some(step) = next_step.get() else {
-                return;
-            };
-            b.remove_css_class("cp-stuck-glow");
-            if step == Step::Quote {
-                let inner = &t.window.0;
-                let text = inner.state.borrow().text.clone();
-                let (ai, prompts) = (inner.ctx.ai(), inner.ctx.prompts.clone());
-                let (slot, pending, g) = (scaffold.clone(), pending.clone(), group.clone());
-                ctx::background(
-                    move || {
-                        stuck::scaffold(&ai, &prompts, &text, &g, Priority::Foreground)
-                            .map_err(|e| e.to_string())
-                    },
-                    move |result| {
-                        *slot.borrow_mut() = Some(result);
-                        for (step, place) in pending.borrow_mut().drain(..) {
-                            ui::clear(&place);
-                            fill_model_step(&place, step, slot.borrow().as_ref());
-                        }
-                    },
-                );
-            }
-            steps.borrow_mut().push(step);
-            let place = ui::column(4);
-            place.append(&ui::text(step.label(), &["cp-footnote", "cp-secondary"]));
-            let body = ui::column(4);
-            place.append(&body);
-            match step {
-                Step::Quote => body.append(&ui::text(
-                    &format!("«{}»", group.source_span),
-                    &["cp-quote"],
-                )),
-                Step::Skeleton | Step::Lead => match scaffold.borrow().as_ref() {
-                    Some(ready) => fill_model_step(&body, step, Some(ready)),
-                    None => {
-                        body.append(&ui::waiting("Готовлю…"));
-                        pending.borrow_mut().push((step, body.clone()));
-                    }
-                },
-                Step::Example => body.append(&ui::text(
-                    &format!("{} → {}", group.example.prompt, group.example.answer),
-                    &["cp-body"],
-                )),
-                Step::Answer => {
-                    body.append(&ui::text(&group.invariant, &["cp-callout"]));
-                    body.append(&ui::text(
-                        "Теперь перескажи своими словами выше и сверь.",
-                        &["cp-footnote", "cp-secondary"],
-                    ));
-                    view_for_answer.grab_focus();
-                }
-            }
-            help.append(&place);
-            let after = step.next();
-            next_step.set(after);
-            match after {
-                Some(s) => b.set_label(&format!("Ещё: {}", s.label().to_lowercase())),
-                None => b.set_visible(false),
-            }
-        });
-        // The soft light after a quiet stretch.
-        let last_typed = Rc::new(Cell::new(ctx::now()));
-        let typed = last_typed.clone();
-        view.buffer()
-            .connect_changed(move |_| typed.set(ctx::now()));
-        let (button, used) = (button.clone(), used.clone());
-        glib::timeout_add_seconds_local(15, move || {
-            if button.root().is_none() {
-                return glib::ControlFlow::Break;
-            }
-            if used.borrow().is_empty() && ctx::now() - last_typed.get() >= STUCK_AFTER_S {
-                button.add_css_class("cp-stuck-glow");
-            }
-            glib::ControlFlow::Continue
-        });
     }
 
     /// «Собери вместе» on the settled operations: the whole-task view of the
@@ -2393,6 +2486,22 @@ impl FeedPage {
         let reveal = ui::button("Ответ", &["cp-default"]);
         let row = ui::actions(&[&right, &wrong, &reveal]);
         content.append(&row);
+        // B91: two misses at the text's own level — nothing lower to give, so
+        // an explanation of the quote (the Alt+W ladder), by the reader's click.
+        if self.feed.borrow().struggling(next.op)
+            && let Some(group) = &group
+        {
+            let explain = ui::button("Не понимаю — объясни", &["cp-quiet-link"]);
+            explain.set_halign(gtk::Align::Start);
+            let (t, span, title) = (self.clone(), group.source_span.clone(), title.clone());
+            explain.connect_clicked(move |_| {
+                t.window.record(&format!(
+                    "Лента: не понимаю «{title}» — объяснение по цитате"
+                ));
+                (t.window.0.links.ladder)(span.clone());
+            });
+            content.append(&explain);
+        }
         self.slot().append(&content);
         let mark = {
             let (t, s, card, title) = (self.clone(), session.clone(), card.clone(), title.clone());

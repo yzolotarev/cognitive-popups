@@ -529,3 +529,24 @@ fn harder_cards_the_code_rejects_are_not_shown() {
         "the reason goes back to the model"
     );
 }
+
+#[test]
+fn stuck_asks_for_concepts_and_a_question_and_never_takes_the_answer() {
+    let group = shown_group();
+    let leak =
+        json!({"concepts": ["a", "b", "c"], "question": format!("Почему {}?", group.invariant)});
+    let good = json!({"concepts": ["ошибка", "шаг", "квадрат"], "question": "Что происходит с ошибкой за один шаг?"});
+    let client = client(&[leak, good]);
+    let scaffold =
+        stuck::scaffold(&client, &prompts(), TEXT, &group, Priority::Foreground).unwrap();
+    assert_eq!(scaffold.concepts, ["ошибка", "шаг", "квадрат"]);
+    let inputs = client.transport().inputs.borrow();
+    assert!(
+        inputs[0].contains(&group.title),
+        "the operation is in the input"
+    );
+    assert!(
+        inputs[1].contains("пересказывает"),
+        "a leaked answer goes back with the reason"
+    );
+}

@@ -140,3 +140,7 @@ textview.cp-rich, textview.cp-rich text {
 .cp-feed-card { border-radius: 10px; }
 .cp-feed-card.cp-flash-right { box-shadow: inset 0 0 0 2px @cp_success; }
 .cp-feed-card.cp-flash-wrong { box-shadow: inset 0 0 0 2px @cp_error; }
+
+/* «Застрял» after a quiet stretch (B91): the link comes up to full strength
+   in the accent colour; nothing else moves. */
+button.cp-quiet-link.cp-stuck-glow { opacity: 1; color: @cp_accent_text; }

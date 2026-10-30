@@ -84,12 +84,12 @@
 | Резервные копии | 3 последние перед миграцией (Q-70) |
 | Архив v1 | отдельный каталог, только чтение (A17) |
 
-## Эксперимент блоков (B80–B81)
+## Эксперимент блоков (B80–B82)
 
 | Таблица | Поля и контракт |
 |---|---|
-| `block_assignments` | `id` PK, `experiment`, `policy`, `lesson`, `subject` NULL, `material`, `block`, `role`, `allowed` JSON, `probabilities` JSON, `arm`, `probability`, `assigned_at`, `shown_at` NULL, `skipped_at` NULL, `completed_at` NULL, `completed_operation` NULL, `card_status` (`pending`/`created`/`card_failed`), `card_reason` NULL, `question` NULL, `reference` NULL; UNIQUE (`lesson`,`material`,`block`) |
-| `block_assignment_checks` | (`lesson`,`material`) PK, `reason` (`assigned`/`no_eligible_roles`/`lesson_limit`), `at`; нет согласия — нет записи |
+| `block_assignments` | `id` PK, `experiment`, `policy`, `lesson`, `subject` NULL, `material`, `block`, `role`, `allowed` JSON, `probabilities` JSON, `arm`, `probability`, `assigned_at`, `shown_at` NULL, `skipped_at` NULL, `completed_at` NULL, `completed_operation` NULL, `card_status` (`pending`/`created`/`card_failed`/`not_selected`), `card_reason` NULL, `card_selected` NULL (B82: 1 — карточку тянул жребий), `selection_probability` NULL (B82: k/n), `question` NULL, `reference` NULL; UNIQUE (`lesson`,`material`,`block`) |
+| `block_assignment_checks` | (`lesson`,`material`) PK, `reason` (`assigned`/`no_blocks`), `at`; нет согласия — нет записи |
 | `block_attempts` | `operation` PK, `assignment`, `attempt`, `revealed_at`; CLI раскрывает эталон после непустой попытки, self-grade требует сохранённую попытку |
 
 Выполнение сохраняет триггер после вставки `material_interactions`: совпадают материал, урок, блок, назначенная функция; время строго после назначения. Старые взаимодействия с NULL material_id не подтверждают выполнение. Эксперимент не меняет таблицы прежнего MRT.

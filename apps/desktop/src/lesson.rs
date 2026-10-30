@@ -67,7 +67,37 @@ fn open_store(ctx: &Ctx) -> Option<LessonStore> {
         .ok()
 }
 
+/// What a suggestion calls the help that Alt+W will open.
+fn mechanic_label(mode: Option<&str>) -> &'static str {
+    match mode {
+        Some("explain") => "объяснение",
+        Some("example") => "пример",
+        Some("ladder") => "ступенька",
+        Some("character") => "«Мужичок»",
+        _ => "4 слова",
+    }
+}
+
+/// What a suggestion calls the practice that Alt+T will open.
+fn route_label(mode: Option<&str>) -> &'static str {
+    match mode {
+        Some("choose_method") => "выбор метода",
+        Some("feynman") => "объясни своими словами",
+        Some("hypothesis") => "гипотеза",
+        _ => "пробы",
+    }
+}
+
 impl LessonUi {
+    /// The suggestion on the clock right now: its function (`suggest_alt_t`,
+    /// `suggest_alt_w`) and the mode that the key must open exactly as promised.
+    pub fn hinted(&self) -> Option<(String, String)> {
+        let id = self.0.hint_id.borrow().clone()?;
+        let m = cognitive_exoskeleton_materials::Materials::open(&self.0.ctx.db).ok()?;
+        let a = m.assignments().ok()?.into_iter().find(|a| a.id == id)?;
+        Some((a.arm.clone(), a.mode?))
+    }
+
     pub fn new(app: &adw::Application, ctx: Ctx, notice: Notice, pill: Pill) -> Self {
         let window = popup::new(app, "cognitive-lesson", WIDTH);
         let root = ui::column(10);
@@ -781,6 +811,15 @@ impl LessonUi {
 
     fn update_hint(&self, lesson: Option<&str>) {
         use cognitive_exoskeleton_materials::Materials;
+        // The next suggestion waits until the help window is closed (owner, 30.10):
+        // opening a window must not swap the task while the reader is still on it.
+        if popup::any_visible(&[
+            "cognitive-understand",
+            "cognitive-practice",
+            "cognitive-hypothesis",
+        ]) {
+            return;
+        }
         let found = Materials::open(&self.0.ctx.db).ok().and_then(|m| {
             let a = lesson.and_then(|l| m.hint(l).ok().flatten())?;
             let material = m.material(&a.material).ok().flatten()?;
@@ -832,9 +871,15 @@ impl LessonUi {
             other => other,
         };
         let (key, line) = if a.arm == "suggest_alt_t" {
-            ("Alt+T", format!("Выдели {target} и попробуй сам"))
+            (
+                "Alt+T",
+                format!("Выдели {target} — {}", route_label(a.mode.as_deref())),
+            )
         } else {
-            ("Alt+W", format!("Выдели {target} — 4 слова"))
+            (
+                "Alt+W",
+                format!("Выдели {target} — {}", mechanic_label(a.mode.as_deref())),
+            )
         };
         self.0
             .clock_hint

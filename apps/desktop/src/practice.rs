@@ -77,7 +77,12 @@ struct Inner {
     choices: Vec<(Route, gtk::Button)>,
     state: RefCell<State>,
     generation: Cell<u64>,
+    /// The keys of «Лента» while it is on screen (B90): ↓ next, ← ✗, → ✓,
+    /// Enter the answer, 1–9 a choice.
+    feed_keys: RefCell<Option<FeedKeys>>,
 }
+
+type FeedKeys = Rc<dyn Fn(gdk::Key) -> bool>;
 
 #[derive(Clone)]
 pub struct PracticeWindow(Rc<Inner>);
@@ -140,6 +145,7 @@ impl PracticeWindow {
             choices,
             state: RefCell::default(),
             generation: Cell::new(0),
+            feed_keys: RefCell::new(None),
         }));
         this.wire();
         this
@@ -159,6 +165,10 @@ impl PracticeWindow {
         keys.connect_key_pressed(move |_, key, _, _| {
             if key == gdk::Key::Escape {
                 this.hide();
+                return glib::Propagation::Stop;
+            }
+            let feed = this.0.feed_keys.borrow().clone();
+            if feed.is_some_and(|handle| handle(key)) {
                 return glib::Propagation::Stop;
             }
             glib::Propagation::Proceed
@@ -1598,11 +1608,31 @@ struct FeedPage {
     stock: RefCell<HashMap<(usize, u8), Stock>>,
     asked: RefCell<HashSet<(usize, u8)>>,
     recall: RefCell<VecDeque<RecallCard>>,
-    slot: gtk::Box,
+    page: gtk::Box,
+    /// Cards slide up through it, like a feed.
+    stack: gtk::Stack,
+    /// The card on screen.
+    slot: RefCell<gtk::Box>,
     last: gtk::Label,
+    /// The edge of the next card: what comes and whether it is ready.
+    peek: gtk::Label,
+    keys: RefCell<CardKeys>,
     waiting: Cell<bool>,
     shown: Cell<u32>,
 }
+
+/// What the keys do on the card on screen.
+#[derive(Default)]
+struct CardKeys {
+    reveal: Option<Rc<dyn Fn()>>,
+    mark: Option<Rc<dyn Fn(bool)>>,
+    choose: Vec<gtk::Button>,
+}
+
+/// How long a card slides; GTK skips it when animations are off.
+const SLIDE_MS: u32 = 220;
+/// How long the ✓/✗ tint stays before the next card.
+const FLASH_MS: u64 = 180;
 
 impl FeedPage {
     fn build(
@@ -1633,22 +1663,47 @@ impl FeedPage {
                 .collect();
             stock.insert((i, 1), (group, cards));
         }
-        let last = ui::text("", &["cp-footnote", "cp-secondary"]);
+        // Above: the card just answered, small and dim, as if scrolled past.
+        let last = ui::text("", &["cp-footnote", "cp-secondary", "cp-feed-past"]);
         last.set_visible(false);
+        last.set_ellipsize(gtk::pango::EllipsizeMode::End);
         page.append(&last);
+        let stack = gtk::Stack::new();
+        stack.set_transition_type(gtk::StackTransitionType::SlideUp);
+        stack.set_transition_duration(SLIDE_MS);
+        stack.set_vhomogeneous(false);
+        stack.set_interpolate_size(true);
+        page.append(&stack);
+        // Below: the edge of the next card.
+        let peek = ui::text("", &["cp-footnote", "cp-secondary", "cp-feed-peek"]);
+        peek.set_xalign(0.0);
+        page.append(&peek);
+        let smaller = ui::button("Шаг поменьше", &["cp-quiet-link"]);
+        let skip = ui::button("Пропустить ↓", &["cp-quiet-link"]);
+        let hint = ui::text(
+            "← ✗   → ✓   Enter — ответ",
+            &["cp-footnote", "cp-secondary"],
+        );
+        hint.set_hexpand(true);
+        hint.set_xalign(0.0);
+        let footer = ui::row(12);
+        footer.append(&hint);
+        footer.append(&smaller);
+        footer.append(&skip);
+        page.append(&footer);
         let slot = ui::column(8);
-        page.append(&slot);
-        let smaller = ui::button("Шаг поменьше", &[]);
-        let skip = ui::button("Пропустить", &[]);
-        page.append(&ui::actions(&[&smaller, &skip]));
         let this = Rc::new(Self {
             window: window.clone(),
             feed: RefCell::new(Feed::new(saved).with_formats()),
             stock: RefCell::new(stock),
             asked: RefCell::new(HashSet::new()),
             recall: RefCell::new(recall.into()),
-            slot,
+            page: page.clone(),
+            stack,
+            slot: RefCell::new(slot),
             last,
+            peek,
+            keys: RefCell::new(CardKeys::default()),
             waiting: Cell::new(false),
             shown: Cell::new(0),
         });
@@ -1660,8 +1715,95 @@ impl FeedPage {
         });
         let t = this.clone();
         skip.connect_clicked(move |_| t.show_next());
+        let weak = Rc::downgrade(&this);
+        *window.0.feed_keys.borrow_mut() = Some(Rc::new(move |key| {
+            weak.upgrade().is_some_and(|t| t.key(key))
+        }));
         this.show_next();
         page
+    }
+
+    /// The feed's keys, only while it is on screen and no text field has the
+    /// keyboard: a field keeps its arrows and Enter.
+    fn key(self: &Rc<Self>, key: gdk::Key) -> bool {
+        if !self.page.is_mapped() {
+            return false;
+        }
+        let typing = gtk::prelude::GtkWindowExt::focus(&self.window.0.window)
+            .is_some_and(|w| w.is::<gtk::TextView>() || w.is::<gtk::Text>());
+        if typing {
+            return false;
+        }
+        let keys = self.keys.borrow();
+        match key {
+            gdk::Key::Down | gdk::Key::j => {
+                drop(keys);
+                self.show_next();
+                true
+            }
+            gdk::Key::Return | gdk::Key::KP_Enter => match keys.reveal.clone() {
+                Some(reveal) => {
+                    drop(keys);
+                    reveal();
+                    true
+                }
+                None => false,
+            },
+            gdk::Key::Right | gdk::Key::Left => match keys.mark.clone() {
+                Some(mark) => {
+                    drop(keys);
+                    mark(key == gdk::Key::Right);
+                    true
+                }
+                None => false,
+            },
+            _ => match key.to_unicode().and_then(|c| c.to_digit(10)) {
+                Some(n) if n >= 1 && (n as usize) <= keys.choose.len() => {
+                    let button = keys.choose[n as usize - 1].clone();
+                    drop(keys);
+                    button.emit_clicked();
+                    true
+                }
+                _ => false,
+            },
+        }
+    }
+
+    /// A new card slides up from below; the old one leaves after the slide.
+    fn turn(&self) {
+        let card = ui::column(8);
+        card.add_css_class("cp-feed-card");
+        let old = self.slot.replace(card.clone());
+        self.stack.add_child(&card);
+        self.stack.set_visible_child(&card);
+        *self.keys.borrow_mut() = CardKeys::default();
+        let stack = self.stack.clone();
+        glib::timeout_add_local_once(
+            std::time::Duration::from_millis(u64::from(SLIDE_MS) + 40),
+            move || {
+                if old.parent().is_some() {
+                    stack.remove(&old);
+                }
+            },
+        );
+        self.update_peek();
+    }
+
+    fn slot(&self) -> gtk::Box {
+        self.slot.borrow().clone()
+    }
+
+    /// «Дальше: <операция> · готово 5» — the stock of the feed, like a
+    /// preloaded reel.
+    fn update_peek(&self) {
+        let feed = self.feed.borrow();
+        let op = feed.current();
+        let ready = self.ready(op, feed.level(op));
+        self.peek.set_text(&if ready > 0 {
+            format!("Дальше: {} · готово {ready}", feed.key(op))
+        } else {
+            format!("Дальше: {} · готовлю…", feed.key(op))
+        });
     }
 
     /// The branch to ask a level from: the one at that level, else the
@@ -1728,6 +1870,8 @@ impl FeedPage {
                     }
                     if t.waiting.get() {
                         t.show_next();
+                    } else {
+                        t.update_peek();
                     }
                 },
             );
@@ -1752,16 +1896,16 @@ impl FeedPage {
         {
             self.waiting.set(false);
             self.feed.borrow_mut().record(next, true);
-            ui::clear(&self.slot);
-            self.slot.append(&ui::text(
+            self.turn();
+            self.slot().append(&ui::text(
                 "Повторение: вспомни сам, потом сверь",
                 &["cp-footnote", "cp-secondary"],
             ));
-            self.slot.append(&self.window.recall_card(card, "feed"));
+            self.slot().append(&self.window.recall_card(card, "feed"));
             let on = ui::button("Дальше", &["cp-default"]);
             let t = self.clone();
             on.connect_clicked(move |_| t.show_next());
-            self.slot.append(&ui::actions(&[&on]));
+            self.slot().append(&ui::actions(&[&on]));
             Self::fill(self);
             return;
         }
@@ -1796,8 +1940,8 @@ impl FeedPage {
         Self::fill(self);
         let Some(card) = card else {
             self.waiting.set(true);
-            ui::clear(&self.slot);
-            self.slot
+            self.turn();
+            self.slot()
                 .append(&ui::waiting("Готовлю следующие карточки…").upcast::<gtk::Widget>());
             return;
         };
@@ -1839,7 +1983,18 @@ impl FeedPage {
         self.window.record(journal);
         self.last.set_text(last);
         self.last.set_visible(true);
-        self.show_next();
+        // A short tint in the colour of the mark (with ✓/✗ in the line above,
+        // so it never rests on colour alone), then the next card.
+        *self.keys.borrow_mut() = CardKeys::default();
+        self.slot().add_css_class(if attempt.correct {
+            "cp-flash-right"
+        } else {
+            "cp-flash-wrong"
+        });
+        let t = self.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(FLASH_MS), move || {
+            t.show_next()
+        });
     }
 
     fn serial(&self) -> u32 {
@@ -1855,7 +2010,7 @@ impl FeedPage {
         name.set_xalign(0.0);
         caption.append(&name);
         caption.append(&ui::text(tag, &["cp-footnote", "cp-secondary"]));
-        self.slot.append(&caption);
+        self.slot().append(&caption);
     }
 
     /// «Какая операция тут нужна?»: a card of some operation without its name;
@@ -1880,7 +2035,7 @@ impl FeedPage {
         };
         let serial = self.serial();
         let shown_at = ctx::now();
-        ui::clear(&self.slot);
+        self.turn();
         self.caption("Какая операция тут нужна?", "узнай сам");
         let content = ui::column(6);
         content.add_css_class("cp-content");
@@ -1891,7 +2046,7 @@ impl FeedPage {
         let choices = ui::column(4);
         let done = Rc::new(Cell::new(false));
         for (i, choice) in titles.iter().enumerate() {
-            let button = ui::button(choice, &[]);
+            let button = ui::button(&format!("{}  {choice}", i + 1), &[]);
             let (t, done, titles, card) =
                 (self.clone(), done.clone(), titles.clone(), card.clone());
             button.connect_clicked(move |_| {
@@ -1931,10 +2086,11 @@ impl FeedPage {
                     &last,
                 );
             });
+            self.keys.borrow_mut().choose.push(button.clone());
             choices.append(&button);
         }
         content.append(&choices);
-        self.slot.append(&content);
+        self.slot().append(&content);
         true
     }
 
@@ -1947,7 +2103,7 @@ impl FeedPage {
         let title = self.feed.borrow().key(next.op).to_string();
         let serial = self.serial();
         let shown_at = ctx::now();
-        ui::clear(&self.slot);
+        self.turn();
         self.caption("В двух словах: почему так?", "своими словами");
         let content = ui::column(6);
         content.add_css_class("cp-content");
@@ -1960,7 +2116,7 @@ impl FeedPage {
         let compare = ui::button("Сверить", &["cp-default"]);
         let row = ui::actions(&[&compare]);
         content.append(&row);
-        self.slot.append(&content);
+        self.slot().append(&content);
         view.grab_focus();
         let t = self.clone();
         compare.connect_clicked(move |_| {
@@ -2005,6 +2161,8 @@ impl FeedPage {
                     t.note(next, &title, attempt, shown_at, serial, &journal, &last);
                 })
             };
+            let keyed = mark.clone();
+            t.keys.borrow_mut().mark = Some(Rc::new(move |correct| keyed(correct)));
             let (m1, m2) = (mark.clone(), mark);
             matched.connect_clicked(move |b| {
                 b.set_sensitive(false);
@@ -2031,22 +2189,22 @@ impl FeedPage {
             .map(|op| self.feed.borrow().key(*op).to_string())
             .collect();
         self.feed.borrow_mut().record(next, true);
-        ui::clear(&self.slot);
+        self.turn();
         self.caption("Собери вместе", "целая задача");
         let body = ui::column(8);
-        self.slot.append(&body);
+        self.slot().append(&body);
         self.window.generate_whole(titles, &body);
         let on = ui::button("Дальше", &[]);
         let t = self.clone();
         on.connect_clicked(move |_| t.show_next());
-        self.slot.append(&ui::actions(&[&on]));
+        self.slot().append(&ui::actions(&[&on]));
         true
     }
 
     fn show_card(self: &Rc<Self>, next: feed::Next, card: Card) {
         let group = self.template(next.op, next.level);
         let title = self.feed.borrow().key(next.op).to_string();
-        ui::clear(&self.slot);
+        self.turn();
         let caption = ui::row(8);
         let name = ui::text(&title, &["cp-headline"]);
         name.set_hexpand(true);
@@ -2058,7 +2216,7 @@ impl FeedPage {
             _ => format!("уровень {} из {}", next.level, practice::MAX_LEVEL),
         };
         caption.append(&ui::text(&tag, &["cp-footnote", "cp-secondary"]));
-        self.slot.append(&caption);
+        self.slot().append(&caption);
         // Support fades as the level grows: the worked example is open at 1,
         // folded at 2, gone from 3 on.
         if let Some(group) = &group
@@ -2073,11 +2231,11 @@ impl FeedPage {
                 boxed.add_css_class("cp-content");
                 boxed.append(&ui::text("Образец", &["cp-footnote", "cp-secondary"]));
                 boxed.append(&example);
-                self.slot.append(&boxed);
+                self.slot().append(&boxed);
             } else {
                 let expander = gtk::Expander::new(Some("Образец"));
                 expander.set_child(Some(&example));
-                self.slot.append(&expander);
+                self.slot().append(&expander);
             }
         }
         let content = ui::column(6);
@@ -2093,7 +2251,7 @@ impl FeedPage {
         let reveal = ui::button("Ответ", &["cp-default"]);
         let row = ui::actions(&[&right, &wrong, &reveal]);
         content.append(&row);
-        self.slot.append(&content);
+        self.slot().append(&content);
         let mark = {
             let (t, s, card, title) = (self.clone(), session.clone(), card.clone(), title.clone());
             Rc::new(move |correct: bool| {
@@ -2130,12 +2288,24 @@ impl FeedPage {
         right.connect_clicked(move |_| m(true));
         let m = mark.clone();
         wrong.connect_clicked(move |_| m(false));
+        {
+            let mut keys = self.keys.borrow_mut();
+            let m = mark.clone();
+            keys.mark = Some(Rc::new(move |correct| m(correct)));
+            let r = reveal.clone();
+            keys.reveal = Some(Rc::new(move || {
+                if r.is_visible() && r.is_sensitive() {
+                    r.emit_clicked();
+                }
+            }));
+        }
         let (c, s, answer, r) = (content.clone(), session, card.answer.clone(), row.clone());
-        reveal.connect_clicked(move |_| {
+        reveal.connect_clicked(move |b| {
             let mut current = s.get();
             current.reveal();
             s.set(current);
             r.set_visible(false);
+            b.set_sensitive(false);
             c.append(&ui::text(&format!("Ответ: {answer}"), &["cp-callout"]));
             let matched = ui::button("✓ Совпало", &["cp-default"]);
             let missed = ui::button("✗ Промахнулся", &[]);

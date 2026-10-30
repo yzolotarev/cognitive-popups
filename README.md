@@ -10,9 +10,9 @@ traceability baseline; the first P2 slice provides the typed event journal with
 provenance and idempotent writes. There is still no working desktop application and no
 GUI framework has been selected. Legacy Python code remains in Git history.
 
-## Пакет v2 (28.10.2026)
+## Пакет v2 (30.10.2026)
 
-Актуальный пакет для разработки — [`docs/v2/`](docs/v2/README.md): спецификация `SPEC.md`, план `ROADMAP.md` (этапы P0–P8, P0 — проба Rust + GTK 4), модель данных, приёмочный день, журнал решений B1–B35, карта 101 функции v1 и промпты v1 для переноса. Где пакет расходится со спецификацией v0.2 ниже, действует пакет; сверка — [`docs/v2/reconcile-rust-spec.md`](docs/v2/reconcile-rust-spec.md). Инструкция для агента — [`CLAUDE.md`](CLAUDE.md).
+Актуальный пакет для разработки — [`docs/v2/`](docs/v2/README.md): спецификация `SPEC.md`, план `ROADMAP.md` (этапы P0–P9, P0 — проба Rust + GTK 4), модель данных, приёмочный день, журнал решений B1–B73, карта 101 функции v1 и промпты v1 для переноса. Где пакет расходится со спецификацией v0.2 ниже, действует пакет; сверка — [`docs/v2/reconcile-rust-spec.md`](docs/v2/reconcile-rust-spec.md). Инструкция для агента — [`CLAUDE.md`](CLAUDE.md).
 ## Journal from the command line
 
 ```sh
@@ -218,8 +218,16 @@ or skipped, never edited, and [Другой план] replaces the whole plan. A
 under a small clock in the corner; at its end a quiet window asks for one mark
 and one line «что вынес». An unfinished lesson comes back on the next Alt+I.
 When the lesson ends, its events become learning units in the background and a
-notice in the corner says how many. Without windows:
-`cargo run -- subject add|list`, `lesson plan|show|item|close`, `step start|finish|bridge`.
+notice in the corner says how many.
+
+A subject can have a program: its course topics in order (hub «Предметы» →
+«Программа», one topic per line). The next lesson works on the first topic not
+yet marked; the code picks it, not the model. You mark a topic when you are done
+with it, in the hub or when closing the lesson; the mark only moves you along the
+program and never counts as knowing it (reviews do). A subject's deadline only
+narrows reviews to that subject in the 7 days before it; the subject stays active
+afterwards. Without windows:
+`cargo run -- subject add|list|program|topic`, `lesson plan|show|item|close`, `step start|finish|bridge`.
 
 To set up all subjects at once, write them in one text file and run
 `cognitive-popups subjects import plan.md` (check first with `--dry-run`;

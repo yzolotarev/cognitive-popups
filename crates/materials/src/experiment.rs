@@ -8,12 +8,14 @@ use serde_json::{Value, json};
 pub const CARDS_PER_LESSON: i64 = 2;
 /// Chance that a block gets no suggestion.
 pub const SILENCE: f64 = 0.2;
-pub const POLICY: &str = "block-v3";
+pub const POLICY: &str = "block-v4";
 
 /// Modes inside Alt+W (the five help mechanics) and Alt+T (routes that work on a
 /// selection). The mode is drawn with the suggestion (B83), so the hint names it exactly.
 pub const WORDS_MODES: [&str; 5] = ["words", "explain", "example", "ladder", "character"];
-pub const TEXT_ROUTES: [&str; 4] = ["probes", "choose_method", "feynman", "hypothesis"];
+/// «Выбор метода» is not here: it needs a method choice in the passage, which most
+/// passages do not have (note 50).
+pub const TEXT_ROUTES: [&str; 3] = ["probes", "feynman", "hypothesis"];
 
 /// A mode drawn uniformly by `r` in [0,1).
 fn pick_mode<'a>(modes: &'a [&'a str], r: f64) -> &'a str {

@@ -106,6 +106,30 @@ fn four_words_are_checked_and_repaired_once() {
 }
 
 #[test]
+fn other_words_tell_the_model_which_cues_were_shown() {
+    let c = client(&[&four()]);
+    let shown = vec![
+        Cue {
+            simple: "метрика".into(),
+            term: "ранг".into(),
+            meaning: "число независимых строк".into(),
+        },
+        Cue {
+            simple: "приём".into(),
+            term: "элементарные преобразования".into(),
+            meaning: "не меняют решения".into(),
+        },
+    ];
+    let cues = words_other(&c, &prompts(), TEXT, &shown, Priority::Foreground).unwrap();
+    assert_eq!(cues.len(), 4);
+    let sent = c.transport().inputs.borrow()[0].clone();
+    assert!(sent.contains("ДРУГИЕ"));
+    assert!(
+        sent.contains("метрика · ранг") && sent.contains("приём · элементарные преобразования")
+    );
+}
+
+#[test]
 fn two_word_simple_is_rejected() {
     let bad = json!({"cues": [cue("две части", "b", "c"), cue("a", "b", "c"), cue("a", "b", "c"), cue("a", "b", "c")]});
     assert!(cues_check(&bad).unwrap_err().contains("одним словом"));

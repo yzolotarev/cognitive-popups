@@ -535,7 +535,7 @@ impl UnderstandWindow {
                         .upcast()
                     })
                     .collect();
-                rows.push(self.own_first_button().upcast());
+                rows.push(self.words_buttons().upcast());
                 self.show(&rows);
             }
             Ok(Outcome::Explanation(explanation)) => {
@@ -671,6 +671,62 @@ impl UnderstandWindow {
         let this = self.clone();
         button.connect_clicked(move |_| this.write_own());
         ui::actions(&[&button])
+    }
+
+    /// Under shown words: [Другие слова] when these do not fit, then [Сначала сам].
+    fn words_buttons(&self) -> gtk::Box {
+        let other = ui::button("Другие слова", &[]);
+        other.set_tooltip_text(Some("Подобрать другие 4 опоры из этого же текста"));
+        let this = self.clone();
+        other.connect_clicked(move |_| this.other_words());
+        let own = ui::button("Сначала сам", &[]);
+        own.set_tooltip_text(Some("Скрыть ответ ИИ, пока не напишешь свои 4 слова"));
+        let this = self.clone();
+        own.connect_clicked(move |_| this.write_own());
+        ui::actions(&[&other, &own])
+    }
+
+    /// [Другие слова]: four new cues, told which ones were shown.
+    fn other_words(&self) {
+        let inner = &self.0;
+        let generation = inner.generation.get() + 1;
+        inner.generation.set(generation);
+        let text = inner.state.borrow().text.clone();
+        let shown = match &inner.state.borrow().cues {
+            Some(Ok(cues)) => cues.clone(),
+            _ => Vec::new(),
+        };
+        self.show(&[ui::waiting("Подбираю другие слова…").upcast()]);
+        let (ai, prompts) = (inner.ctx.ai(), inner.ctx.prompts.clone());
+        let cache_key = format!("{text}\u{1f}");
+        let provider = inner.ctx.provider();
+        let this = self.clone();
+        ctx::background(
+            move || {
+                understand::words_other(
+                    &ai,
+                    &prompts,
+                    &text,
+                    &shown,
+                    cognitive_exoskeleton_ai::Priority::Foreground,
+                )
+            },
+            move |result| {
+                let result = result
+                    .map(|cues| {
+                        if let Ok(value) = serde_json::to_value(&cues) {
+                            this.0
+                                .state
+                                .borrow_mut()
+                                .cache
+                                .put(Mechanic::Words, &cache_key, value);
+                        }
+                        Outcome::Words(cues)
+                    })
+                    .map_err(|e| e.user_message(Mechanic::Words, provider));
+                this.arrived(generation, Mechanic::Words, result, true);
+            },
+        );
     }
 
     /// [Сначала сам]: the model's words stay hidden until the reader writes four.

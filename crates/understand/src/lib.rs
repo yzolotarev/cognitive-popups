@@ -226,6 +226,31 @@ pub fn words<T: Transport>(
         .map_err(|e| UnderstandError::Ai(AiError::InvalidJson(e.to_string())))
 }
 
+/// «Другие слова»: the same four-cue task, told which cues were already shown.
+pub fn words_other<T: Transport>(
+    client: &Client<T>,
+    prompts: &PromptStore,
+    text: &str,
+    shown: &[Cue],
+    priority: Priority,
+) -> Result<Vec<Cue>, UnderstandError> {
+    let text = material(text)?;
+    let used: Vec<String> = shown
+        .iter()
+        .map(|cue| format!("- {} · {}", cue.simple, cue.term))
+        .collect();
+    let input = format!(
+        "{text}\n\nЭти опорные слова уже показывали. Выбери ДРУГИЕ четыре опоры из того же текста, \
+         не повторяя их:\n{}",
+        used.join("\n")
+    );
+    let mut request = request(&system(prompts, SEED_PROMPT)?, input, 500);
+    request.priority = priority;
+    let value = client.complete_json(&request, cues_check)?;
+    serde_json::from_value(value["cues"].clone())
+        .map_err(|e| UnderstandError::Ai(AiError::InvalidJson(e.to_string())))
+}
+
 // ---------- W2: explain words or answer a question ----------
 
 /// v1 `looks_like_question` (F-07).

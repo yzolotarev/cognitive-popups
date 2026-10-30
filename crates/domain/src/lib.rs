@@ -151,6 +151,9 @@ pub struct SourceSnapshot {
     pub window_title: Option<String>,
     #[serde(default)]
     pub context: SourceContext,
+    /// Blocks of a marked study text the selection came from (B76), in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -492,6 +495,7 @@ mod tests {
                 application: None,
                 window_title: None,
                 context: SourceContext::Study,
+                blocks: Vec::new(),
             },
         );
         assert_eq!(

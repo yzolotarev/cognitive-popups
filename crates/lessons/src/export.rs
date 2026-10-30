@@ -299,7 +299,15 @@ impl LessonExport {
                 } else {
                     format!("Окно: {} · ", window.join(" — "))
                 };
-                lines.push(format!("{place}контекст: {}", context(source.context)));
+                let blocks = if source.blocks.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · блок: {}", source.blocks.join(", "))
+                };
+                lines.push(format!(
+                    "{place}контекст: {}{blocks}",
+                    context(source.context)
+                ));
                 lines.push(String::new());
                 lines.extend(source.text.trim().lines().map(|line| {
                     if line.trim().is_empty() {

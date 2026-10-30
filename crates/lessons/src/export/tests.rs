@@ -69,6 +69,7 @@ fn a_lesson_is_exported_with_its_events_guesses_and_notes() {
         application: Some("firefox".into()),
         window_title: Some("Урок 1".into()),
         context: SourceContext::Study,
+        blocks: vec!["b2".into()],
     };
     Journal::open(&db)
         .unwrap()
@@ -141,7 +142,7 @@ fn a_lesson_is_exported_with_its_events_guesses_and_notes() {
         "- Что вынес: что надо опять девелопить",
         "## Хронология с ИИ",
         "### 08:24 Выделенный текст (selection)",
-        "Окно: firefox — Урок 1 · контекст: study",
+        "Окно: firefox — Урок 1 · контекст: study · блок: b2",
         "> Зачем нужна теория вероятностей?\n>\n> Во всех случаях приходится решать.",
         "### 08:26 Ты\nэто метод решений",
         "### 08:26 ИИ (gemini-2.5-flash)\nДа, отчасти.",
@@ -164,6 +165,7 @@ fn a_lesson_is_exported_with_its_events_guesses_and_notes() {
     let json = serde_json::to_value(&export).unwrap();
     assert_eq!(json["timeline"][0]["payload"], "source");
     assert_eq!(json["timeline"][0]["window_title"], "Урок 1");
+    assert_eq!(json["timeline"][0]["blocks"][0], "b2");
     assert_eq!(json["timeline"][2]["model"], "gemini-2.5-flash");
     assert_eq!(json["hypotheses"][0]["verdict"], "partly");
 

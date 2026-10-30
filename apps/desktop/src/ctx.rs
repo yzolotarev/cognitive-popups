@@ -97,6 +97,7 @@ impl Ctx {
                 application: captured.window_class.clone(),
                 window_title: captured.title.clone(),
                 context: captured.context,
+                blocks: captured.blocks.clone(),
             };
             events.extend(NewEvent::source(operation.clone(), at, key("source"), snapshot).ok());
         }

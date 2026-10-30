@@ -599,6 +599,7 @@ impl PracticeWindow {
             title: fragment.title.clone(),
             truncated: false,
             clipboard_restored: None,
+            blocks: Vec::new(),
         };
         {
             let mut state = self.0.state.borrow_mut();

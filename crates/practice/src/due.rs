@@ -84,9 +84,9 @@ pub fn block_cards(
     let db = db.as_ref();
     let materials =
         cognitive_exoskeleton_materials::Materials::open(db).map_err(|e| e.to_string())?;
-    let due = Memory::open(db)
-        .and_then(|m| m.due(at))
-        .map_err(|e| e.to_string())?;
+    let mut memory = Memory::open(db).map_err(|e| e.to_string())?;
+    materials.reconcile_cards(&mut memory)?;
+    let due = memory.due(at).map_err(|e| e.to_string())?;
     Ok(materials
         .assignments()
         .map_err(|e| e.to_string())?
@@ -111,8 +111,15 @@ pub fn recall_with_blocks<T: cognitive_exoskeleton_ai::Transport>(
     at: i64,
 ) -> Result<crate::recall::RecallSet, crate::PracticeError> {
     let db = db.as_ref();
-    let stored = block_cards(db, at).unwrap_or_default();
-    let due = due_units(db, at).unwrap_or_default();
+    let mut errors = Vec::new();
+    let stored = block_cards(db, at).unwrap_or_else(|e| {
+        errors.push(e);
+        Vec::new()
+    });
+    let due = due_units(db, at).unwrap_or_else(|e| {
+        errors.push(e.to_string());
+        Vec::new()
+    });
     let generated = if due.is_empty() {
         Ok(crate::recall::RecallSet::default())
     } else {
@@ -133,5 +140,6 @@ pub fn recall_with_blocks<T: cognitive_exoskeleton_ai::Transport>(
         Err(e) => return Err(e),
     };
     set.cards.extend(stored);
+    set.notes.extend(errors);
     Ok(set)
 }

@@ -4,8 +4,22 @@ use cognitive_exoskeleton_ai::{Client, Priority, PromptStore, Request, Transport
 use cognitive_exoskeleton_memory::Memory;
 use serde_json::{Value, json};
 
-pub const AA_FIRST: i64 = 12;
-pub const POLICY: &str = "block-v1";
+/// Cards per lesson: chosen at random among all assigned blocks (B82).
+pub const CARDS_PER_LESSON: i64 = 2;
+/// Chance that a block gets no suggestion.
+pub const SILENCE: f64 = 0.2;
+pub const POLICY: &str = "block-v2";
+
+/// Suggestions that make sense for a block role (B82): Alt+T practises a statement,
+/// so it is not offered for a bare problem or a summary.
+pub fn allowed_actions(role: &str) -> &'static [&'static str] {
+    match role {
+        "определение" | "механизм" | "пример" | "ошибка" => {
+            &["suggest_alt_t", "suggest_alt_w"]
+        }
+        _ => &["suggest_alt_w"],
+    }
+}
 pub const DAY: i64 = 86_400;
 
 pub(crate) fn migrate(c: &Connection) -> rusqlite::Result<()> {
@@ -31,7 +45,23 @@ pub(crate) fn migrate(c: &Connection) -> rusqlite::Result<()> {
           AND assigned_at<NEW.at AND (completed_at IS NULL OR NEW.at<completed_at)
           AND ((arm='suggest_alt_t' AND NEW.window='alt_t') OR (arm='suggest_alt_w' AND NEW.window='alt_w'));
         END;",
-    )
+    )?;
+    let have: Vec<String> = c
+        .prepare("SELECT name FROM pragma_table_info('block_assignments')")?
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    for (name, ty) in [
+        ("card_selected", "INTEGER"),
+        ("selection_probability", "REAL"),
+    ] {
+        if !have.iter().any(|h| h == name) {
+            c.execute(
+                &format!("ALTER TABLE block_assignments ADD COLUMN {name} {ty}"),
+                [],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -53,6 +83,8 @@ pub struct Assignment {
     pub reference: Option<String>,
     pub allowed: Vec<String>,
     pub probabilities: Vec<f64>,
+    pub card_selected: Option<bool>,
+    pub selection_probability: Option<f64>,
 }
 fn json_column<T: serde::de::DeserializeOwned>(
     r: &rusqlite::Row<'_>,
@@ -117,69 +149,75 @@ impl Materials {
         if done {
             return Ok(());
         }
-        // Cap the entire lesson, including replacement materials, at two cards.
-        let count: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM block_assignments WHERE lesson=?1",
-            [lesson],
-            |r| r.get(0),
-        )?;
-        let candidates: Vec<_> = material
-            .blocks
-            .iter()
-            .filter(|b| matches!(b.role.as_str(), "механизм" | "пример"))
-            .take((2 - count).max(0) as usize)
-            .collect();
+        let blocks: Vec<_> = material.blocks.iter().collect();
         tx.execute(
             "INSERT INTO block_assignment_checks VALUES (?1,?2,?3,?4)",
             params![
                 lesson,
                 material.id,
-                if candidates.is_empty() {
-                    if count >= 2 {
-                        "lesson_limit"
-                    } else {
-                        "no_eligible_roles"
-                    }
+                if blocks.is_empty() {
+                    "no_blocks"
                 } else {
                     "assigned"
                 },
                 now
             ],
         )?;
-        let total: i64 =
-            tx.query_row("SELECT COUNT(*) FROM block_assignments", [], |r| r.get(0))?;
-        for (offset, b) in candidates.into_iter().enumerate() {
+        let mut ids = Vec::new();
+        for b in &blocks {
             let r = roll();
             assert!((0.0..1.0).contains(&r), "uniform roll must be in [0,1)");
-            let (arms, probabilities, arm, p) = if total + (offset as i64) < AA_FIRST {
-                (
-                    "[\"aa_first\",\"aa_second\"]",
-                    "[0.5,0.5]",
-                    if r < 0.5 { "aa_first" } else { "aa_second" },
-                    0.5,
-                )
-            } else {
-                (
-                    "[\"suggest_alt_t\",\"suggest_alt_w\",\"silence\"]",
-                    "[0.3333333333333333,0.3333333333333333,0.3333333333333333]",
-                    if r < 1.0 / 3.0 {
-                        "suggest_alt_t"
-                    } else if r < 2.0 / 3.0 {
-                        "suggest_alt_w"
-                    } else {
-                        "silence"
-                    },
-                    1.0 / 3.0,
-                )
-            };
-            tx.execute("INSERT INTO block_assignments (id,experiment,policy,lesson,subject,material,block,role,allowed,probabilities,arm,probability,assigned_at) VALUES (?1,'fragment_function',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)", params![format!("block:{lesson}:{}:{}",material.id,b.block),POLICY,lesson,subject,material.id,b.block,b.role,arms,probabilities,arm,p,now])?;
+            let actions = allowed_actions(&b.role);
+            let share = (1.0 - SILENCE) / actions.len() as f64;
+            let mut arms: Vec<&str> = actions.to_vec();
+            arms.push("silence");
+            let mut probabilities = vec![share; actions.len()];
+            probabilities.push(SILENCE);
+            let mut acc = 0.0;
+            let mut arm = "silence";
+            let mut p = SILENCE;
+            for (i, candidate) in arms.iter().enumerate() {
+                acc += probabilities[i];
+                if r < acc {
+                    arm = candidate;
+                    p = probabilities[i];
+                    break;
+                }
+            }
+            let id = format!("block:{lesson}:{}:{}", material.id, b.block);
+            tx.execute("INSERT INTO block_assignments (id,experiment,policy,lesson,subject,material,block,role,allowed,probabilities,arm,probability,assigned_at) VALUES (?1,'fragment_function',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)", params![id,POLICY,lesson,subject,material.id,b.block,b.role,serde_json::to_string(&arms).unwrap(),serde_json::to_string(&probabilities).unwrap(),arm,p,now])?;
+            ids.push(id);
+        }
+        // Cards: at most CARDS_PER_LESSON per lesson, drawn at random among these blocks,
+        // whatever their branch. The selection probability is recorded for the analysis.
+        let taken: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM block_assignments WHERE lesson=?1 AND card_selected=1",
+            [lesson],
+            |r| r.get(0),
+        )?;
+        let n = ids.len();
+        let k = (CARDS_PER_LESSON - taken).max(0).min(n as i64) as usize;
+        let mut pool: Vec<usize> = (0..n).collect();
+        let mut chosen = Vec::new();
+        for _ in 0..k {
+            let r = roll();
+            assert!((0.0..1.0).contains(&r), "uniform roll must be in [0,1)");
+            chosen.push(pool.remove((r * pool.len() as f64) as usize));
+        }
+        let probability = if n == 0 { 0.0 } else { k as f64 / n as f64 };
+        for (i, id) in ids.iter().enumerate() {
+            let selected = chosen.contains(&i);
+            tx.execute(
+                "UPDATE block_assignments SET card_selected=?2,selection_probability=?3,card_status=?4,card_reason=?5 WHERE id=?1",
+                params![id, selected, probability, if selected { "pending" } else { "not_selected" }, if selected { None } else { Some("not_drawn_for_card") }],
+            )?;
         }
         tx.commit()?;
         Ok(())
     }
 
     pub fn assignments(&self) -> Result<Vec<Assignment>, MaterialError> {
-        let mut s = self.connection.prepare("SELECT id,lesson,subject,material,block,role,arm,probability,assigned_at,shown_at,skipped_at,card_status,card_reason,question,reference,allowed,probabilities FROM block_assignments ORDER BY assigned_at,rowid")?;
+        let mut s = self.connection.prepare("SELECT id,lesson,subject,material,block,role,arm,probability,assigned_at,shown_at,skipped_at,card_status,card_reason,question,reference,allowed,probabilities,card_selected,selection_probability FROM block_assignments ORDER BY assigned_at,rowid")?;
         Ok(s.query_map([], |r| {
             Ok(Assignment {
                 id: r.get(0)?,
@@ -199,6 +237,8 @@ impl Materials {
                 reference: r.get(14)?,
                 allowed: json_column(r, 15)?,
                 probabilities: json_column(r, 16)?,
+                card_selected: r.get::<_, Option<bool>>(17)?,
+                selection_probability: r.get(18)?,
             })
         })?
         .collect::<Result<_, _>>()?)
@@ -216,15 +256,24 @@ impl Materials {
         }))
     }
 
+    /// The suggestion for the nearest block, in material order, that has no interaction yet
+    /// and was not skipped. A silent block shows nothing and the next one is considered.
     pub fn hint(&self, lesson: &str) -> Result<Option<Assignment>, MaterialError> {
         if !self.experiments_consented()? {
             return Ok(None);
         }
+        let latest = self.latest_for_lesson(lesson)?.map(|m| m.id);
+        let interactions = self.interactions(lesson)?;
         for a in self.assignments()? {
             if a.lesson == lesson
+                && latest.as_deref() == Some(a.material.as_str())
                 && a.function().is_some()
                 && a.skipped_at.is_none()
-                && self.completion(&a)?.is_none()
+                && !interactions.iter().any(|i| {
+                    i.material.as_deref() == Some(a.material.as_str())
+                        && i.block.as_deref() == Some(a.block.as_str())
+                        && i.at > a.assigned_at
+                })
             {
                 return Ok(Some(a));
             }
@@ -342,16 +391,15 @@ impl Materials {
                     self.card_failed(&a.id, &e).map_err(|e| e.to_string())?;
                 }
             }
-            // Reconcile after interrupted enrollment without changing the original due.
-            let created: bool = self
-                .connection
-                .query_row(
-                    "SELECT card_status='created' FROM block_assignments WHERE id=?1",
-                    [&a.id],
-                    |r| r.get(0),
-                )
-                .map_err(|e| e.to_string())?;
-            if created {
+        }
+        self.reconcile_cards(&mut memory)
+    }
+
+    /// Enrolls every created card that an interrupted run left without a schedule row,
+    /// keeping the original due (assignment + 24 h). Enrolling twice changes nothing.
+    pub fn reconcile_cards(&self, memory: &mut Memory) -> Result<(), String> {
+        for a in self.assignments().map_err(|e| e.to_string())? {
+            if a.card_status == "created" {
                 memory
                     .enroll(
                         &a.id,
@@ -434,14 +482,8 @@ impl Materials {
     pub fn export(&self) -> Result<Value, MaterialError> {
         let mut rows = Vec::new();
         let mut summary = serde_json::Map::new();
-        for arm in [
-            "aa_first",
-            "aa_second",
-            "suggest_alt_t",
-            "suggest_alt_w",
-            "silence",
-        ] {
-            summary.insert(arm.into(),json!({"assigned":0,"shown":0,"completed":0,"checked":0,"matched":0,"partial":0,"missed":0,"missing":0}));
+        for arm in ["suggest_alt_t", "suggest_alt_w", "silence"] {
+            summary.insert(arm.into(),json!({"assigned":0,"shown":0,"completed":0,"checked":0,"matched":0,"partial":0,"missed":0,"missing":0,"not_selected":0,"card_selected":0,"selection_weight_sum":0.0}));
         }
         let reviews_exist: bool = self.connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='memory_reviews')",
@@ -472,13 +514,18 @@ impl Materials {
             }
             let completion = self.completion(&a)?;
             let first = reviews.first().cloned().unwrap_or(json!("missing"));
-            let s=summary.entry(a.arm.clone()).or_insert(json!({"assigned":0,"shown":0,"completed":0,"checked":0,"matched":0,"partial":0,"missed":0,"missing":0}));
+            let s=summary.entry(a.arm.clone()).or_insert(json!({"assigned":0,"shown":0,"completed":0,"checked":0,"matched":0,"partial":0,"missed":0,"missing":0,"not_selected":0,"card_selected":0,"selection_weight_sum":0.0}));
             for (key, yes) in [
                 ("assigned", true),
                 ("shown", a.shown_at.is_some()),
                 ("completed", completion.is_some()),
                 ("checked", !reviews.is_empty()),
-                ("missing", reviews.is_empty()),
+                (
+                    "missing",
+                    reviews.is_empty() && a.card_status != "not_selected",
+                ),
+                ("not_selected", a.card_status == "not_selected"),
+                ("card_selected", a.card_selected == Some(true)),
                 ("matched", first["rating"] == 3),
                 ("partial", first["rating"] == 2),
                 ("missed", first["rating"] == 1),
@@ -487,7 +534,13 @@ impl Materials {
                     s[key] = json!(s[key].as_u64().unwrap() + 1);
                 }
             }
-            rows.push(json!({"assignment":a,"experiment":"fragment_function","policy":POLICY,"completion":completion.map(|i|json!(i)).unwrap_or(json!("unknown")),"first_check":first,"subsequent_reviews":reviews.iter().skip(1).collect::<Vec<_>>(),"reading":"unknown"}));
+            if let (Some(true), Some(p)) = (a.card_selected, a.selection_probability)
+                && p > 0.0
+            {
+                s["selection_weight_sum"] =
+                    json!(s["selection_weight_sum"].as_f64().unwrap() + 1.0 / p);
+            }
+            rows.push(json!({"assignment":a,"selection_weight":a.selection_probability.filter(|p| *p > 0.0).map(|p| json!(1.0 / p)).unwrap_or(json!("unknown")),"experiment":"fragment_function","policy":POLICY,"completion":completion.map(|i|json!(i)).unwrap_or(json!("unknown")),"first_check":first,"subsequent_reviews":reviews.iter().skip(1).collect::<Vec<_>>(),"reading":"unknown"}));
         }
         let mut s = self.connection.prepare(
             "SELECT lesson,material,reason,at FROM block_assignment_checks ORDER BY at,rowid",
@@ -525,43 +578,127 @@ mod tests {
             .unwrap();
     }
     #[test]
-    fn fixed_rolls_aa_then_three_arms_and_idempotence() {
+    fn fixed_rolls_three_arms_for_every_block_and_idempotence() {
         let mut m = Materials::open_in_memory().unwrap();
-        for n in 0..6 {
-            assign(
-                &mut m,
-                &format!("aa{n}"),
-                if n % 2 == 0 { 0.1 } else { 0.9 },
-            );
-        }
         for (l, r) in [("t", 0.0), ("w", 0.5), ("s", 0.99)] {
             assign(&mut m, l, r);
         }
         let rows = m.assignments().unwrap();
-        assert_eq!(rows.len(), 18);
-        assert_eq!(rows[0].arm, "aa_first");
-        assert_eq!(rows[2].arm, "aa_second");
-        assert_eq!(rows[12].arm, "suggest_alt_t");
-        assert_eq!(rows[14].arm, "suggest_alt_w");
-        assert_eq!(rows[16].arm, "silence");
-        assert_eq!(rows[12].probability, 1.0 / 3.0);
+        assert_eq!(rows.len(), 6);
+        assert_eq!(rows[0].arm, "suggest_alt_t");
+        assert_eq!(rows[2].arm, "suggest_alt_w");
+        assert_eq!(rows[4].arm, "silence");
+        assert_eq!(rows[0].probability, 0.4);
+        assert_eq!(rows[4].probability, SILENCE);
+        assert_eq!(rows[0].probabilities, vec![0.4, 0.4, SILENCE]);
         assign(&mut m, "t", 0.9);
-        assert_eq!(m.assignments().unwrap().len(), 18);
-        assert!(m.hint("aa0").unwrap().is_none());
+        assert_eq!(m.assignments().unwrap().len(), 6);
         assert!(m.hint("s").unwrap().is_none());
         assert!(m.hint("t").unwrap().is_some());
+        assert!(m.hint("w").unwrap().is_some());
         consent(&m, false);
         assert!(m.hint("t").unwrap().is_none());
         m.register(Some("no-consent"), Some("s"), TEXT, 100)
             .unwrap();
-        assert_eq!(m.assignments().unwrap().len(), 18);
+        assert_eq!(m.assignments().unwrap().len(), 6);
+    }
+    #[test]
+    fn every_block_is_assigned_cards_are_capped_and_drawn_with_recorded_probability() {
+        let mut m = Materials::open_in_memory().unwrap();
+        consent(&m, false);
+        let text = "⟦b1 · проблема⟧\nЗачем?\n⟦b2 · определение⟧\nЭто так.\n⟦b3 · механизм⟧\nВот как.\n⟦b4 · пример⟧\nВот пример.\n⟦b5 · обобщение⟧\nИтог.";
+        let material = m.register(Some("l"), Some("subject"), text, 100).unwrap().0;
+        consent(&m, true);
+        m.assign("l", Some("subject"), &material, 100, || 0.1)
+            .unwrap();
+        let rows = m.assignments().unwrap();
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows[0].allowed, vec!["suggest_alt_w", "silence"]);
+        assert_eq!(
+            rows[1].allowed,
+            vec!["suggest_alt_t", "suggest_alt_w", "silence"]
+        );
+        assert_eq!(rows[4].allowed, vec!["suggest_alt_w", "silence"]);
+        assert_eq!(
+            rows.iter()
+                .filter(|a| a.card_selected == Some(true))
+                .count(),
+            2
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|a| a.card_status == "not_selected")
+                .count(),
+            3
+        );
+        assert!(rows.iter().all(|a| a.selection_probability == Some(0.4)));
+        // Selected blocks are the first two draws of a fixed roll 0.1: b1, then b2.
+        assert_eq!(rows[0].card_selected, Some(true));
+        assert_eq!(rows[1].card_selected, Some(true));
+        // Another material in the same lesson cannot add cards beyond the cap.
+        consent(&m, false);
+        let other = m
+            .register(
+                Some("l"),
+                Some("subject"),
+                "⟦b1 · механизм⟧\nИначе.\n⟦b2 · пример⟧\nИначе.",
+                200,
+            )
+            .unwrap()
+            .0;
+        consent(&m, true);
+        m.assign("l", Some("subject"), &other, 200, || 0.1).unwrap();
+        let rows = m.assignments().unwrap();
+        assert_eq!(rows.len(), 7);
+        assert_eq!(
+            rows.iter()
+                .filter(|a| a.card_selected == Some(true))
+                .count(),
+            2
+        );
+        assert_eq!(rows[5].selection_probability, Some(0.0));
+        let export = m.export().unwrap();
+        assert_eq!(export["assignments"][0]["selection_weight"], 2.5);
+    }
+    #[test]
+    fn hint_ignores_assignments_of_a_replaced_material() {
+        let mut m = Materials::open_in_memory().unwrap();
+        assign(&mut m, "t", 0.0);
+        assert!(m.hint("t").unwrap().is_some());
+        consent(&m, false);
+        m.register(
+            Some("t"),
+            Some("subject"),
+            "⟦b1 · механизм⟧\nДругой текст.",
+            200,
+        )
+        .unwrap();
+        consent(&m, true);
+        assert!(m.hint("t").unwrap().is_none());
+    }
+    #[test]
+    fn created_card_without_schedule_row_is_enrolled_with_original_due() {
+        let db = std::env::temp_dir().join(format!("block-reconcile-{}.db", uuid::Uuid::new_v4()));
+        {
+            let mut m = Materials::open(&db).unwrap();
+            assign(&mut m, "l", 0.1);
+            let id = m.assignments().unwrap()[0].id.clone();
+            assert!(
+                m.accept_card(&id, "Что умножаем?", "Умножаем вероятность на убыток.")
+                    .unwrap()
+            );
+            let mut memory = Memory::open(&db).unwrap();
+            assert!(memory.due(100 + DAY).unwrap().is_empty());
+            m.reconcile_cards(&mut memory).unwrap();
+            m.reconcile_cards(&mut memory).unwrap();
+            assert_eq!(memory.due(100 + DAY).unwrap().len(), 1);
+            assert_eq!(memory.card(&id).unwrap().due, 100 + DAY);
+        }
+        let _ = std::fs::remove_file(&db);
     }
     #[test]
     fn completion_needs_exact_material_block_function_and_later_time() {
         let mut m = Materials::open_in_memory().unwrap();
-        for n in 0..6 {
-            assign(&mut m, &format!("aa{n}"), 0.1);
-        }
         assign(&mut m, "target", 0.1);
         let a = m.hint("target").unwrap().unwrap();
         for (op, block, function, at) in [
@@ -585,7 +722,7 @@ mod tests {
         }
         m.mark_shown(&a.id, 103).unwrap();
         m.mark_shown(&a.id, 104).unwrap();
-        assert_eq!(m.assignments().unwrap()[12].shown_at, Some(103));
+        assert_eq!(m.assignments().unwrap()[0].shown_at, Some(103));
         m.skip(&a.id, 104).unwrap();
         assert_eq!(m.hint("target").unwrap().unwrap().block, "b2");
         m.record_selection(
@@ -601,7 +738,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(m.completion(&a).unwrap().unwrap().operation, "correct");
-        assert!(m.export().unwrap()["assignments"][12]["completion"].is_object());
+        assert!(m.export().unwrap()["assignments"][0]["completion"].is_object());
     }
     struct Model;
     impl Transport for Model {
@@ -619,13 +756,6 @@ mod tests {
         let db = std::env::temp_dir().join(format!("block-trial-{}.db", uuid::Uuid::new_v4()));
         {
             let mut m = Materials::open(&db).unwrap();
-            for n in 0..6 {
-                assign(
-                    &mut m,
-                    &format!("aa{n}"),
-                    if n % 2 == 0 { 0.1 } else { 0.9 },
-                );
-            }
             for (l, r) in [("t", 0.1), ("w", 0.5), ("s", 0.9)] {
                 assign(&mut m, l, r);
             }
@@ -640,10 +770,10 @@ mod tests {
             m.generate_cards(&db, &client, &prompts).unwrap();
             let mut memory = Memory::open(&db).unwrap();
             let rows = m.assignments().unwrap();
-            assert_eq!(rows.len(), 18);
+            assert_eq!(rows.len(), 6);
             assert!(rows.iter().all(|a| a.card_status == "created"));
             assert!(memory.due(100 + DAY - 1).unwrap().is_empty());
-            assert_eq!(memory.due(100 + DAY).unwrap().len(), 18);
+            assert_eq!(memory.due(100 + DAY).unwrap().len(), 6);
             for a in &rows {
                 assert_eq!(memory.card(&a.id).unwrap().due, 100 + DAY);
             }
@@ -700,7 +830,7 @@ mod tests {
                     .len(),
                 1
             );
-            assert_eq!(export["summary"]["aa_first"]["partial"], 1);
+            assert_eq!(export["summary"]["suggest_alt_t"]["partial"], 1);
             assert_eq!(export["assignments"][1]["first_check"], "missing");
             // Enrollment and generation retry keep one card per assigned block.
             m.generate_cards(&db, &client, &prompts).unwrap();
@@ -709,7 +839,7 @@ mod tests {
         std::fs::remove_file(db).unwrap();
     }
     #[test]
-    fn invalid_quote_missing_block_and_no_roles_are_explicit() {
+    fn invalid_quote_missing_block_and_role_limited_actions_are_explicit() {
         let mut m = Materials::open_in_memory().unwrap();
         assign(&mut m, "l", 0.1);
         let a = m.assignments().unwrap().remove(0);
@@ -733,19 +863,22 @@ mod tests {
             Some("missing_full_block")
         );
         m.register(
-            Some("no-roles"),
+            Some("problem-only"),
             Some("s"),
             "⟦b1 · проблема⟧\nЧто делать?",
             200,
         )
         .unwrap();
         let export = m.export().unwrap();
-        assert!(
-            export["eligibility"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|v| v["reason"] == "no_eligible_roles")
+        let row = export["assignments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["assignment"]["lesson"] == "problem-only")
+            .unwrap();
+        assert_eq!(
+            row["assignment"]["allowed"],
+            json!(["suggest_alt_w", "silence"])
         );
     }
 }

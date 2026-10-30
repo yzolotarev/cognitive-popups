@@ -3,6 +3,7 @@
 //! key takes the keyboard (`OnDemand`); one that opened by itself does not
 //! (INV-13). Esc always closes; what was typed is kept for next time.
 
+use std::cell::RefCell;
 use std::process::Command;
 
 use gtk::gdk;
@@ -10,6 +11,20 @@ use gtk::prelude::*;
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 
 const OFFSET: i32 = 12;
+
+thread_local! {
+    /// Every popup by its layer-shell namespace (they live as long as the app).
+    static WINDOWS: RefCell<Vec<(String, gtk::ApplicationWindow)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Whether any of the popups with these namespaces is on screen.
+pub fn any_visible(namespaces: &[&str]) -> bool {
+    WINDOWS.with(|w| {
+        w.borrow()
+            .iter()
+            .any(|(n, window)| namespaces.contains(&n.as_str()) && window.is_visible())
+    })
+}
 
 /// Who opened the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +56,7 @@ pub fn new(app: &adw::Application, namespace: &str, width: i32) -> gtk::Applicat
         }
     });
     window.add_controller(hover);
+    WINDOWS.with(|w| w.borrow_mut().push((namespace.to_string(), window.clone())));
     window
 }
 

@@ -8,18 +8,18 @@ use serde_json::{Value, json};
 pub const CARDS_PER_LESSON: i64 = 2;
 /// Chance that a block gets no suggestion.
 pub const SILENCE: f64 = 0.2;
-pub const POLICY: &str = "block-v2";
+pub const POLICY: &str = "block-v3";
 
-/// Suggestions that make sense for a block role (B82): Alt+T practises a statement,
-/// so it is not offered for a bare problem or a summary.
-pub fn allowed_actions(role: &str) -> &'static [&'static str] {
-    match role {
-        "определение" | "механизм" | "пример" | "ошибка" => {
-            &["suggest_alt_t", "suggest_alt_w"]
-        }
-        _ => &["suggest_alt_w"],
-    }
+/// Modes inside Alt+W (the five help mechanics) and Alt+T (routes that work on a
+/// selection). The mode is drawn with the suggestion (B83), so the hint names it exactly.
+pub const WORDS_MODES: [&str; 5] = ["words", "explain", "example", "ladder", "character"];
+pub const TEXT_ROUTES: [&str; 4] = ["probes", "choose_method", "feynman", "hypothesis"];
+
+/// A mode drawn uniformly by `r` in [0,1).
+fn pick_mode<'a>(modes: &'a [&'a str], r: f64) -> &'a str {
+    modes[((r * modes.len() as f64) as usize).min(modes.len() - 1)]
 }
+
 pub const DAY: i64 = 86_400;
 
 pub(crate) fn migrate(c: &Connection) -> rusqlite::Result<()> {
@@ -53,6 +53,8 @@ pub(crate) fn migrate(c: &Connection) -> rusqlite::Result<()> {
     for (name, ty) in [
         ("card_selected", "INTEGER"),
         ("selection_probability", "REAL"),
+        ("mode", "TEXT"),
+        ("hint_order", "INTEGER"),
     ] {
         if !have.iter().any(|h| h == name) {
             c.execute(
@@ -85,6 +87,8 @@ pub struct Assignment {
     pub probabilities: Vec<f64>,
     pub card_selected: Option<bool>,
     pub selection_probability: Option<f64>,
+    pub mode: Option<String>,
+    pub hint_order: Option<i64>,
 }
 fn json_column<T: serde::de::DeserializeOwned>(
     r: &rusqlite::Row<'_>,
@@ -167,7 +171,12 @@ impl Materials {
         for b in &blocks {
             let r = roll();
             assert!((0.0..1.0).contains(&r), "uniform roll must be in [0,1)");
-            let actions = allowed_actions(&b.role);
+            let mode_roll = roll();
+            assert!(
+                (0.0..1.0).contains(&mode_roll),
+                "uniform roll must be in [0,1)"
+            );
+            let actions = ["suggest_alt_t", "suggest_alt_w"];
             let share = (1.0 - SILENCE) / actions.len() as f64;
             let mut arms: Vec<&str> = actions.to_vec();
             arms.push("silence");
@@ -184,8 +193,13 @@ impl Materials {
                     break;
                 }
             }
+            let mode = match arm {
+                "suggest_alt_w" => Some(pick_mode(&WORDS_MODES, mode_roll)),
+                "suggest_alt_t" => Some(pick_mode(&TEXT_ROUTES, mode_roll)),
+                _ => None,
+            };
             let id = format!("block:{lesson}:{}:{}", material.id, b.block);
-            tx.execute("INSERT INTO block_assignments (id,experiment,policy,lesson,subject,material,block,role,allowed,probabilities,arm,probability,assigned_at) VALUES (?1,'fragment_function',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)", params![id,POLICY,lesson,subject,material.id,b.block,b.role,serde_json::to_string(&arms).unwrap(),serde_json::to_string(&probabilities).unwrap(),arm,p,now])?;
+            tx.execute("INSERT INTO block_assignments (id,experiment,policy,lesson,subject,material,block,role,allowed,probabilities,arm,probability,assigned_at,mode) VALUES (?1,'fragment_function',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)", params![id,POLICY,lesson,subject,material.id,b.block,b.role,serde_json::to_string(&arms).unwrap(),serde_json::to_string(&probabilities).unwrap(),arm,p,now,mode])?;
             ids.push(id);
         }
         // Cards: at most CARDS_PER_LESSON per lesson, drawn at random among these blocks,
@@ -212,12 +226,26 @@ impl Materials {
                 params![id, selected, probability, if selected { "pending" } else { "not_selected" }, if selected { None } else { Some("not_drawn_for_card") }],
             )?;
         }
+        // The order in which the clock offers the blocks is random too, and recorded.
+        let mut keyed: Vec<(f64, usize)> = Vec::new();
+        for i in 0..n {
+            let r = roll();
+            assert!((0.0..1.0).contains(&r), "uniform roll must be in [0,1)");
+            keyed.push((r, i));
+        }
+        keyed.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        for (rank, (_, i)) in keyed.iter().enumerate() {
+            tx.execute(
+                "UPDATE block_assignments SET hint_order=?2 WHERE id=?1",
+                params![ids[*i], rank as i64],
+            )?;
+        }
         tx.commit()?;
         Ok(())
     }
 
     pub fn assignments(&self) -> Result<Vec<Assignment>, MaterialError> {
-        let mut s = self.connection.prepare("SELECT id,lesson,subject,material,block,role,arm,probability,assigned_at,shown_at,skipped_at,card_status,card_reason,question,reference,allowed,probabilities,card_selected,selection_probability FROM block_assignments ORDER BY assigned_at,rowid")?;
+        let mut s = self.connection.prepare("SELECT id,lesson,subject,material,block,role,arm,probability,assigned_at,shown_at,skipped_at,card_status,card_reason,question,reference,allowed,probabilities,card_selected,selection_probability,mode,hint_order FROM block_assignments ORDER BY assigned_at,rowid")?;
         Ok(s.query_map([], |r| {
             Ok(Assignment {
                 id: r.get(0)?,
@@ -239,6 +267,8 @@ impl Materials {
                 probabilities: json_column(r, 16)?,
                 card_selected: r.get::<_, Option<bool>>(17)?,
                 selection_probability: r.get(18)?,
+                mode: r.get(19)?,
+                hint_order: r.get(20)?,
             })
         })?
         .collect::<Result<_, _>>()?)
@@ -264,7 +294,10 @@ impl Materials {
         }
         let latest = self.latest_for_lesson(lesson)?.map(|m| m.id);
         let interactions = self.interactions(lesson)?;
-        for a in self.assignments()? {
+        let mut all = self.assignments()?;
+        // Random order recorded at assignment; older rows keep the block order.
+        all.sort_by_key(|a| a.hint_order.unwrap_or(i64::MAX));
+        for a in all {
             if a.lesson == lesson
                 && latest.as_deref() == Some(a.material.as_str())
                 && a.function().is_some()
@@ -279,6 +312,16 @@ impl Materials {
             }
         }
         Ok(None)
+    }
+    /// True when the lesson had suggestions and every one is done or skipped: the clock
+    /// then says so instead of going silently empty.
+    pub fn hints_exhausted(&self, lesson: &str) -> Result<bool, MaterialError> {
+        Ok(self.experiments_consented()?
+            && self.hint(lesson)?.is_none()
+            && self
+                .assignments()?
+                .iter()
+                .any(|a| a.lesson == lesson && a.function().is_some()))
     }
     pub fn mark_shown(&self, id: &str, now: i64) -> Result<(), MaterialError> {
         if self.experiments_consented()? {
@@ -613,12 +656,14 @@ mod tests {
             .unwrap();
         let rows = m.assignments().unwrap();
         assert_eq!(rows.len(), 5);
-        assert_eq!(rows[0].allowed, vec!["suggest_alt_w", "silence"]);
-        assert_eq!(
-            rows[1].allowed,
-            vec!["suggest_alt_t", "suggest_alt_w", "silence"]
-        );
-        assert_eq!(rows[4].allowed, vec!["suggest_alt_w", "silence"]);
+        // Alt+T and Alt+W are equally likely for every role (B83): no priority for Alt+W.
+        for row in &rows {
+            assert_eq!(
+                row.allowed,
+                vec!["suggest_alt_t", "suggest_alt_w", "silence"]
+            );
+            assert_eq!(row.probabilities, vec![0.4, 0.4, SILENCE]);
+        }
         assert_eq!(
             rows.iter()
                 .filter(|a| a.card_selected == Some(true))
@@ -659,6 +704,45 @@ mod tests {
         assert_eq!(rows[5].selection_probability, Some(0.0));
         let export = m.export().unwrap();
         assert_eq!(export["assignments"][0]["selection_weight"], 2.5);
+    }
+    #[test]
+    fn hints_are_exhausted_only_after_every_suggestion_is_done() {
+        let mut m = Materials::open_in_memory().unwrap();
+        assign(&mut m, "t", 0.0);
+        assert!(!m.hints_exhausted("t").unwrap());
+        for a in m.assignments().unwrap() {
+            m.mark_shown(&a.id, 100).unwrap();
+            m.skip(&a.id, 101).unwrap();
+        }
+        assert!(m.hints_exhausted("t").unwrap());
+        assign(&mut m, "s", 0.99);
+        assert!(!m.hints_exhausted("s").unwrap(), "silence promised nothing");
+    }
+    #[test]
+    fn modes_are_drawn_with_the_suggestion_and_the_hint_order_is_random_and_recorded() {
+        let mut m = Materials::open_in_memory().unwrap();
+        consent(&m, false);
+        let material = m.register(Some("l"), Some("subject"), TEXT, 100).unwrap().0;
+        consent(&m, true);
+        // Per block: arm roll, mode roll; then two card draws; then one order roll per block.
+        let mut rolls = vec![0.0, 0.99, 0.5, 0.0, 0.1, 0.1, 0.9, 0.1].into_iter();
+        m.assign("l", Some("subject"), &material, 100, || {
+            rolls.next().unwrap()
+        })
+        .unwrap();
+        assert!(rolls.next().is_none(), "every roll is used once");
+        let rows = m.assignments().unwrap();
+        assert_eq!(
+            (rows[0].arm.as_str(), rows[0].mode.as_deref()),
+            ("suggest_alt_t", Some("hypothesis"))
+        );
+        assert_eq!(
+            (rows[1].arm.as_str(), rows[1].mode.as_deref()),
+            ("suggest_alt_w", Some("words"))
+        );
+        assert_eq!((rows[0].hint_order, rows[1].hint_order), (Some(1), Some(0)));
+        // b2 comes first in the clock although it is the second block of the text.
+        assert_eq!(m.hint("l").unwrap().unwrap().block, "b2");
     }
     #[test]
     fn hint_ignores_assignments_of_a_replaced_material() {
@@ -839,7 +923,7 @@ mod tests {
         std::fs::remove_file(db).unwrap();
     }
     #[test]
-    fn invalid_quote_missing_block_and_role_limited_actions_are_explicit() {
+    fn invalid_quote_missing_block_and_any_role_gets_both_actions() {
         let mut m = Materials::open_in_memory().unwrap();
         assign(&mut m, "l", 0.1);
         let a = m.assignments().unwrap().remove(0);
@@ -878,7 +962,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             row["assignment"]["allowed"],
-            json!(["suggest_alt_w", "silence"])
+            json!(["suggest_alt_t", "suggest_alt_w", "silence"])
         );
     }
 }

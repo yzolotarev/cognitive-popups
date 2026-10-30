@@ -101,6 +101,8 @@ impl Verdict {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Check {
     pub vague: bool,
+    /// What exactly the guess lacks, in a short phrase (only for a vague guess).
+    pub why_vague: Option<String>,
     pub verdict: Verdict,
     pub reply: String,
     /// Verbatim from the text, or nothing.
@@ -166,6 +168,10 @@ pub fn check<T: Transport>(
     )?;
     Ok(Check {
         vague: value["vague"].as_bool().unwrap_or(false),
+        why_vague: value["why_vague"]
+            .as_str()
+            .map(|w| w.trim().to_string())
+            .filter(|w| !w.is_empty()),
         verdict: value["verdict"]
             .as_str()
             .and_then(Verdict::parse)

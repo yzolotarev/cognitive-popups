@@ -230,7 +230,11 @@ impl HypothesisWindow {
                     Err(e) => this.failed(id, text, material, &e.user_message(provider)),
                     Ok(check) if check.vague && !insist => {
                         this.0.state.borrow_mut().insisted = true;
-                        this.ask(BOLDER);
+                        // Say what is missing, not only that something is (notes 31, 35).
+                        match &check.why_vague {
+                            Some(why) => this.ask(&format!("{BOLDER}\n\nЧего не хватает: {why}")),
+                            None => this.ask(BOLDER),
+                        }
                     }
                     Ok(check) => this.answered(id, &text, check),
                 }

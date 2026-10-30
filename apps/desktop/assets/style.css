@@ -26,6 +26,22 @@ window.cp-popup {
 .cp-footnote { font-size: 10px; letter-spacing: 0.12px; }                     /* Footnote */
 .cp-secondary { color: @cp_text_secondary; }
 
+/* A rare second action next to the main content: plain secondary text, no
+   button chrome, quiet until the pointer or the keyboard is on it. */
+button.cp-quiet-link {
+  background: none;
+  box-shadow: none;
+  border: none;
+  padding: 2px 0;
+  min-height: 0;
+  color: @cp_text_secondary;
+  font-size: 10px;
+  letter-spacing: 0.12px;
+  opacity: 0.55;
+}
+button.cp-quiet-link:hover,
+button.cp-quiet-link:focus { opacity: 1; }
+
 /* Quote of the source: a bar on the leading side, Callout size. */
 .cp-quote {
   border-left: 3px solid @cp_quote_bar;

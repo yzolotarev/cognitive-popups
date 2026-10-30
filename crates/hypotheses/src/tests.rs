@@ -137,6 +137,7 @@ fn the_guess_is_stored_before_the_check_and_an_empty_one_is_a_cancel() {
     store.reword(id, "больше ранг — больше решений").unwrap();
     let check = Check {
         vague: false,
+        why_vague: None,
         verdict: Verdict::Miss,
         reply: "Нет.".into(),
         quote: None,
@@ -161,6 +162,7 @@ fn only_a_refuted_guess_becomes_a_unit_and_only_once() {
         .unwrap();
     let mut check = Check {
         vague: false,
+        why_vague: None,
         verdict: Verdict::Partly,
         reply: "…".into(),
         quote: None,

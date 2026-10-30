@@ -142,6 +142,7 @@ fn a_refuted_guess_comes_first_then_a_guess_then_the_fragment() {
     assert_eq!(hint(&db, &place).unwrap().label, "Твоя последняя гипотеза");
     let check = hypotheses::Check {
         vague: false,
+        why_vague: None,
         verdict: Verdict::Miss,
         reply: "нет".into(),
         quote: None,

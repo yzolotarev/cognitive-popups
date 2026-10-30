@@ -67,7 +67,37 @@ fn open_store(ctx: &Ctx) -> Option<LessonStore> {
         .ok()
 }
 
+/// What a suggestion calls the help that Alt+W will open.
+fn mechanic_label(mode: Option<&str>) -> &'static str {
+    match mode {
+        Some("explain") => "объяснение",
+        Some("example") => "пример",
+        Some("ladder") => "ступенька",
+        Some("character") => "«Мужичок»",
+        _ => "4 слова",
+    }
+}
+
+/// What a suggestion calls the practice that Alt+T will open.
+fn route_label(mode: Option<&str>) -> &'static str {
+    match mode {
+        Some("choose_method") => "выбор метода",
+        Some("feynman") => "объясни своими словами",
+        Some("hypothesis") => "гипотеза",
+        _ => "пробы",
+    }
+}
+
 impl LessonUi {
+    /// The suggestion on the clock right now: its function (`suggest_alt_t`,
+    /// `suggest_alt_w`) and the mode that the key must open exactly as promised.
+    pub fn hinted(&self) -> Option<(String, String)> {
+        let id = self.0.hint_id.borrow().clone()?;
+        let m = cognitive_exoskeleton_materials::Materials::open(&self.0.ctx.db).ok()?;
+        let a = m.assignments().ok()?.into_iter().find(|a| a.id == id)?;
+        Some((a.arm.clone(), a.mode?))
+    }
+
     pub fn new(app: &adw::Application, ctx: Ctx, notice: Notice, pill: Pill) -> Self {
         let window = popup::new(app, "cognitive-lesson", WIDTH);
         let root = ui::column(10);
@@ -94,6 +124,12 @@ impl LessonUi {
         clock_root.append(&clock_info);
         let clock_hint = ui::column(6);
         clock_root.append(&clock_hint);
+        // The way out of a lesson, where the reader is looking (note 14): the step
+        // ends first, then «Закончить урок» is offered.
+        let clock_close = ui::button("Закончить урок", &["cp-quiet-link"]);
+        clock_close.set_halign(gtk::Align::Start);
+        clock_close.set_tooltip_text(Some("Сначала завершится текущий шаг"));
+        clock_root.append(&clock_close);
         clock.set_child(Some(&clock_root));
 
         let end = popup::corner(app, "cognitive-step-end", END_WIDTH, 12);
@@ -118,6 +154,14 @@ impl LessonUi {
             timer: RefCell::default(),
             material: RefCell::default(),
         }));
+        let t = this.clone();
+        clock_close.connect_clicked(move |_| {
+            if let Some(store) = open_store(&t.0.ctx)
+                && let Ok(Some(step)) = store.open_step()
+            {
+                t.step_end(step, true, Opened::ByKey);
+            }
+        });
         for window in [&this.0.window, &this.0.end] {
             let keys = gtk::EventControllerKey::new();
             let w = window.clone();
@@ -781,12 +825,31 @@ impl LessonUi {
 
     fn update_hint(&self, lesson: Option<&str>) {
         use cognitive_exoskeleton_materials::Materials;
+        // The next suggestion waits until the help window is closed (owner, 30.10):
+        // opening a window must not swap the task while the reader is still on it.
+        if popup::any_visible(&[
+            "cognitive-understand",
+            "cognitive-practice",
+            "cognitive-hypothesis",
+        ]) {
+            return;
+        }
         let found = Materials::open(&self.0.ctx.db).ok().and_then(|m| {
             let a = lesson.and_then(|l| m.hint(l).ok().flatten())?;
             let material = m.material(&a.material).ok().flatten()?;
             Some((m, a, material))
         });
-        let id = found.as_ref().map(|(_, a, _)| a.id.clone());
+        let exhausted = found.is_none()
+            && lesson.is_some_and(|l| {
+                Materials::open(&self.0.ctx.db)
+                    .ok()
+                    .is_some_and(|m| m.hints_exhausted(l).unwrap_or(false))
+            });
+        let id = if exhausted {
+            Some("hints-finished".to_string())
+        } else {
+            found.as_ref().map(|(_, a, _)| a.id.clone())
+        };
         if *self.0.hint_id.borrow() == id {
             if self.0.clock.is_visible()
                 && let Some((m, a, _)) = found
@@ -797,6 +860,13 @@ impl LessonUi {
         }
         ui::clear(&self.0.clock_hint);
         *self.0.hint_id.borrow_mut() = id;
+        if exhausted {
+            self.0.clock_hint.append(&ui::text(
+                "Подсказки по этому тексту закончились",
+                &["cp-footnote"],
+            ));
+            return;
+        }
         let Some((materials, a, material)) = found else {
             return;
         };
@@ -815,9 +885,15 @@ impl LessonUi {
             other => other,
         };
         let (key, line) = if a.arm == "suggest_alt_t" {
-            ("Alt+T", format!("Выдели {target} и попробуй сам"))
+            (
+                "Alt+T",
+                format!("Выдели {target} — {}", route_label(a.mode.as_deref())),
+            )
         } else {
-            ("Alt+W", format!("Выдели {target} — 4 слова"))
+            (
+                "Alt+W",
+                format!("Выдели {target} — {}", mechanic_label(a.mode.as_deref())),
+            )
         };
         self.0
             .clock_hint

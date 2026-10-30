@@ -349,3 +349,140 @@ fn split_cuts_at_marks_and_joins_one_block() {
     );
     assert_eq!(normalize(" a\u{00AD}b \n\t c "), "ab c");
 }
+
+#[test]
+fn the_same_text_in_a_second_lesson_is_linked_to_it() {
+    let mut store = Materials::open_in_memory().unwrap();
+    let (first, new) = store.register(Some("l1"), None, &sample(), 100).unwrap();
+    assert!(new);
+    assert_eq!(store.latest_for_lesson("l2").unwrap(), None);
+    let (again, new) = store.register(Some("l2"), None, &sample(), 200).unwrap();
+    assert!(new, "a new link is something new");
+    assert_eq!(again.id, first.id);
+    assert_eq!(again.lesson.as_deref(), Some("l1"));
+    assert_eq!(store.latest_for_lesson("l2").unwrap(), Some(first.clone()));
+    assert_eq!(store.latest_for_lesson("l1").unwrap(), Some(first.clone()));
+    let (_, new) = store.register(Some("l2"), None, &sample(), 300).unwrap();
+    assert!(!new);
+    let views = store.reconstruct("l2").unwrap();
+    assert_eq!(views.len(), 4);
+    assert!(views.iter().all(|v| v.coverage == Coverage::Known));
+    // A mid-sentence selection in the second lesson is found in its text.
+    let parts = store
+        .attribute("l2", "Произведения складываем.", &[])
+        .unwrap();
+    assert_eq!(parts[0].block.as_deref(), Some("b2"));
+    let linked: i64 = store
+        .connection
+        .query_row("SELECT COUNT(*) FROM lesson_materials", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(linked, 2);
+}
+
+#[test]
+fn an_older_database_gets_its_links_from_the_materials() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE materials (
+                 material_id TEXT PRIMARY KEY, lesson_id TEXT, subject_id TEXT,
+                 text TEXT NOT NULL, registered_at INTEGER NOT NULL);
+             INSERT INTO materials VALUES ('m1', 'l1', NULL, 'текст', 5);
+             INSERT INTO materials VALUES ('m2', NULL, NULL, 'текст 2', 6);",
+        )
+        .unwrap();
+    let store = Materials::from_connection(connection).unwrap();
+    let linked: Vec<(String, String, i64)> = store
+        .connection
+        .prepare("SELECT lesson_id, material_id, at FROM lesson_materials")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(linked, [("l1".to_string(), "m1".to_string(), 5)]);
+    assert_eq!(
+        store.latest_for_lesson("l1").unwrap().map(|m| m.id),
+        Some("m1".to_string())
+    );
+}
+
+/// A full text long enough for the watcher: the sample with more sentences.
+fn long_sample() -> String {
+    let b2 = tagged("b2");
+    let more = format!("{b2}Так получается средний убыток на полис, его и закладывают в цену. ");
+    sample().replace(
+        "Произведения складываем.",
+        &format!("Произведения складываем. {}", more.repeat(3)),
+    )
+}
+
+#[test]
+fn only_a_full_marked_text_counts_for_the_watcher() {
+    use watch::{MIN_CHARS, is_full_text};
+    let full = long_sample();
+    assert!(full.chars().count() >= MIN_CHARS);
+    assert!(is_full_text(&full));
+    assert!(is_full_text(&full.replace('\n', "\r\n")));
+    // Plain text, however long.
+    assert!(!is_full_text(&"Просто текст без блоков. ".repeat(20)));
+    // Marks without visible lines.
+    let (_, hidden) = cognitive_exoskeleton_domain::marks::read(&full);
+    assert!(!hidden.is_empty());
+    let unlined: String = full
+        .lines()
+        .filter(|l| !l.contains('⟦'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!is_full_text(&unlined));
+    // Visible lines without marks.
+    let (unmarked, _) = cognitive_exoskeleton_domain::marks::read(&full);
+    assert!(unmarked.contains("⟦b2"));
+    assert!(!is_full_text(&unmarked));
+    // One visible block only.
+    let one = format!(
+        "⟦b1 · пример⟧\n{}",
+        format!("{}Одно и то же предложение. ", tagged("b1")).repeat(20)
+    );
+    assert!(!is_full_text(&one));
+    // Too short, even if marked.
+    let short = format!(
+        "⟦b1 · пример⟧\n{}Коротко.\n⟦b2 · пример⟧\n{}Тоже.",
+        tagged("b1"),
+        tagged("b2")
+    );
+    assert!(parse(&short).unwrap().len() == 2);
+    assert!(!is_full_text(&short));
+}
+
+#[test]
+fn a_selection_is_read_once_after_it_settles() {
+    use watch::{GRACE_MS, QUIET_MS, Settle};
+    let mut settle = Settle::new(0);
+    // What was there when the watcher started is ignored.
+    settle.change(10);
+    assert!(!settle.due(10 + QUIET_MS * 5));
+    // Dragging: changes keep coming, nothing is read.
+    let start = GRACE_MS + 100;
+    for i in 0..10 {
+        settle.change(start + i * 200);
+        assert!(!settle.due(start + i * 200 + 100));
+    }
+    let last = start + 9 * 200;
+    assert!(!settle.due(last + QUIET_MS - 1));
+    assert!(settle.due(last + QUIET_MS));
+    // Once only.
+    assert!(!settle.due(last + QUIET_MS * 3));
+    settle.change(last + QUIET_MS * 4);
+    assert!(settle.due(last + QUIET_MS * 5));
+}
+
+#[test]
+fn the_registered_notice_counts_blocks() {
+    let mut store = Materials::open_in_memory().unwrap();
+    let (material, _) = store.register(Some("l1"), None, &sample(), 1).unwrap();
+    assert_eq!(
+        material.registered_notice(),
+        "Материал зарегистрирован · 4 блока"
+    );
+}

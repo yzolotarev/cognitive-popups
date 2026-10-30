@@ -37,6 +37,9 @@ const END_WIDTH: i32 = 380;
 const STEP_PROMPT: &str = "Какой шаг сделаешь за эти минуты? Можно просто Enter: «читаю». \
 Не 15 минут, а 25: «25 разберу …».";
 
+/// The prompt file for an outside AI's study text (B74).
+const STUDY_TEXT_PROMPT: &str = "NEW_study_text";
+
 struct Inner {
     ctx: Ctx,
     notice: Notice,
@@ -505,11 +508,63 @@ impl LessonUi {
         close.connect_clicked(move |_| this.close_form(id.clone()));
         let this = self.clone();
         step.connect_clicked(move |_| this.step_form());
+        let prompt = self.study_text_button(&store, &lesson);
         self.show(&[
             content.upcast(),
+            prompt.upcast(),
             ui::actions(&[&other, &close, &step]).upcast(),
         ]);
         step.grab_focus();
+    }
+
+    /// B74: the lesson as a prompt for an outside AI to write a study text;
+    /// copied to the clipboard, nothing is sent from here.
+    fn study_text_button(&self, store: &LessonStore, lesson: &Lesson) -> gtk::Button {
+        let button = ui::button("Скопировать промпт для учебного текста", &["flat"]);
+        button.set_halign(gtk::Align::Start);
+        button.set_tooltip_text(Some(
+            "Вставь в ChatGPT, сохрани ответ в PDF и учись по нему с Alt+W и Alt+T",
+        ));
+        let template = self
+            .0
+            .ctx
+            .prompts
+            .get(STUDY_TEXT_PROMPT)
+            .ok()
+            .map(str::to_string);
+        let subject = store.subject(&lesson.subject).ok().flatten();
+        let (Some(template), Some(subject)) = (template, subject) else {
+            button.set_sensitive(false);
+            return button;
+        };
+        let topic = lesson
+            .topic
+            .and_then(|id| store.topic(id).ok().flatten())
+            .map(|t| t.title);
+        let plan: Vec<String> = store
+            .items(&lesson.id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|i| i.status != ItemStatus::Skipped)
+            .map(|i| i.text)
+            .collect();
+        let text = lessons::study_text_prompt(
+            &template,
+            &subject,
+            topic.as_deref(),
+            &lesson.goal,
+            &lesson.criteria,
+            &plan,
+        );
+        button.connect_clicked(move |b| {
+            b.clipboard().set_text(&text);
+            b.set_label("Скопировано: вставь в ChatGPT");
+            let b = b.clone();
+            glib::timeout_add_local_once(Duration::from_secs(3), move || {
+                b.set_label("Скопировать промпт для учебного текста");
+            });
+        });
+        button
     }
 
     /// F-25: the step field with «что ты оставил» above it (F-28) and the

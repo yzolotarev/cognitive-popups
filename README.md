@@ -226,7 +226,13 @@ yet marked; the code picks it, not the model. You mark a topic when you are done
 with it, in the hub or when closing the lesson; the mark only moves you along the
 program and never counts as knowing it (reviews do). A subject's deadline only
 narrows reviews to that subject in the 7 days before it; the subject stays active
-afterwards. Without windows:
+afterwards.
+
+Need a text to learn from? In the lesson, «Скопировать промпт для учебного
+текста» copies a prompt built from the lesson (subject, topic, 15-minute goal,
+plan). Paste it into ChatGPT, save the answer as PDF and open it in Okular or
+Firefox: then Alt+W, Alt+T and the rest work on it, which they do not inside an
+AI chat window. Without windows:
 `cargo run -- subject add|list|program|topic`, `lesson plan|show|item|close`, `step start|finish|bridge`.
 
 To set up all subjects at once, write them in one text file and run

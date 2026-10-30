@@ -18,7 +18,7 @@ pub use import::{
 };
 pub use plan::{
     Context, Criterion, PLAN_PROMPT, Plan, PlanError, PlanItemDraft, ProgramView, generate,
-    plan_check, validate,
+    plan_check, study_text_prompt, validate,
 };
 pub use rules::{
     Bridge, CYCLE_GAP, DEFAULT_MINUTES, MAX_MINUTES, READING, SESSION_GAP, parse_step,

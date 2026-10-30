@@ -237,3 +237,76 @@ pub fn generate<T: Transport>(
     let value = client.complete_json(&request, plan_check)?;
     Ok(validate(&value, &context.due))
 }
+
+/// The prompt for a study text written by an outside AI (B74): the lesson's
+/// own data in the template; nothing is sent from here.
+pub fn study_text_prompt(
+    template: &str,
+    subject: &Subject,
+    topic: Option<&str>,
+    lesson_goal: &str,
+    criteria: &[String],
+    plan: &[String],
+) -> String {
+    let list = |items: &[String]| {
+        items
+            .iter()
+            .map(|i| format!("- {i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    template
+        .replace("{SUBJECT}", &subject.name)
+        .replace("{GOAL}", &subject.goal)
+        .replace("{TOPIC}", topic.unwrap_or("—"))
+        .replace("{LESSON_GOAL}", lesson_goal)
+        .replace("{CRITERIA}", &list(criteria))
+        .replace("{PLAN}", &list(plan))
+}
+
+#[cfg(test)]
+mod study_text_tests {
+    use super::*;
+
+    #[test]
+    fn the_lesson_fills_the_template() {
+        let subject = Subject {
+            id: "s".into(),
+            name: "Теория вероятностей".into(),
+            goal: "Байес без подсказок".into(),
+            deadline: None,
+            status: "active".into(),
+        };
+        let text = study_text_prompt(
+            "{SUBJECT} | {GOAL} | {TOPIC} | {LESSON_GOAL}\n{CRITERIA}\n{PLAN}",
+            &subject,
+            Some("Комбинаторика"),
+            "Считать сочетания",
+            &["решить 2 задачи".into()],
+            &["прочитать".into(), "решить".into()],
+        );
+        assert_eq!(
+            text,
+            "Теория вероятностей | Байес без подсказок | Комбинаторика | Считать сочетания\n\
+             - решить 2 задачи\n- прочитать\n- решить"
+        );
+        assert!(study_text_prompt("{TOPIC}", &subject, None, "", &[], &[]).contains('—'));
+    }
+
+    #[test]
+    fn the_prompt_file_has_every_placeholder() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/v2/port/prompts");
+        let prompts = PromptStore::from_dir(dir).unwrap();
+        let template = prompts.get("NEW_study_text").unwrap();
+        for key in [
+            "{SUBJECT}",
+            "{GOAL}",
+            "{TOPIC}",
+            "{LESSON_GOAL}",
+            "{CRITERIA}",
+            "{PLAN}",
+        ] {
+            assert!(template.contains(key), "{key}");
+        }
+    }
+}

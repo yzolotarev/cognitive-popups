@@ -1233,10 +1233,13 @@ struct ProbePage {
     window: PracticeWindow,
     group: RefCell<ProbeGroup>,
     guidance: Cell<Guidance>,
+    example: gtk::Label,
+    level: gtk::Label,
     cards: gtk::Box,
     other: gtk::Button,
     smaller: gtk::Button,
     more: gtk::Button,
+    harder: gtk::Button,
     whole: gtk::Button,
 }
 
@@ -1253,31 +1256,48 @@ impl ProbePage {
         }
         let example = ui::column(4);
         example.add_css_class("cp-content");
-        example.append(&ui::text("Образец", &["cp-footnote", "cp-secondary"]));
-        example.append(&ui::text(
+        let caption = ui::row(8);
+        let title = ui::text("Образец", &["cp-footnote", "cp-secondary"]);
+        title.set_hexpand(true);
+        let level = ui::text("", &["cp-footnote", "cp-secondary"]);
+        caption.append(&title);
+        caption.append(&level);
+        example.append(&caption);
+        let example_text = ui::text(
             &format!("{} → {}", group.example.prompt, group.example.answer),
             &["cp-body"],
-        ));
+        );
+        example.append(&example_text);
         page.append(&example);
         let cards = ui::column(8);
         page.append(&cards);
         let other = ui::button("Другой вариант", &[]);
         let smaller = ui::button("Шаг поменьше", &[]);
         let more = ui::button("Ещё 3", &[]);
+        let harder = ui::button("Сложнее", &[]);
+        harder.set_tooltip_text(Some("Та же операция на уровень сложнее"));
         let whole = ui::button("Собери вместе", &[]);
         whole.set_visible(false);
-        page.append(&ui::actions(&[&other, &smaller, &more, &whole]));
+        page.append(&ui::actions(&[&other, &smaller, &more, &harder]));
+        // Its own line, shown with the button: five do not fit the width.
+        let whole_row = ui::actions(&[&whole]);
+        whole_row.set_visible(false);
+        page.append(&whole_row);
         let initial = group.cards.clone();
         let this = Rc::new(Self {
             window: window.clone(),
             group: RefCell::new(group),
             guidance: Cell::new(Guidance::default()),
+            example: example_text,
+            level,
             cards,
             other,
             smaller,
             more,
+            harder,
             whole,
         });
+        this.show_level();
         for card in initial {
             this.cards.append(&Self::card(&this, card));
         }
@@ -1294,9 +1314,15 @@ impl ProbePage {
             });
         let t = this.clone();
         this.smaller.connect_clicked(move |_| {
+            let mut guidance = t.guidance.get();
+            guidance.level_down();
+            t.guidance.set(guidance);
+            t.show_level();
             let span = t.group.borrow().source_span.clone();
             (t.window.0.links.ladder)(span);
         });
+        let t = this.clone();
+        this.harder.connect_clicked(move |b| Self::harder(&t, b));
         let t = this.clone();
         this.more
             .connect_clicked(move |b| match t.group.borrow_mut().more_three() {
@@ -1318,19 +1344,96 @@ impl ProbePage {
         });
     }
 
+    /// «Уровень 2 из 5» once above the text's own level (B89).
+    fn show_level(&self) {
+        let level = self.guidance.get().level();
+        self.level.set_text(&if level > 1 {
+            format!("Уровень {level} из {}", practice::MAX_LEVEL)
+        } else {
+            String::new()
+        });
+        self.harder.set_sensitive(level < practice::MAX_LEVEL);
+    }
+
+    /// [Сложнее] (B89): the code raises the level; the model writes the same
+    /// operation at it; the usual checks decide what is shown.
+    fn harder(this: &Rc<Self>, button: &gtk::Button) {
+        let level = this.guidance.get().level() + 1;
+        if level > practice::MAX_LEVEL {
+            return;
+        }
+        button.set_sensitive(false);
+        button.set_label("Собираю…");
+        let inner = &this.window.0;
+        let text = inner.state.borrow().text.clone();
+        let (ai, prompts) = (inner.ctx.ai(), inner.ctx.prompts.clone());
+        let provider = inner.ctx.provider();
+        let group = this.group.borrow().clone();
+        let t = this.clone();
+        ctx::background(
+            move || {
+                practice::harder_group(&ai, &prompts, &text, &group, level, Priority::Foreground)
+            },
+            move |result| {
+                t.harder.set_label("Сложнее");
+                match result {
+                    Ok(harder) => {
+                        t.example.set_text(&format!(
+                            "{} → {}",
+                            harder.example.prompt, harder.example.answer
+                        ));
+                        ui::clear(&t.cards);
+                        for card in harder.cards.clone() {
+                            t.cards.append(&Self::card(&t, card));
+                        }
+                        *t.group.borrow_mut() = harder;
+                        let mut guidance = t.guidance.get();
+                        guidance.level_up();
+                        t.guidance.set(guidance);
+                        t.more.set_sensitive(true);
+                        t.more.set_tooltip_text(None);
+                        t.whole.set_visible(false);
+                        if let Some(row) = t.whole.parent() {
+                            row.set_visible(false);
+                        }
+                        t.highlight(Hint::Nothing);
+                        t.show_level();
+                    }
+                    Err(e) => {
+                        t.harder.set_sensitive(true);
+                        t.harder.set_tooltip_text(Some(&e.user_message(provider)));
+                    }
+                }
+            },
+        );
+    }
+
     fn highlight(&self, hint: Hint) {
-        for button in [&self.other, &self.smaller, &self.more] {
+        for button in [
+            &self.other,
+            &self.smaller,
+            &self.more,
+            &self.harder,
+            &self.whole,
+        ] {
             button.remove_css_class("cp-default");
         }
         match hint {
             Hint::OtherCase => self.other.add_css_class("cp-default"),
             Hint::SmallerStep => self.smaller.add_css_class("cp-default"),
             Hint::MoreThree => self.more.add_css_class("cp-default"),
+            Hint::Harder => self.harder.add_css_class("cp-default"),
             Hint::Nothing => {}
         }
         if self.guidance.get().whole_task_ready() {
             self.whole.set_visible(true);
-            self.whole.add_css_class("cp-default");
+            if let Some(row) = self.whole.parent() {
+                row.set_visible(true);
+            }
+            // At the top level the whole task is the next step (B24, B89).
+            if hint != Hint::Harder {
+                self.whole.add_css_class("cp-default");
+            }
         }
     }
 
@@ -1366,8 +1469,9 @@ impl ProbePage {
                 t.guidance.set(guidance);
                 t.highlight(hint);
                 let title = t.group.borrow().title.clone();
+                let level = guidance.level();
                 t.window.record(&format!(
-                    "Проба «{title}»: {prompt} — {}{}",
+                    "Проба «{title}» (уровень {level}): {prompt} — {}{}",
                     if correct {
                         "верно"
                     } else {

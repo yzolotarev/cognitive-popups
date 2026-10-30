@@ -47,18 +47,48 @@ pub enum Hint {
     SmallerStep,
     /// Success on a new case: three more.
     MoreThree,
-    /// Three clean in a row: nothing highlighted.
+    /// Three clean in a row below the top level: one level up (B89).
+    Harder,
+    /// Three clean in a row at the top level: nothing highlighted.
     Nothing,
 }
 
 /// Per category of the probe tree.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Guidance {
     misses_in_row: u32,
     clean_in_row: u32,
+    level: u8,
+}
+
+impl Default for Guidance {
+    fn default() -> Self {
+        Self {
+            misses_in_row: 0,
+            clean_in_row: 0,
+            level: 1,
+        }
+    }
 }
 
 impl Guidance {
+    /// The level of the cards on screen (B89): 1 is the text's own.
+    pub fn level(&self) -> u8 {
+        self.level
+    }
+
+    /// [Сложнее] was answered with new cards: one level up, a fresh streak.
+    pub fn level_up(&mut self) {
+        self.level = (self.level + 1).min(crate::MAX_LEVEL);
+        self.misses_in_row = 0;
+        self.clean_in_row = 0;
+    }
+
+    /// [Шаг поменьше]: one level down, not below the text's own.
+    pub fn level_down(&mut self) {
+        self.level = self.level.saturating_sub(1).max(1);
+    }
+
     pub fn after(&mut self, attempt: Attempt) -> Hint {
         let clean = attempt.correct && attempt.attempt_before_reveal;
         if !attempt.correct {
@@ -72,7 +102,9 @@ impl Guidance {
         }
         self.misses_in_row = 0;
         self.clean_in_row = if clean { self.clean_in_row + 1 } else { 0 };
-        if self.clean_in_row >= 3 {
+        if self.clean_in_row >= 3 && self.level < crate::MAX_LEVEL {
+            Hint::Harder
+        } else if self.clean_in_row >= 3 {
             Hint::Nothing
         } else {
             Hint::MoreThree
@@ -127,10 +159,38 @@ mod tests {
         assert_eq!(g.after(ok), Hint::MoreThree);
         assert_eq!(g.after(ok), Hint::MoreThree);
         assert!(!g.whole_task_ready());
-        assert_eq!(g.after(ok), Hint::Nothing);
+        assert_eq!(g.after(ok), Hint::Harder, "three clean: one level up");
         assert!(g.whole_task_ready());
         assert_eq!(g.after(miss), Hint::OtherCase);
         assert!(!g.whole_task_ready());
+    }
+
+    #[test]
+    fn levels_go_from_one_to_five_and_reset_the_streak() {
+        let ok = Attempt {
+            correct: true,
+            attempt_before_reveal: true,
+        };
+        let mut g = Guidance::default();
+        assert_eq!(g.level(), 1);
+        g.level_down();
+        assert_eq!(g.level(), 1, "not below the text's own level");
+        for _ in 0..3 {
+            g.after(ok);
+        }
+        g.level_up();
+        assert_eq!(g.level(), 2);
+        assert!(!g.whole_task_ready(), "a new level starts a new streak");
+        for _ in 0..10 {
+            g.level_up();
+        }
+        assert_eq!(g.level(), crate::MAX_LEVEL);
+        for _ in 0..2 {
+            assert_eq!(g.after(ok), Hint::MoreThree);
+        }
+        assert_eq!(g.after(ok), Hint::Nothing, "nothing harder than the top");
+        g.level_down();
+        assert_eq!(g.level(), crate::MAX_LEVEL - 1);
     }
 
     #[test]

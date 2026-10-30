@@ -371,7 +371,14 @@ fn daemon() -> ExitCode {
                         understand.compare(mine);
                     }
                 }
-                "understand" => understand.open(grab(), Mechanic::parse(argument)),
+                "understand" => {
+                    // A suggestion on the clock names the exact help: that one opens.
+                    let promised = match lesson.hinted() {
+                        Some((arm, mode)) if arm == "suggest_alt_w" => Mechanic::parse(&mode),
+                        _ => None,
+                    };
+                    understand.open(grab(), Mechanic::parse(argument).or(promised))
+                }
                 // `signal hide`: every window away (screenshots, scripts).
                 // `signal hypothesis [guess…]`: a given guess is checked at once.
                 "hypothesis" => {
@@ -393,7 +400,13 @@ fn daemon() -> ExitCode {
                         "skill" => Some(Route::Skill),
                         _ => None,
                     };
-                    practice.open(grab(), route, word == "pill");
+                    let promised = match lesson.hinted() {
+                        Some((arm, mode)) if arm == "suggest_alt_t" && route.is_none() => {
+                            Route::parse(&mode)
+                        }
+                        _ => None,
+                    };
+                    practice.open(grab(), route.or(promised), word == "pill");
                     if word == "whole" {
                         practice.whole_demo();
                     }

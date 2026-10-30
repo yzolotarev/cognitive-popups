@@ -102,3 +102,21 @@ fn plain_lesson_step_label_has_no_latex_delimiters() {
     assert!(!shown.contains('\\'), "{shown}");
     assert!(shown.contains("f(x + h) − f(x)"), "{shown}");
 }
+
+#[test]
+fn the_formulas_the_study_text_prompt_asks_for_parse_and_read_as_unicode() {
+    // B85: the examples and the command set written into NEW_study_text.md.
+    for tex in [
+        r"C_n^k = \dfrac{n!}{k!\,(n-k)!}",
+        r"E(L) = 0{,}3 \cdot 25 + 0{,}7 \cdot 0 = 7{,}5",
+        r"P(A \mid B) = \frac{P(A \cap B)}{P(B)}",
+        r"\sigma = \sqrt{\sum_{i=1}^{n} (x_i - \mu)^2}",
+        r"\mathbb{P}(X \le 3) \approx \overline{x} \ne \text{среднее}",
+        r"\left( \int_0^1 x^2 \, dx \right)",
+    ] {
+        assert!(parse(tex).is_ok(), "does not parse: {tex}");
+        assert!(!unicode_of(tex).contains('\\'), "raw LaTeX left: {tex}");
+    }
+    // \binom is outside the subset: the prompt tells the model not to use it.
+    assert!(parse(r"\binom{n}{k}").is_err());
+}

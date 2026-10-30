@@ -455,3 +455,77 @@ fn fixed_path_feynman_uses_the_integrative_prompt_and_rejects_unusable_questions
     assert!(feynman::integrative_question(&c, &prompts(), meaning_map).is_err());
     assert_eq!(c.transport().calls.get(), 2, "bad JSON is retried once");
 }
+
+fn shown_group() -> ProbeGroup {
+    ProbeGroup {
+        title: "Умножить на число".into(),
+        invariant: "одно произведение".into(),
+        source_span: "3·4 = 12".into(),
+        relevance: "счёт".into(),
+        kind: Kind::Numeric,
+        example: Card {
+            prompt: "3·4".into(),
+            answer: "12".into(),
+        },
+        cards: vec![Card {
+            prompt: "2·5".into(),
+            answer: "10".into(),
+        }],
+        reserve: Vec::new(),
+    }
+}
+
+#[test]
+fn harder_keeps_the_operation_and_asks_for_the_level_the_code_chose() {
+    let mut bigger = numeric("r == a*b");
+    bigger["title"] = json!("Другое название");
+    bigger["params"] =
+        json!({"a":{"kind":"int","min":12,"max":99},"b":{"kind":"int","min":12,"max":99}});
+    let client = client(&[json!({"groups":[bigger]}), json!({"bad":[]})]);
+    let harder = harder_group(
+        &client,
+        &prompts(),
+        TEXT,
+        &shown_group(),
+        3,
+        Priority::Foreground,
+    )
+    .unwrap();
+    assert_eq!(
+        harder.title, "Умножить на число",
+        "the category keeps its name"
+    );
+    assert_eq!(harder.cards.len(), CARDS);
+    let input = client.transport().inputs.borrow()[0].clone();
+    assert!(input.contains("УРОВЕНЬ: 3 из 5"), "{input}");
+    assert!(
+        input.contains("2·5 → 10"),
+        "the cards one level down are shown"
+    );
+}
+
+#[test]
+fn harder_cards_the_code_rejects_are_not_shown() {
+    let mut wrong = numeric("r == a*b");
+    wrong["source_span"] = json!("этой цитаты нет в тексте");
+    let client = client(&[
+        json!({"groups":[wrong.clone()]}),
+        json!({"groups":[wrong.clone()]}),
+        json!({"groups":[wrong]}),
+    ]);
+    let error = harder_group(
+        &client,
+        &prompts(),
+        TEXT,
+        &shown_group(),
+        2,
+        Priority::Foreground,
+    )
+    .unwrap_err();
+    assert!(matches!(error, PracticeError::Rejected(_)), "{error}");
+    let inputs = client.transport().inputs.borrow();
+    assert!(
+        inputs[1].contains("ОТКЛОНЕНО"),
+        "the reason goes back to the model"
+    );
+}

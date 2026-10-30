@@ -106,6 +106,7 @@ fn a_lesson_is_exported_with_its_events_guesses_and_notes() {
             guess,
             &Check {
                 vague: false,
+                why_vague: None,
                 verdict: Verdict::Partly,
                 reply: "Да, отчасти.".into(),
                 quote: Some("Во всех случаях приходится решать.".into()),

@@ -73,7 +73,7 @@ impl HypothesisWindow {
         root.append(&quote);
         let body = ui::column(8);
         root.append(&body);
-        window.set_child(Some(&root));
+        popup::set_scrollable_child(&window, &root);
         let (input_box, input) = ui::text_area("Если …, то …, потому что …", 64);
 
         let this = Self(Rc::new(Inner {
@@ -230,7 +230,11 @@ impl HypothesisWindow {
                     Err(e) => this.failed(id, text, material, &e.user_message(provider)),
                     Ok(check) if check.vague && !insist => {
                         this.0.state.borrow_mut().insisted = true;
-                        this.ask(BOLDER);
+                        // Say what is missing, not only that something is (notes 31, 35).
+                        match &check.why_vague {
+                            Some(why) => this.ask(&format!("{BOLDER}\n\nЧего не хватает: {why}")),
+                            None => this.ask(BOLDER),
+                        }
                     }
                     Ok(check) => this.answered(id, &text, check),
                 }

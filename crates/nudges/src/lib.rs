@@ -52,6 +52,10 @@ pub enum Consent {
     /// The quiet «FSRS! N» pill when reviews are due (B50: asked when the
     /// first units appear).
     Reviews,
+    /// Reading the clipboard and the mouse selection during an Alt+I lesson
+    /// to register a full study text (B78 step 1b); everything else read is
+    /// dropped at once.
+    StudyClipboard,
 }
 
 impl Consent {
@@ -62,6 +66,7 @@ impl Consent {
             Consent::BackgroundRecording => "background_recording",
             Consent::Experiments => "experiments",
             Consent::Reviews => "reviews",
+            Consent::StudyClipboard => "study_clipboard",
         }
     }
 
@@ -72,6 +77,7 @@ impl Consent {
             "background_recording" => Some(Consent::BackgroundRecording),
             "experiments" => Some(Consent::Experiments),
             "reviews" => Some(Consent::Reviews),
+            "study_clipboard" => Some(Consent::StudyClipboard),
             _ => None,
         }
     }

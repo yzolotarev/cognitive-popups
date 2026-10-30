@@ -1,8 +1,9 @@
 //! Study materials (B78, step 1). The text of a lesson is rebuilt bit by bit
 //! from what the reader selects: every selection carrying block marks (B76)
 //! stores its clean text per block, and the window it was used in. A full
-//! text can also be registered (`register`, CLI; later from a consented
-//! clipboard watcher); then its blocks are known whole.
+//! text can also be registered (`register`: CLI, or the consented clipboard
+//! watcher, `watch`); then its blocks are known whole. A text is linked to
+//! every lesson it was registered in (`lesson_materials`).
 //!
 //! Two different completenesses: how much of a block's *text* is known
 //! (`Coverage`) and whether it was *read* — the latter stays unknown. Nothing
@@ -12,6 +13,7 @@
 mod attribute;
 mod merge;
 mod parse;
+pub mod watch;
 
 use std::path::Path;
 
@@ -47,11 +49,7 @@ impl Material {
     /// «Материал: 5 блоков · проблема, механизм, пример…»
     pub fn summary(&self) -> String {
         let n = self.blocks.len();
-        let word = match (n % 10, n % 100) {
-            (1, r) if r != 11 => "блок",
-            (2..=4, r) if !(12..=14).contains(&r) => "блока",
-            _ => "блоков",
-        };
+        let word = blocks_word(n);
         let mut roles: Vec<&str> = Vec::new();
         for block in &self.blocks {
             if !roles.contains(&block.role.as_str()) {
@@ -61,8 +59,23 @@ impl Material {
         format!("Материал: {n} {word} · {}", roles.join(", "))
     }
 
+    /// The quiet notice after the clipboard watcher registered it:
+    /// «Материал зарегистрирован · 4 блока».
+    pub fn registered_notice(&self) -> String {
+        let n = self.blocks.len();
+        format!("Материал зарегистрирован · {n} {}", blocks_word(n))
+    }
+
     pub fn block(&self, id: &str) -> Option<&Block> {
         self.blocks.iter().find(|b| b.block == id)
+    }
+}
+
+fn blocks_word(n: usize) -> &'static str {
+    match (n % 10, n % 100) {
+        (1, r) if r != 11 => "блок",
+        (2..=4, r) if !(12..=14).contains(&r) => "блока",
+        _ => "блоков",
     }
 }
 
@@ -221,14 +234,26 @@ impl Materials {
                  at           INTEGER NOT NULL,
                  operation_id TEXT NOT NULL,
                  key          TEXT NOT NULL UNIQUE
-             );",
+             );
+             CREATE TABLE IF NOT EXISTS lesson_materials (
+                 lesson_id   TEXT NOT NULL,
+                 material_id TEXT NOT NULL,
+                 at          INTEGER NOT NULL,
+                 PRIMARY KEY (lesson_id, material_id)
+             );
+             INSERT OR IGNORE INTO lesson_materials (lesson_id, material_id, at)
+                 SELECT lesson_id, material_id, registered_at FROM materials
+                 WHERE lesson_id IS NOT NULL;",
         )?;
         Ok(Self { connection })
     }
 
-    /// Registers a study text for a lesson. The same text again changes
-    /// nothing (INV-04) and returns the stored material with `false`; a
-    /// different text is a new material, the old one stays (INV-12).
+    /// Registers a study text for a lesson. The text's id is global: the
+    /// same text in another lesson is linked to it too (`lesson_materials`).
+    /// Returns `true` when something new was recorded (the text, or its link
+    /// to this lesson); the same text in the same lesson again changes
+    /// nothing (INV-04) and returns `false`. A different text is a new
+    /// material, the old one stays (INV-12).
     pub fn register(
         &mut self,
         lesson: Option<&str>,
@@ -239,27 +264,36 @@ impl Materials {
         let blocks = parse(text)?;
         let clean = clean(text);
         let id = material_id(&clean);
-        if let Some(material) = self.material(&id)? {
-            return Ok((material, false));
-        }
+        let known = self.material(&id)?.is_some();
         let transaction = self.connection.transaction()?;
-        transaction.execute(
-            "INSERT INTO materials (material_id, lesson_id, subject_id, text, registered_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, lesson, subject, clean, now],
-        )?;
-        for block in &blocks {
+        let mut new = false;
+        if !known {
             transaction.execute(
-                "INSERT INTO material_blocks (material_id, block, position, role, text)
+                "INSERT INTO materials (material_id, lesson_id, subject_id, text, registered_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![id, block.block, block.position, block.role, block.text],
+                params![id, lesson, subject, clean, now],
             )?;
+            for block in &blocks {
+                transaction.execute(
+                    "INSERT INTO material_blocks (material_id, block, position, role, text)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![id, block.block, block.position, block.role, block.text],
+                )?;
+            }
+            new = true;
+        }
+        if let Some(lesson) = lesson {
+            new |= transaction.execute(
+                "INSERT OR IGNORE INTO lesson_materials (lesson_id, material_id, at)
+                 VALUES (?1, ?2, ?3)",
+                params![lesson, id, now],
+            )? > 0;
         }
         transaction.commit()?;
         let material = self
             .material(&id)?
             .ok_or_else(|| MaterialError::NotFound(id.clone()))?;
-        Ok((material, true))
+        Ok((material, new))
     }
 
     pub fn material(&self, id: &str) -> Result<Option<Material>, MaterialError> {
@@ -301,13 +335,13 @@ impl Materials {
         Ok(Some(material))
     }
 
-    /// The lesson's newest material: the one the reader works with now.
+    /// The lesson's newest material: the one linked to it last.
     pub fn latest_for_lesson(&self, lesson: &str) -> Result<Option<Material>, MaterialError> {
         let id: Option<String> = self
             .connection
             .query_row(
-                "SELECT material_id FROM materials WHERE lesson_id = ?1
-                 ORDER BY registered_at DESC, rowid DESC LIMIT 1",
+                "SELECT material_id FROM lesson_materials WHERE lesson_id = ?1
+                 ORDER BY at DESC, rowid DESC LIMIT 1",
                 params![lesson],
                 |row| row.get(0),
             )

@@ -219,7 +219,10 @@ under a small clock in the corner; at its end a quiet window asks for one mark
 and one line «что вынес». An unfinished lesson comes back on the next Alt+I.
 During an Alt+I lesson, what you select from a study text with block marks
 rebuilds that text block by block and is noted per block and window; you are
-never asked to report what you read (B78).
+never asked to report what you read (B78). With the consent «Учебный текст из
+буфера» (hub, off by default), copying the whole study text or selecting it
+with the mouse during a lesson registers it in full, with a quiet notice;
+anything else in the clipboard is dropped at once.
 When the lesson ends, its events become learning units in the background and a
 notice in the corner says how many.
 

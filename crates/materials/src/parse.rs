@@ -128,7 +128,7 @@ pub(crate) fn marker(line: &str) -> Option<(String, String)> {
 }
 
 /// `b2` / `B2` → `b2`; anything else is not a block id.
-fn block_id(text: &str) -> Option<String> {
+pub(crate) fn block_id(text: &str) -> Option<String> {
     let text = text.trim();
     let digits = text.strip_prefix(['b', 'B'])?;
     if !digits.chars().all(|c| c.is_ascii_digit()) {

@@ -95,7 +95,7 @@ try:
         assert answer['reference'] == card['reference']
         grade = {'aa_first':'again','aa_second':'hard'}.get(arm,'good')
         for _ in range(2):  # duplicate delivery creates one review
-            run('experiment', 'grade', '--card', a['id'], '--operation', a['id'], '--grade', grade, at=87721)
+            run('experiment', 'grade', '--card', a['id'], '--operation', a['id'], '--grade', grade, at=87999)
     a=selected[0]
     run('experiment','answer','--card',a['id'],'--operation','later','--attempt','Умножить',at=173800)
     run('experiment','grade','--card',a['id'],'--operation','later','--grade','good',at=173800)
@@ -103,7 +103,7 @@ try:
     by_id={row['assignment']['id']:row for row in exported['assignments']}
     for a in selected:
         first=by_id[a['id']]['first_check']
-        assert first['interval_seconds']==86721 and first['source']=='self_graded'
+        assert first['interval_seconds']==86721 and first['graded_interval_seconds']==86999 and first['source']=='self_graded'
     assert len(by_id[selected[0]['id']]['subsequent_reviews'])==1
     export_file=db.with_suffix('.export.json')
     export_file.write_text(json.dumps(exported,ensure_ascii=False,indent=2))
@@ -112,7 +112,7 @@ try:
     print('arms=' + ', '.join(sorted(seen)))
     print('own attempt → reference → self_graded; early answer rejected; duplicate grade idempotent')
     print('Alt+T recall: empty at +24h-1s; every stored card present at +24h')
-    print('first_checks=5; actual_interval=86721s; subsequent_reviews=1')
+    print('first_checks=5; actual_interval=86721s; grading_interval=86999s; subsequent_reviews=1')
     print(json.dumps(exported['summary'], ensure_ascii=False))
     print(f'full_export={export_file}')
 finally:

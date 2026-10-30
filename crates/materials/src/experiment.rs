@@ -451,16 +451,23 @@ impl Materials {
         for a in self.assignments()? {
             let mut reviews = Vec::new();
             if reviews_exist {
-                let mut s=self.connection.prepare("SELECT at,rating,source FROM memory_reviews WHERE unit_id=?1 ORDER BY at,review_id")?;
+                let mut s=self.connection.prepare("SELECT r.at,r.rating,r.source,
+                    (SELECT b.revealed_at FROM block_attempts b WHERE b.assignment=r.unit_id
+                     AND b.operation=CASE WHEN substr(r.key,1,13)='block-answer:' THEN substr(r.key,14) ELSE r.key END)
+                    FROM memory_reviews r WHERE r.unit_id=?1 ORDER BY r.at,r.review_id")?;
                 for r in s.query_map([&a.id], |r| {
                     Ok((
                         r.get::<_, i64>(0)?,
                         r.get::<_, i64>(1)?,
                         r.get::<_, String>(2)?,
+                        r.get::<_, Option<i64>>(3)?,
                     ))
                 })? {
-                    let (at, rating, source) = r?;
-                    reviews.push(json!({"at":at,"rating":rating,"source":source,"interval_seconds":at-a.assigned_at}));
+                    let (at, rating, source, answered_at) = r?;
+                    let interval = answered_at
+                        .map(|t| json!(t - a.assigned_at))
+                        .unwrap_or(json!("unknown"));
+                    reviews.push(json!({"at":at,"answered_at":answered_at,"rating":rating,"source":source,"interval_seconds":interval,"graded_interval_seconds":at-a.assigned_at}));
                 }
             }
             let completion = self.completion(&a)?;
@@ -651,14 +658,14 @@ mod tests {
                     )
                     .is_err()
             );
-            memory
-                .review(
-                    &rows[0].id,
-                    Grade::Hard,
-                    GradeSource::SelfGraded,
-                    "attempt",
-                    100 + DAY + 321,
-                )
+            m.attempt(
+                &rows[0].id,
+                "attempt",
+                "Умножить вероятность на убыток",
+                100 + DAY + 321,
+            )
+            .unwrap();
+            m.grade_attempt(&db, &rows[0].id, "attempt", Grade::Hard, 100 + DAY + 900)
                 .unwrap();
             memory
                 .review(
@@ -673,6 +680,14 @@ mod tests {
             assert_eq!(
                 export["assignments"][0]["first_check"]["interval_seconds"],
                 DAY + 321
+            );
+            assert_eq!(
+                export["assignments"][0]["first_check"]["graded_interval_seconds"],
+                DAY + 900
+            );
+            assert_eq!(
+                export["assignments"][0]["subsequent_reviews"][0]["interval_seconds"],
+                "unknown"
             );
             assert_eq!(
                 export["assignments"][0]["first_check"]["source"],

@@ -126,7 +126,7 @@ impl LessonUi {
         clock_root.append(&clock_hint);
         // The way out of a lesson, where the reader is looking (note 14): the step
         // ends first, then «Закончить урок» is offered.
-        let clock_close = ui::button("Закончить урок…", &["flat"]);
+        let clock_close = ui::button("Закончить урок", &["cp-quiet-link"]);
         clock_close.set_halign(gtk::Align::Start);
         clock_close.set_tooltip_text(Some("Сначала завершится текущий шаг"));
         clock_root.append(&clock_close);

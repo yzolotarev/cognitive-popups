@@ -105,6 +105,24 @@ pub struct Completed {
     pub episode: Episode,
     pub draft: String,
 }
+/// A detached episode keeps its own parent and draft while another card is shown.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Deferred {
+    pub id: String,
+    pub root: Challenge,
+    pub episode: Episode,
+    pub depths: Vec<u8>,
+    pub support_count: usize,
+    pub draft: String,
+    pub current_depth: u8,
+    pub batch: Option<Batch>,
+    pub error: Option<String>,
+}
+impl Deferred {
+    pub fn pending(&self) -> bool {
+        self.batch.is_none() && self.error.is_none()
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub root: Challenge,
@@ -128,6 +146,10 @@ pub struct Session {
     pub policies: std::collections::BTreeMap<String, Policy>,
     #[serde(default)]
     pub help_pending: bool,
+    #[serde(default)]
+    pub deferred: Vec<Deferred>,
+    #[serde(default)]
+    pub deferred_errors: Vec<String>,
 }
 impl Session {
     pub fn new(root: Challenge, queue: Vec<Challenge>) -> Self {
@@ -148,7 +170,96 @@ impl Session {
             completed: vec![],
             policies: Default::default(),
             help_pending: false,
+            deferred: vec![],
+            deferred_errors: vec![],
         }
+    }
+    pub fn defer_support(&mut self, id: &str) -> Result<bool, String> {
+        if self.deferred.iter().any(|d| d.id == id) || self.processed.iter().any(|k| k == id) {
+            return Ok(false);
+        }
+        if self.finished {
+            return Err("Нет текущего вопроса".into());
+        }
+        self.deferred.push(Deferred {
+            id: id.into(),
+            root: self.root.clone(),
+            episode: self.episode.clone(),
+            depths: self.depths.clone(),
+            support_count: self.support_count,
+            draft: self.draft.clone(),
+            current_depth: self.current_depth,
+            batch: None,
+            error: None,
+        });
+        self.processed.push(id.into());
+        self.history.push(self.root.clone());
+        self.help_pending = false;
+        self.serial += 1;
+        self.move_on();
+        Ok(true)
+    }
+    fn move_on(&mut self) {
+        if self.activate_ready() {
+            return;
+        }
+        if self.queue.is_empty() {
+            self.finished = true;
+            return;
+        }
+        self.root = self.take_next();
+        self.policy = self
+            .policies
+            .get(&self.root.skill)
+            .cloned()
+            .unwrap_or_default();
+        self.episode = Episode::new(self.root.task.clone());
+        self.depths.clear();
+        self.support_count = 0;
+        self.current_depth = 0;
+        self.draft.clear();
+        self.finished = false;
+    }
+    pub fn resolve_support(&mut self, id: &str, result: Result<Batch, String>) -> bool {
+        let Some(work) = self.deferred.iter_mut().find(|d| d.id == id && d.pending()) else {
+            return false;
+        };
+        match result {
+            Ok(b) => work.batch = Some(b),
+            Err(e) => work.error = Some(e),
+        }
+        // A completed background job never changes an in-progress card.
+        if self.finished {
+            self.activate_ready();
+        }
+        true
+    }
+    pub fn activate_ready(&mut self) -> bool {
+        let Some(index) = self.deferred.iter().position(|d| !d.pending()) else {
+            return false;
+        };
+        let work = self.deferred.remove(index);
+        self.root = work.root;
+        self.episode = work.episode;
+        self.depths = work.depths;
+        self.policy = self
+            .policies
+            .get(&self.root.skill)
+            .cloned()
+            .unwrap_or_default();
+        self.support_count = work.support_count;
+        self.draft = work.draft;
+        self.current_depth = work.current_depth;
+        self.finished = false;
+        self.serial += 1;
+        if let Some(batch) = work.batch {
+            if let Err(error) = self.support(batch) {
+                self.deferred_errors.push(error);
+            }
+        } else if let Some(error) = work.error {
+            self.deferred_errors.push(error);
+        }
+        true
     }
     fn take_next(&mut self) -> Challenge {
         let wanted = match self.policy.request() {
@@ -244,20 +355,7 @@ impl Session {
             if self.warmups >= 5 {
                 self.queue.retain(|c| !c.warmup);
             }
-            if self.queue.is_empty() {
-                self.finished = true;
-            } else {
-                self.root = self.take_next();
-                self.policy = self
-                    .policies
-                    .get(&self.root.skill)
-                    .cloned()
-                    .unwrap_or_default();
-                self.episode = Episode::new(self.root.task.clone());
-                self.depths.clear();
-                self.support_count = 0;
-                self.current_depth = 0;
-            }
+            self.move_on();
         } else {
             self.current_depth = self.depths.get(self.episode.position).copied().unwrap_or(0);
         }
@@ -918,5 +1016,86 @@ mod generation_tests {
     fn action_cannot_smuggle_a_reference_or_grade_into_the_contract() {
         let task = serde_json::json!({"kind":"action","instruction":"Рисуй карту","reference":"готовая карта"});
         assert!(serde_json::from_value::<Task>(task).is_err());
+    }
+}
+
+#[cfg(test)]
+mod deferred_tests {
+    use super::*;
+    fn task(id: &str) -> Challenge {
+        Challenge {
+            id: id.into(),
+            skill: "сравнить".into(),
+            action: "объяснить".into(),
+            source_span: "источник".into(),
+            requirements: vec!["рассудить".into()],
+            relation: Relation::Variation,
+            difference: "другая ситуация".into(),
+            warmup: false,
+            task: Task::Question {
+                question: id.into(),
+                reference: "опора".into(),
+            },
+        }
+    }
+    #[test]
+    fn stuck_moves_immediately_and_ready_help_waits_for_a_card_boundary() {
+        let mut s = Session::new(task("stuck"), vec![task("next")]);
+        s.draft = "незавершённый ответ".into();
+        assert!(s.defer_support("job").unwrap());
+        assert_eq!(s.root.id, "next");
+        assert!(s.deferred[0].pending());
+        assert!(!s.defer_support("job").unwrap());
+        let batch = Batch {
+            components: vec!["связь".into()],
+            tasks: vec![task("small")],
+        };
+        assert!(s.resolve_support("job", Ok(batch)));
+        assert_eq!(
+            s.root.id, "next",
+            "background completion cannot interrupt the current card"
+        );
+        s.episode.reveal().unwrap();
+        s.advance("graded-next", Some(Assessment::Matched)).unwrap();
+        assert_eq!(s.root.id, "stuck");
+        assert_eq!(s.episode.current(), &task("small").task);
+        assert!(s.episode.helped);
+        assert!(s.completed.iter().all(|c| c.root.id != "stuck"));
+    }
+    #[test]
+    fn pending_jobs_survive_restart_and_failures_preserve_the_original() {
+        let mut s = Session::new(task("stuck"), vec![]);
+        s.draft = "черновик".into();
+        s.defer_support("job").unwrap();
+        assert!(s.finished);
+        let mut restored: Session =
+            serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert!(restored.deferred[0].pending());
+        assert_eq!(restored.deferred[0].draft, "черновик");
+        restored.resolve_support("job", Err("Провайдер недоступен".into()));
+        assert!(!restored.finished);
+        assert_eq!(restored.root.id, "stuck");
+        assert_eq!(restored.draft, "черновик");
+        assert!(!restored.episode.helped);
+        assert_eq!(restored.deferred_errors.len(), 1);
+        assert!(!restored.resolve_support("job", Err("повтор".into())));
+    }
+    #[test]
+    fn two_stuck_questions_have_distinct_parents() {
+        let mut s = Session::new(task("one"), vec![task("two"), task("three")]);
+        s.defer_support("j1").unwrap();
+        s.defer_support("j2").unwrap();
+        assert_eq!(s.root.id, "three");
+        s.resolve_support(
+            "j2",
+            Ok(Batch {
+                components: vec!["идея".into()],
+                tasks: vec![task("small-two")],
+            }),
+        );
+        s.episode.reveal().unwrap();
+        s.advance("third", Some(Assessment::Partial)).unwrap();
+        assert_eq!(s.root.id, "two");
+        assert_eq!(s.deferred[0].root.id, "one");
     }
 }

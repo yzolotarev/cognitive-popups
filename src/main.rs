@@ -52,7 +52,7 @@ usage:
                                     --key <k> [--now <t>]
   cognitive-exoskeleton memory goal --db <path> --subject <id> [--deadline <rfc3339>] [--inactive]
   cognitive-exoskeleton memory optimize --db <path> --subject <id> [--now <t>]
-  cognitive-exoskeleton practice learning --db <path> --text <file> [--type state|generate|support|reveal|grade|skip|return] [--key <id>] [--answer matched|partial|missed] [--prompts <dir>]
+  cognitive-exoskeleton practice learning --db <path> --text <file> [--type state|generate|support|defer|prepare|reveal|grade|skip|return] [--key <id>] [--answer matched|partial|missed] [--prompts <dir>]
   cognitive-exoskeleton practice probes --text <file> --prompts <dir>
   cognitive-exoskeleton practice tree --db <path> --prompts <dir> [--text <file>] [--from-pill]
                                       [--now <t>]   probes + «Достань из памяти»
@@ -590,7 +590,30 @@ fn run_practice(args: &[String]) -> Result<String, String> {
                 .unwrap_or((0, None));
             let at = now(options.get("--now").map(String::as_str))?;
             let op = options.get("--type").map(String::as_str).unwrap_or("state");
-            if matches!(op, "generate" | "support") {
+            if op == "prepare" {
+                let s = session.as_mut().ok_or("No episode")?;
+                let work = s
+                    .deferred
+                    .iter()
+                    .find(|d| d.pending())
+                    .cloned()
+                    .ok_or("No pending support")?;
+                let prompts =
+                    PromptStore::from_dir(options.get("--prompts").ok_or("--prompts is required")?)
+                        .map_err(|e| e.to_string())?;
+                let client = Client::new(ai_config_from_env()?, UreqTransport::default());
+                let result = learning::generate(
+                    &client,
+                    &prompts,
+                    &text,
+                    Some(work.episode.current()),
+                    &s.history,
+                    "prepares",
+                    Priority::Background,
+                )
+                .map_err(|e| e.to_string());
+                s.resolve_support(&work.id, result);
+            } else if matches!(op, "generate" | "support") {
                 let prompts =
                     PromptStore::from_dir(options.get("--prompts").ok_or("--prompts is required")?)
                         .map_err(|e| e.to_string())?;
@@ -628,6 +651,9 @@ fn run_practice(args: &[String]) -> Result<String, String> {
             } else if op != "state" {
                 let s = session.as_mut().ok_or("No episode; generate first")?;
                 match op {
+                    "defer" => {
+                        s.defer_support(options.get("--key").ok_or("--key is required")?)?;
+                    }
                     "reveal" => s.episode.reveal().map_err(str::to_string)?,
                     "return" => s.return_to_root(),
                     "skip" | "grade" => {
@@ -649,7 +675,10 @@ fn run_practice(args: &[String]) -> Result<String, String> {
                         )?;
                     }
                     _ => {
-                        return Err("--type state|generate|support|reveal|grade|skip|return".into());
+                        return Err(
+                            "--type state|generate|support|defer|prepare|reveal|grade|skip|return"
+                                .into(),
+                        );
                     }
                 }
             }
@@ -1404,6 +1433,8 @@ fn run_lesson(group: &str, args: &[String]) -> Result<String, String> {
             "--takeaway",
             "--remaining",
             "--file",
+            "--minutes",
+            "--key",
         ],
         &[],
     )?;
@@ -1536,6 +1567,25 @@ fn run_lesson(group: &str, args: &[String]) -> Result<String, String> {
             Ok(json(
                 &store
                     .start_step(lesson.as_deref(), journey.id, &text, minutes, at)
+                    .map_err(e)?,
+            ))
+        }
+        ("step", "extend") => {
+            let step = store.open_step().map_err(e)?.ok_or("нет идущего шага")?;
+            let minutes = options
+                .get("--minutes")
+                .map(String::as_str)
+                .unwrap_or("15")
+                .parse::<u32>()
+                .map_err(|_| "--minutes must be an integer")?;
+            Ok(json(
+                &store
+                    .extend_step(
+                        step.id,
+                        minutes,
+                        at,
+                        options.get("--key").ok_or("--key is required")?,
+                    )
                     .map_err(e)?,
             ))
         }

@@ -56,6 +56,7 @@ struct Inner {
     end_body: gtk::Box,
     timer: RefCell<Option<glib::SourceId>>,
     material: RefCell<String>,
+    feed_opener: RefCell<Option<Rc<dyn Fn()>>>,
 }
 
 #[derive(Clone)]
@@ -89,6 +90,23 @@ fn route_label(mode: Option<&str>) -> &'static str {
 }
 
 impl LessonUi {
+    pub fn set_feed_opener(&self, opener: impl Fn() + 'static) {
+        *self.0.feed_opener.borrow_mut() = Some(Rc::new(opener));
+    }
+    fn feed_button(&self) -> gtk::Button {
+        let button = ui::button("Лента знакомства", &["cp-quiet-link"]);
+        button.set_tooltip_text(Some("Познакомься с идеями текста; затем читай и работай с Alt+W и Alt+T. Ленту можно открыть в любой момент."));
+        let this = self.clone();
+        button.connect_clicked(move |_| {
+            let opener = this.0.feed_opener.borrow().clone();
+            if let Some(open) = opener {
+                popup::hide(&this.0.window);
+                open();
+            }
+        });
+        button
+    }
+
     /// The suggestion on the clock right now: its function (`suggest_alt_t`,
     /// `suggest_alt_w`) and the mode that the key must open exactly as promised.
     pub fn hinted(&self) -> Option<(String, String)> {
@@ -153,7 +171,9 @@ impl LessonUi {
             end_body,
             timer: RefCell::default(),
             material: RefCell::default(),
+            feed_opener: RefCell::default(),
         }));
+        clock_root.append(&this.feed_button());
         let t = this.clone();
         clock_close.connect_clicked(move |_| {
             if let Some(store) = open_store(&t.0.ctx)
@@ -595,6 +615,7 @@ impl LessonUi {
         self.show(&[
             content.upcast(),
             prompt.upcast(),
+            self.feed_button().upcast(),
             ui::actions(&[&other, &close, &step]).upcast(),
         ]);
         step.grab_focus();
@@ -936,14 +957,48 @@ impl LessonUi {
         }
     }
 
+    fn resume_step(&self, step: &Step) {
+        if ctx::now() >= step.deadline {
+            let Some(mut store) = open_store(&self.0.ctx) else {
+                return;
+            };
+            let key = format!("continue:{}:{}", step.id, step.deadline);
+            if let Err(error) = store.extend_step(step.id, 15, ctx::now(), &key) {
+                return self.end_show(&[ui::text(
+                    &format!("Не удалось продолжить: {error}"),
+                    &["cp-error"],
+                )
+                .upcast()]);
+            }
+        }
+        popup::hide(&self.0.end);
+        self.tick_start();
+    }
+
     /// F-27. At the deadline it comes by itself and does not take the keyboard
     /// (INV-13); closed without a mark, the step stays open.
     fn step_end(&self, step: Step, early: bool, opened: Opened) {
         popup::hide(&self.0.clock);
         let header = ui::text("Шаг", &["cp-headline"]);
         if step.is_reading() {
-            self.end_show(&[header.upcast()]);
-            self.takeaway(step, None);
+            let resume = ui::button(
+                if early {
+                    "Продолжить чтение"
+                } else {
+                    "Продолжить +15 мин"
+                },
+                &["cp-default"],
+            );
+            let done = ui::button("Закончить шаг", &[]);
+            let (this, continued) = (self.clone(), step.clone());
+            resume.connect_clicked(move |_| this.resume_step(&continued));
+            let this = self.clone();
+            done.connect_clicked(move |_| this.takeaway(step.clone(), None));
+            self.end_show(&[
+                header.upcast(),
+                ui::text("Урок можно продолжать после таймера.", &["cp-body"]).upcast(),
+                ui::actions(&[&resume, &done]).upcast(),
+            ]);
         } else {
             let question = if early {
                 "Закончить шаг сейчас?".to_string()
@@ -954,10 +1009,15 @@ impl LessonUi {
             let partly = ui::button("Частично", &[]);
             let no = ui::button("Нет", &[]);
             let mut buttons = vec![&no, &partly, &yes];
-            let resume = ui::button("Продолжить шаг", &[]);
-            if early {
-                buttons.insert(0, &resume);
-            }
+            let resume = ui::button(
+                if early {
+                    "Продолжить шаг"
+                } else {
+                    "Продолжить +15 мин"
+                },
+                &[],
+            );
+            buttons.insert(0, &resume);
             for (button, outcome) in [
                 (&yes, Outcome::Done),
                 (&partly, Outcome::Partly),
@@ -966,11 +1026,8 @@ impl LessonUi {
                 let (this, step) = (self.clone(), step.clone());
                 button.connect_clicked(move |_| this.takeaway(step.clone(), Some(outcome)));
             }
-            let this = self.clone();
-            resume.connect_clicked(move |_| {
-                popup::hide(&this.0.end);
-                this.tick_start();
-            });
+            let (this, continued) = (self.clone(), step.clone());
+            resume.connect_clicked(move |_| this.resume_step(&continued));
             self.end_show(&[
                 header.upcast(),
                 ui::text(&question, &["cp-body"]).upcast(),

@@ -18,7 +18,6 @@ pub(super) struct Page {
     busy: Cell<bool>,
     exhausted: Cell<bool>,
     helping: Cell<bool>,
-    support_error: Cell<bool>,
     reviews: RefCell<VecDeque<RecallCard>>,
     current_review: RefCell<Option<RecallCard>>,
     advanced: Cell<u32>,
@@ -71,7 +70,6 @@ impl Page {
             busy: Cell::new(false),
             exhausted: Cell::new(false),
             helping: Cell::new(false),
-            support_error: Cell::new(false),
             reviews: RefCell::new(recall.into()),
             current_review: RefCell::new(None),
             advanced: Cell::new(0),
@@ -106,6 +104,7 @@ impl Page {
             this.support();
         }
         this.fill();
+        this.pump_support();
         this
     }
     fn slot(&self) -> gtk::Box {
@@ -225,8 +224,9 @@ impl Page {
             }
             self.reviews.borrow_mut().push_back(card);
         }
-        if self.session.borrow().is_none()
-            || self.session.borrow().as_ref().is_some_and(|s| s.finished)
+        if self.current_review.borrow().is_none()
+            && (self.session.borrow().is_none()
+                || self.session.borrow().as_ref().is_some_and(|s| s.finished))
         {
             self.render();
         }
@@ -322,7 +322,7 @@ impl Page {
                         t.exhausted.set(true);
                     }
                 }
-                if empty {
+                if empty && t.current_review.borrow().is_none() {
                     t.render();
                 }
             },
@@ -437,6 +437,16 @@ impl Page {
         *self.next.borrow_mut() = None;
         *self.answer.borrow_mut() = None;
         self.turn();
+        let deferred_error = self.session.borrow_mut().as_mut().and_then(|s| {
+            if s.deferred_errors.is_empty() {
+                None
+            } else {
+                Some(std::mem::take(&mut s.deferred_errors).join("\n"))
+            }
+        });
+        if let Some(error) = deferred_error {
+            *self.error.borrow_mut() = Some(error);
+        }
         if let Some(e) = self.error.borrow().clone() {
             self.slot()
                 .append(&ui::text(&e, &["cp-footnote", "cp-error"]));
@@ -445,11 +455,8 @@ impl Page {
             retry.connect_clicked(move |_| {
                 t.exhausted.set(false);
                 *t.error.borrow_mut() = None;
-                if t.support_error.replace(false) {
-                    t.support();
-                } else {
-                    t.fill();
-                }
+                t.fill();
+                t.pump_support();
             });
             self.slot().append(&retry);
         }
@@ -574,7 +581,7 @@ impl Page {
                     }
                 }
                 let stuck = ui::button("Застрял", &["cp-quiet-link"]);
-                stuck.set_sensitive(!self.helping.get());
+                stuck.set_sensitive(true);
                 let t = self.clone();
                 stuck.connect_clicked(move |_| t.support());
                 self.slot().append(&stuck);
@@ -594,7 +601,9 @@ impl Page {
             }
             _ => {
                 self.slot().append(&ui::text(
-                    if self.busy.get() {
+                    if self.helping.get() {
+                        "Готовлю помощь к отложенному вопросу…"
+                    } else if self.busy.get() {
                         "Готовлю задания…"
                     } else {
                         "На сейчас всё: подходящих заданий и готовых повторений нет."
@@ -616,109 +625,90 @@ impl Page {
         self.slot().append(&legacy);
     }
     fn support(self: &Rc<Self>) {
-        if self.helping.get() {
+        self.save_draft();
+        let id = ctx::operation().as_str().to_string();
+        let result = self
+            .session
+            .borrow_mut()
+            .as_mut()
+            .map(|s| s.defer_support(&id));
+        match result {
+            Some(Ok(true)) => {
+                if !self.save("support_requested") {
+                    self.render();
+                    return;
+                }
+                // Move now. The network response belongs to a detached episode.
+                self.render();
+                self.fill();
+                self.pump_support();
+            }
+            Some(Err(error)) => {
+                *self.error.borrow_mut() = Some(error);
+                self.render();
+            }
+            _ => {}
+        }
+    }
+    fn pump_support(self: &Rc<Self>) {
+        if !self.alive() || self.helping.get() {
             return;
         }
-        self.save_draft();
-        let Some(s) = self.session.borrow().clone() else {
+        let work = self
+            .session
+            .borrow()
+            .as_ref()
+            .and_then(|s| s.deferred.iter().find(|d| d.pending()).cloned());
+        let Some(work) = work else {
             return;
         };
-        if s.current_depth >= 2 || s.support_count >= 10 {
-            self.show_example();
-            return;
-        }
-        if let Some(s) = self.session.borrow_mut().as_mut() {
-            s.help_pending = true;
-        }
-        if !self.save("support_requested") {
-            self.render();
-            return;
-        }
-        self.support_error.set(false);
         self.helping.set(true);
-        let (ai, prompts, source, root, history) = (
+        let (ai, prompts, source) = (
             self.window.0.ctx.ai(),
             self.window.0.ctx.prompts.clone(),
             self.source.clone(),
-            s.episode.current().clone(),
-            s.history.clone(),
         );
-        let serial = s.serial;
-        let screen = self.screen.get();
+        let history = self
+            .session
+            .borrow()
+            .as_ref()
+            .map(|s| s.history.clone())
+            .unwrap_or_default();
+        let id = work.id.clone();
         let weak = Rc::downgrade(self);
-        self.slot().append(&ui::waiting("Готовлю доступные шаги…"));
         ctx::background(
             move || {
+                if work.current_depth >= 2 || work.support_count >= 10 {
+                    return Err("Достигнут предел подготовки. Можно разобрать опору исходного вопроса или отложить его.".to_string());
+                }
                 model::generate(
                     &ai,
                     &prompts,
                     &source,
-                    Some(&root),
+                    Some(work.episode.current()),
                     &history,
                     "prepares",
-                    Priority::Foreground,
+                    Priority::Background,
                 )
+                .map_err(|e| e.to_string())
             },
             move |result| {
                 let Some(t) = weak.upgrade().filter(|t| t.alive()) else {
                     return;
                 };
                 t.helping.set(false);
-                if t.screen.get() != screen
-                    || t.session
-                        .borrow()
-                        .as_ref()
-                        .is_none_or(|s| s.serial != serial)
-                {
-                    return;
-                }
+                let was_waiting = t.session.borrow().as_ref().is_some_and(|s| s.finished)
+                    && t.current_review.borrow().is_none();
                 if let Some(s) = t.session.borrow_mut().as_mut() {
-                    s.help_pending = false;
+                    s.resolve_support(&id, result);
                 }
-                match result {
-                    Ok(batch) => {
-                        let result = t.session.borrow_mut().as_mut().unwrap().support(batch);
-                        match result {
-                            Ok(()) => {
-                                t.save("support");
-                                t.render();
-                            }
-                            Err(e) => {
-                                *t.error.borrow_mut() = Some(e);
-                                t.show_example();
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        *t.error.borrow_mut() = Some(e.to_string());
-                        t.render();
-                    }
+                t.save("support_ready");
+                if was_waiting {
+                    t.render();
                 }
+                t.pump_support();
             },
         );
-    }
-    fn show_example(self: &Rc<Self>) {
-        if let Some(s) = self.session.borrow_mut().as_mut() {
-            s.episode.helped = true;
-        }
-        self.save("help_limit");
-        self.render();
-        self.slot().append(&ui::text(
-            "Предел помощи. Можно разобрать опору этого шага и вернуться к исходному вопросу.",
-            &["cp-footnote"],
-        ));
-        let example = ui::button("Показать опору как объяснение", &[]);
-        let t = self.clone();
-        example.connect_clicked(move |b| {
-            b.set_sensitive(false);
-            if let Some(s) = t.session.borrow().as_ref()
-                && let Task::Question { reference, .. } = s.episode.current()
-            {
-                t.slot()
-                    .append(&ui::rich(reference, &["cp-callout"], WIDTH));
-            }
-        });
-        self.slot().append(&example);
     }
     pub(super) fn demo(self: &Rc<Self>, action: &str) {
         if std::env::var_os("COGNITIVE_AI_FIXTURE").is_none() {

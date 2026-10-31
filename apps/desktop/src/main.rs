@@ -324,6 +324,11 @@ fn daemon() -> ExitCode {
         });
         pill.start();
         let lesson = lesson::LessonUi::new(app, ctx.clone(), notice.clone(), pill.clone());
+        let practice_for_lesson = practice.clone();
+        lesson.set_feed_opener(move || {
+            practice_for_lesson.hide();
+            practice_for_lesson.open(None, Some(Route::Probes), false);
+        });
         lesson.restore();
         // B95: old passages get their probes ready too (the lesson's, if any,
         // were started by `restore`).

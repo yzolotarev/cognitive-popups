@@ -13,6 +13,8 @@ use crate::rules::{Bridge, READING, SESSION_GAP};
 pub enum StoreError {
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
+    #[error("invalid step continuation: {0}")]
+    InvalidContinuation(String),
     #[error("not found: {0}")]
     NotFound(String),
     #[error("memory: {0}")]
@@ -296,6 +298,9 @@ impl LessonStore {
                  outcome     TEXT,
                  takeaway    TEXT,
                  finished_at INTEGER
+             );
+             CREATE TABLE IF NOT EXISTS step_extensions (
+                 key TEXT PRIMARY KEY, step_id INTEGER NOT NULL, minutes INTEGER NOT NULL, at INTEGER NOT NULL
              );
              CREATE TABLE IF NOT EXISTS journey_feynman (
                  journey_id INTEGER PRIMARY KEY,
@@ -769,6 +774,61 @@ impl LessonStore {
         )?;
         let id = self.connection.last_insert_rowid();
         self.step(id)?.ok_or(StoreError::NotFound(id.to_string()))
+    }
+
+    /// Explicit continuation keeps the lesson and step open; it is not completion or a review.
+    pub fn extend_step(
+        &mut self,
+        id: i64,
+        minutes: u32,
+        now: i64,
+        key: &str,
+    ) -> Result<Step, StoreError> {
+        if !(1..=180).contains(&minutes) || key.trim().is_empty() {
+            return Err(StoreError::InvalidContinuation(
+                "Нужно 1–180 минут и ключ действия".into(),
+            ));
+        }
+        let tx = self
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let old: Option<(i64, u32)> = tx
+            .query_row(
+                "SELECT step_id,minutes FROM step_extensions WHERE key=?1",
+                [key],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((step, added)) = old {
+            if step != id || added != minutes {
+                return Err(StoreError::InvalidContinuation(
+                    "Ключ относится к другому продолжению".into(),
+                ));
+            }
+        } else {
+            let row: Option<(i64, Option<i64>)> = tx
+                .query_row(
+                    "SELECT deadline,finished_at FROM steps WHERE step_id=?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let (deadline, finished) = row.ok_or_else(|| StoreError::NotFound(id.to_string()))?;
+            if finished.is_some() {
+                return Err(StoreError::InvalidContinuation("Шаг уже закончен".into()));
+            }
+            tx.execute(
+                "UPDATE steps SET deadline=?2,minutes=minutes+?3 WHERE step_id=?1",
+                params![id, deadline.max(now) + i64::from(minutes) * 60, minutes],
+            )?;
+            tx.execute(
+                "INSERT INTO step_extensions VALUES(?1,?2,?3,?4)",
+                params![key, id, minutes, now],
+            )?;
+        }
+        tx.commit()?;
+        self.step(id)?
+            .ok_or_else(|| StoreError::NotFound(id.to_string()))
     }
 
     pub fn step(&self, id: i64) -> Result<Option<Step>, StoreError> {

@@ -27,6 +27,15 @@ for _ in $(seq 400); do grep -q '^ready$' "$out/daemon.log" && break; sleep .1; 
 grep -q '^ready$' "$out/daemon.log"
 step() { "$bin" signal practice "feed $1"; sleep 2.3; }
 step support
+# Help may be ready already, but must not replace the unrelated current card.
+python3 - "$COGNITIVE_DB" <<'PYTEST'
+import json,sqlite3,sys
+c=sqlite3.connect(sys.argv[1]);s=json.loads(c.execute('select json from learning_states order by updated_at desc limit 1').fetchone()[0])
+assert s['root']['id']=='q2',s['root']
+assert s['deferred'] and s['deferred'][0]['root']['id']=='q1'
+PYTEST
+step answer
+step matched
 grim "$out/map.png"
 "$bin" signal hide
 sleep .2
@@ -53,14 +62,14 @@ python3 - "$COGNITIVE_DB" <<'PY'
 import json,sqlite3,sys
 c=sqlite3.connect(sys.argv[1]); s=json.loads(c.execute('select json from learning_states order by updated_at desc limit 1').fetchone()[0])
 assert s['completed'],s
-observations=s['completed'][0]['episode']['observations']
+observations=next(x for x in s['completed'] if x['root']['id']=='q1')['episode']['observations']
 assert observations[0]['provenance']=='Navigation'
 assert all(o['provenance']=='AfterHelp' for o in observations[1:]),observations
-assert s['policy']['matches']==0
+assert s['policy']['matches']==1, 'Only the unrelated unassisted question contributes a training self-report'
 assert c.execute('select count(*) from memory_reviews').fetchone()[0]==0
 assert c.execute('select count(*) from learning_feedback').fetchone()[0]==1
 assert not [r for r in c.execute("select kind from learning_events") if r[0]=='mastered']
-print('OK: map has no answer/grade; help survives restore; whole-chain return is AfterHelp; no FSRS review; optional feedback offered once.')
+print('OK: stuck moves immediately; background help waits for the next boundary; map has no grade; help survives restore; return is AfterHelp; no FSRS review; feedback once.')
 PY
 if grep -En 'panicked|already (mutably )?borrowed|CRITICAL' "$out/daemon.log"; then exit 1; fi
 printf 'Artifacts: %s\n' "$out"

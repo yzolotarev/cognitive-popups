@@ -23,7 +23,7 @@ use serde::Serialize;
 
 pub use attribute::{Part, locate, normalize, split};
 pub use merge::{MIN_OVERLAP, merge};
-pub use parse::{Block, OTHER_ROLE, ParseError, ROLES, clean, parse};
+pub use parse::{Block, OTHER_ROLE, ParseError, ROLES, clean, parse, strip_prompt};
 
 #[derive(Debug, thiserror::Error)]
 pub enum MaterialError {
@@ -330,7 +330,8 @@ impl Materials {
                         id: row.get(0)?,
                         lesson: row.get(1)?,
                         subject: row.get(2)?,
-                        text: row.get(3)?,
+                        // B93: a text kept before the fix may carry our prompt.
+                        text: strip_prompt(&row.get::<_, String>(3)?).to_string(),
                         registered_at: row.get(4)?,
                         blocks: Vec::new(),
                     })
@@ -350,7 +351,8 @@ impl Materials {
                     block: row.get(0)?,
                     position: row.get(1)?,
                     role: row.get(2)?,
-                    text: row.get(3)?,
+                    // B93: a text kept before the fix may carry our prompt.
+                    text: strip_prompt(&row.get::<_, String>(3)?).to_string(),
                 })
             })?
             .collect::<Result<_, _>>()?;

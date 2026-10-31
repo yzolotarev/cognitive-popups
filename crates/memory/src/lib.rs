@@ -439,6 +439,19 @@ impl Memory {
             .ok_or_else(|| MemoryError::NotEnrolled(unit.into()))
     }
 
+    /// B93: «Не помню» right after the reference was shown — the card rests
+    /// until `until`, so the next try is not a recognition of what was just
+    /// read. No grade, no FSRS step: only the date of the next show moves
+    /// (never earlier).
+    pub fn rest(&mut self, unit: &str, until: i64) -> Result<(), MemoryError> {
+        self.card(unit)?;
+        self.connection.execute(
+            "UPDATE memory_cards SET due = MAX(due, ?2) WHERE unit_id = ?1",
+            params![unit, until],
+        )?;
+        Ok(())
+    }
+
     pub fn review_count(&self, unit: &str) -> Result<usize, MemoryError> {
         let count: i64 = self.connection.query_row(
             "SELECT COUNT(*) FROM memory_reviews WHERE unit_id = ?1",

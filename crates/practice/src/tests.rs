@@ -226,6 +226,7 @@ fn group(title: &str) -> ProbeGroup {
         example: card.clone(),
         cards: vec![card],
         reserve: Vec::new(),
+        role: Role::Operation,
     }
 }
 
@@ -472,6 +473,7 @@ fn shown_group() -> ProbeGroup {
             answer: "10".into(),
         }],
         reserve: Vec::new(),
+        role: Role::Operation,
     }
 }
 
@@ -555,4 +557,52 @@ fn stuck_asks_for_concepts_and_a_question_and_never_takes_the_answer() {
         inputs[1].contains("пересказывает"),
         "a leaked answer goes back with the reason"
     );
+}
+
+#[test]
+fn a_text_with_one_operation_gives_one_branch_and_is_not_asked_for_more() {
+    let client = client(&[json!({"groups":[numeric("r == a*b")]}), json!({"bad":[]})]);
+    let tree = probe_tree(&client, &prompts(), TEXT, Priority::Foreground).unwrap();
+    assert_eq!(tree.groups.len(), 1);
+    assert_eq!(
+        tree.groups[0].role,
+        Role::Operation,
+        "no role reads as an operation"
+    );
+    assert_eq!(
+        client.transport().calls.get(),
+        2,
+        "the tree and its verifier; a missing branch is not asked for"
+    );
+    let client = client_empty();
+    let tree = probe_tree(&client, &prompts(), TEXT, Priority::Foreground).unwrap();
+    assert!(
+        tree.groups.is_empty(),
+        "a text without operations gives none"
+    );
+}
+
+fn client_empty() -> Client<Stub> {
+    client(&[json!({"groups":[]})])
+}
+
+#[test]
+fn one_warm_up_at_most() {
+    let mut first = numeric("r == a*b");
+    first["role"] = json!("warmup");
+    let mut second = reference_drill("Ссылку B3 делают абсолютной");
+    second["role"] = json!("warmup");
+    let client = client(&[
+        json!({"groups":[first, second]}),
+        json!({"bad":[]}),
+        json!({"groups":[]}),
+    ]);
+    let tree = probe_tree(&client, &prompts(), TEXT, Priority::Foreground).unwrap();
+    let warmups = tree
+        .groups
+        .iter()
+        .filter(|g| g.role == Role::Warmup)
+        .count();
+    assert_eq!(warmups, 1);
+    assert!(tree.notes.iter().any(|n| n.contains("вторая разминка")));
 }

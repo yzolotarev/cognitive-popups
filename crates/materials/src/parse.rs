@@ -32,19 +32,39 @@ pub enum ParseError {
     NoBlocks,
 }
 
-/// The text without tag characters, line ends normalised and trimmed: what
-/// the material id is computed from.
+/// The first and the last line of our own prompt `NEW_study_text` (B74): a
+/// copy of the chat often carries it above the answer (B93, owner's logs).
+const PROMPT_OPENING: &str = "Напиши учебный текст для самостоятельной работы";
+const PROMPT_CLOSING: &str = "Опирайся на стандартные учебники";
+
+/// The text without our prompt above it: what follows the prompt's last
+/// line; nothing when the prompt is all there is. Another text is unchanged.
+pub fn strip_prompt(text: &str) -> &str {
+    if !text.trim_start().starts_with(PROMPT_OPENING) {
+        return text;
+    }
+    match text.find(PROMPT_CLOSING) {
+        Some(at) => text[at..]
+            .split_once('\n')
+            .map_or("", |(_, rest)| rest)
+            .trim_start_matches("```")
+            .trim_start(),
+        None => "",
+    }
+}
+
+/// The text without tag characters and without our prompt, line ends
+/// normalised and trimmed: what the material id is computed from.
 pub fn clean(text: &str) -> String {
-    marks::read(&text.replace("\r\n", "\n"))
-        .0
-        .trim()
-        .to_string()
+    let text = text.replace("\r\n", "\n");
+    marks::read(strip_prompt(&text)).0.trim().to_string()
 }
 
 /// Blocks by the visible marker lines; without any, by the invisible marks
 /// (role «другое»). Text before the first block (a title) belongs to none.
 pub fn parse(text: &str) -> Result<Vec<Block>, ParseError> {
     let text = text.replace("\r\n", "\n");
+    let text = strip_prompt(&text).to_string();
     let mut blocks: Vec<Block> = Vec::new();
     let mut current: Option<usize> = None;
     let mut found = false;
@@ -136,4 +156,47 @@ pub(crate) fn block_id(text: &str) -> Option<String> {
     }
     let n: u32 = digits.parse().ok()?;
     Some(format!("b{n}"))
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::*;
+
+    const ANSWER: &str = "⟦b1 · проблема⟧\nЗачем считать?\n⟦b2 · пример⟧\n3 из 8 → 3/8.";
+
+    fn template() -> String {
+        let file = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../docs/v2/port/prompts/NEW_study_text.md"),
+        )
+        .unwrap();
+        let start = file.find("```text\n").unwrap() + "```text\n".len();
+        file[start..start + file[start..].find("\n```").unwrap()].to_string()
+    }
+
+    #[test]
+    fn the_markers_are_the_prompt_s_own_first_and_last_lines() {
+        let prompt = template();
+        assert!(prompt.starts_with(PROMPT_OPENING), "first line changed");
+        let last = prompt.lines().last().unwrap();
+        assert!(last.contains(PROMPT_CLOSING), "last line changed: {last}");
+    }
+
+    #[test]
+    fn our_prompt_above_the_answer_is_cut_and_alone_is_nothing() {
+        let copy = format!("{}\n\n{ANSWER}", template());
+        assert_eq!(strip_prompt(&copy), ANSWER);
+        assert_eq!(
+            parse(&copy).unwrap().len(),
+            2,
+            "the prompt's own ⟦b1⟧ is gone"
+        );
+        assert_eq!(clean(&copy), ANSWER);
+        assert_eq!(strip_prompt(&template()), "");
+        assert!(
+            parse(&template()).is_err(),
+            "the bare prompt is not a material"
+        );
+        assert_eq!(strip_prompt(ANSWER), ANSWER, "another text is unchanged");
+    }
 }

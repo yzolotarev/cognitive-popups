@@ -42,6 +42,8 @@ pub const BUFFER: usize = 5;
 pub const STEP_UP_AFTER: u32 = 3;
 /// Cards on one operation before the next one comes up (B92).
 pub const ROTATE_AFTER: u32 = 8;
+/// Warm-up cards in a sitting, all warm-ups together (B93).
+pub const WARMUP_CARDS: u32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pick {
@@ -83,12 +85,17 @@ struct Op {
     misses_in_row: u32,
     settled: bool,
     seen: u32,
+    /// A warm-up on the words of the text (B93): first, level 1 only, five
+    /// cards in all.
+    warmup: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Feed {
     /// Cards on the current operation since it came up (B92).
     run: u32,
+    /// Warm-up cards done in this sitting (B93).
+    warmups: u32,
     ops: Vec<Op>,
     current: usize,
     recent: VecDeque<bool>,
@@ -113,10 +120,12 @@ impl Feed {
                 misses_in_row: 0,
                 settled: false,
                 seen: 0,
+                warmup: false,
             })
             .collect();
         Self {
             run: 0,
+            warmups: 0,
             ops,
             current: 0,
             recent: VecDeque::new(),
@@ -125,6 +134,27 @@ impl Feed {
             format_misses: [0; 3],
             format_paused_until: [0; 3],
         }
+    }
+
+    /// Marks warm-ups (B93): they come first, stay at level 1 and end after
+    /// five cards; the operations of the subject follow.
+    pub fn with_warmups(mut self, warmups: &[usize]) -> Self {
+        for i in warmups {
+            if let Some(op) = self.ops.get_mut(*i) {
+                op.warmup = true;
+                op.level = 1;
+            }
+        }
+        if let Some(first) = self.ops.iter().position(|op| op.warmup) {
+            self.current = first;
+        }
+        self
+    }
+
+    /// Nothing left to drill: no operations, or only warm-ups already done.
+    /// The feed then brings reviews only (B93).
+    pub fn done_drilling(&self) -> bool {
+        self.ops.iter().all(|op| op.warmup && op.settled) || self.ops.is_empty()
     }
 
     /// The window shows the second layer too.
@@ -142,8 +172,16 @@ impl Feed {
         if !self.formats {
             return Vec::new();
         }
-        let strong = self.ops.iter().filter(|op| op.level >= 3).count();
-        let settled = self.ops.iter().filter(|op| op.settled).count();
+        let strong = self
+            .ops
+            .iter()
+            .filter(|op| !op.warmup && op.level >= 3)
+            .count();
+        let settled = self
+            .ops
+            .iter()
+            .filter(|op| !op.warmup && op.settled)
+            .count();
         let unlocked = [strong >= 2, settled >= 1, settled >= 2];
         FORMATS
             .iter()
@@ -156,14 +194,14 @@ impl Feed {
     /// A settled operation for «В двух словах», the least seen first.
     fn settled_op(&self) -> Option<usize> {
         (0..self.ops.len())
-            .filter(|i| self.ops[*i].settled)
+            .filter(|i| self.ops[*i].settled && !self.ops[*i].warmup)
             .min_by_key(|i| self.ops[*i].seen)
     }
 
     /// Settled operations, for «Собери вместе».
     pub fn settled(&self) -> Vec<usize> {
         (0..self.ops.len())
-            .filter(|i| self.ops[*i].settled)
+            .filter(|i| self.ops[*i].settled && !self.ops[*i].warmup)
             .collect()
     }
 
@@ -211,19 +249,27 @@ impl Feed {
 
     fn step_up_due(&self) -> bool {
         let op = &self.ops[self.current];
-        op.level < MAX_LEVEL && op.clean_in_row >= self.step_up_after()
+        !op.warmup && op.level < MAX_LEVEL && op.clean_in_row >= self.step_up_after()
     }
 
     /// The least seen other operation, if there is one.
     fn other(&self) -> Option<usize> {
         (0..self.ops.len())
-            .filter(|i| *i != self.current)
+            .filter(|i| *i != self.current && !(self.ops[*i].warmup && self.ops[*i].settled))
             .min_by_key(|i| self.ops[*i].seen)
     }
 
     /// What comes next. `roll` is uniform in [0, 1); `recall_due` says whether
     /// «Достань из памяти» has a card due now.
     pub fn next(&self, roll: f64, recall_due: bool) -> Next {
+        // B93: no operations, or the warm-up was all there was — reviews only.
+        if self.done_drilling() {
+            return Next {
+                op: 0,
+                level: 1,
+                pick: Pick::Recall,
+            };
+        }
         let current = Next {
             op: self.current,
             level: self.ops[self.current].level,
@@ -280,9 +326,12 @@ impl Feed {
     /// operation at its level, the level above once a step up is near, and
     /// the next other operation.
     pub fn wanted(&self) -> Vec<(usize, u8)> {
+        if self.done_drilling() {
+            return Vec::new();
+        }
         let op = &self.ops[self.current];
         let mut wanted = vec![(self.current, op.level)];
-        if op.level < MAX_LEVEL && op.clean_in_row + 1 >= self.step_up_after() {
+        if !op.warmup && op.level < MAX_LEVEL && op.clean_in_row + 1 >= self.step_up_after() {
             wanted.push((self.current, op.level + 1));
         }
         if let Some(other) = self.other() {
@@ -357,6 +406,19 @@ impl Feed {
                 }
             }
         }
+        // B93: five warm-up cards, then the operations of the subject.
+        if matches!(next.pick, Pick::Current | Pick::Other)
+            && self.ops.get(next.op).is_some_and(|op| op.warmup)
+        {
+            self.warmups += 1;
+            if self.warmups >= WARMUP_CARDS {
+                for op in self.ops.iter_mut().filter(|op| op.warmup) {
+                    op.settled = true;
+                }
+                self.advance();
+                return;
+            }
+        }
         // B92: the operations take turns, so one of them never fills the feed.
         if self.run >= ROTATE_AFTER {
             self.advance();
@@ -382,7 +444,9 @@ impl Feed {
 
     /// «Шаг поменьше» pressed by the reader: one level down now.
     pub fn smaller_step(&mut self) {
-        let op = &mut self.ops[self.current];
+        let Some(op) = self.ops.get_mut(self.current) else {
+            return;
+        };
         op.level = op.level.saturating_sub(1).max(1);
         op.clean_in_row = 0;
         op.misses_in_row = 0;
@@ -391,11 +455,15 @@ impl Feed {
     fn advance(&mut self) {
         self.run = 0;
         let n = self.ops.len();
-        if let Some(next) = (1..=n)
-            .map(|step| (self.current + step) % n)
-            .find(|i| !self.ops[*i].settled)
+        let order: Vec<usize> = (1..=n).map(|step| (self.current + step) % n).collect();
+        // An unsettled one first; else any operation (a settled one is still
+        // practice); a finished warm-up never comes back.
+        if let Some(next) = order
+            .iter()
+            .find(|i| !self.ops[**i].settled)
+            .or_else(|| order.iter().find(|i| !self.ops[**i].warmup))
         {
-            self.current = next;
+            self.current = *next;
         }
     }
 
@@ -813,6 +881,7 @@ mod tests {
                 example: card.clone(),
                 cards: vec![card.clone()],
                 reserve: Vec::new(),
+                role: crate::Role::Operation,
             }],
             notes: Vec::new(),
         };
@@ -876,6 +945,42 @@ mod tests {
             run(&mut f, false);
         }
         assert_eq!(f.current(), 0, "a single operation stays");
+    }
+
+    #[test]
+    fn five_warm_up_cards_come_first_then_the_subject() {
+        let mut f = feed(&[3, 1]).with_warmups(&[1]);
+        assert_eq!(f.current(), 1, "the warm-up first");
+        assert_eq!(f.level(1), 1);
+        for _ in 0..3 {
+            run(&mut f, true);
+        }
+        assert_ne!(
+            f.next(0.99, false).pick,
+            Pick::StepUp,
+            "a warm-up never climbs"
+        );
+        for _ in 0..2 {
+            run(&mut f, true);
+        }
+        assert_eq!(f.current(), 0, "after five, the operation of the subject");
+        for _ in 0..20 {
+            assert_eq!(run(&mut f, true).op, 0, "the warm-up does not come back");
+        }
+    }
+
+    #[test]
+    fn without_operations_the_feed_brings_reviews() {
+        let empty = Feed::new(Vec::<(String, u8)>::new());
+        assert!(empty.done_drilling());
+        assert_eq!(empty.next(0.5, true).pick, Pick::Recall);
+        assert!(empty.wanted().is_empty());
+        let mut only = feed(&[1]).with_warmups(&[0]);
+        for _ in 0..WARMUP_CARDS {
+            run(&mut only, true);
+        }
+        assert!(only.done_drilling());
+        assert_eq!(only.next(0.99, false).pick, Pick::Recall);
     }
 
     #[test]

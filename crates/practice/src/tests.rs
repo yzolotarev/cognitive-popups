@@ -227,6 +227,7 @@ fn group(title: &str) -> ProbeGroup {
         cards: vec![card],
         reserve: Vec::new(),
         role: Role::Operation,
+        template: None,
     }
 }
 
@@ -474,6 +475,7 @@ fn shown_group() -> ProbeGroup {
         }],
         reserve: Vec::new(),
         role: Role::Operation,
+        template: None,
     }
 }
 
@@ -605,4 +607,34 @@ fn one_warm_up_at_most() {
         .count();
     assert_eq!(warmups, 1);
     assert!(tree.notes.iter().any(|n| n.contains("вторая разминка")));
+}
+
+#[test]
+fn a_numeric_branch_gets_more_cases_from_code_without_a_request() {
+    let client = client(&[json!({"groups":[numeric("r == a*b")]}), json!({"bad":[]})]);
+    let tree = probe_tree(&client, &prompts(), TEXT, Priority::Foreground).unwrap();
+    let group = &tree.groups[0];
+    let seen: std::collections::HashSet<String> = group
+        .cards
+        .iter()
+        .chain(&group.reserve)
+        .map(|c| c.prompt.clone())
+        .collect();
+    let more = group.fresh_cards(5, 7, &seen);
+    assert_eq!(more.len(), 5);
+    assert!(more.iter().all(|c| !seen.contains(&c.prompt)), "no repeats");
+    for card in &more {
+        let (a, b) = card.prompt.split_once('·').unwrap();
+        let product = a.parse::<i64>().unwrap() * b.parse::<i64>().unwrap();
+        assert_eq!(card.answer, product.to_string(), "code computes the answer");
+    }
+    assert_eq!(
+        client.transport().calls.get(),
+        2,
+        "no call for the new cases"
+    );
+    assert!(
+        shown_group().fresh_cards(3, 1, &seen).is_empty(),
+        "no template, no cases"
+    );
 }

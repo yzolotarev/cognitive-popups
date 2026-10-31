@@ -1,7 +1,7 @@
 //! Exact arithmetic for probe templates and the arithmetic filter (F-96).
 //!
 //! The language is the one the v1 contract promised the model:
-//! `+ - * / ** % == != < <= > >= and or not gcd divides abs`, integers and
+//! `+ - * / ** % == != < <= > >= and or not gcd divides abs fact perm comb`, integers and
 //! names; `//` (floor division) is accepted too, since models write it. Numbers are exact fractions; nothing is rounded, so «⅓·6 = 2» is
 //! checked as 2, not as 1.9999. Human notation is accepted too: `−`, `·`, `×`,
 //! `÷`, `^`, `²`, `³`, and decimals with a comma or a point.
@@ -112,6 +112,15 @@ impl fmt::Display for Ratio {
             write!(f, "{sign}{}/{}", self.num.abs(), self.den)
         }
     }
+}
+
+/// n·(n−1)·…·(n−k+1): `fact(n)` is k = n, `perm(n, k)` the rest. Only
+/// 0 ≤ k ≤ n ≤ 30, so a card never holds a number nobody can check.
+fn falling(n: i128, k: i128) -> Result<i128, String> {
+    if !(0..=30).contains(&n) || !(0..=n).contains(&k) {
+        return Err(format!("нужно 0 ≤ k ≤ n ≤ 30, а не n = {n}, k = {k}"));
+    }
+    Ok((n - k + 1..=n).product())
 }
 
 fn gcd(a: i128, b: i128) -> i128 {
@@ -439,6 +448,17 @@ impl Parser<'_> {
                         let (a, b) = (int(0)?, int(1)?);
                         Ok(Value::Bool(a != 0 && b % a == 0))
                     }
+                    // B94: combinatorics for probability texts; exact integers.
+                    "fact" if args.len() == 1 => {
+                        Ok(Value::Num(Ratio::int(falling(int(0)?, int(0)?)?)))
+                    }
+                    "perm" if args.len() == 2 => {
+                        Ok(Value::Num(Ratio::int(falling(int(0)?, int(1)?)?)))
+                    }
+                    "comb" if args.len() == 2 => {
+                        let (n, k) = (int(0)?, int(1)?);
+                        Ok(Value::Num(Ratio::int(falling(n, k)? / falling(k, k)?)))
+                    }
                     _ => Err(format!("неизвестное имя «{name}»")),
                 }
             }
@@ -505,6 +525,15 @@ mod tests {
         assert!(check("divides(2, a) and not divides(5, b)"));
         assert!(check("abs(b - a) == 2 or a < 0"));
         assert!(check("2a == 12"));
+        assert!(check("fact(a) == 720 and fact(0) == 1"));
+        assert!(check(
+            "perm(a, 2) == 30 and comb(a, 2) == 15 and comb(b, 0) == 1"
+        ));
+        assert!(eval("comb(3, 5)", &names).is_err(), "k > n");
+        assert!(
+            eval("fact(31)", &names).is_err(),
+            "too big to check by hand"
+        );
     }
 
     #[test]

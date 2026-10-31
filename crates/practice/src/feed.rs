@@ -2,13 +2,17 @@
 //! Rules, no model: the code picks the operation, its level and when to try a
 //! step up; the model only writes cards at the level it is asked for.
 //!
-//! - A clean card is a match marked before the answer was opened.
+//! - A clean card is a match: marked before the answer, or «Совпало» after
+//!   opening it to check (B92: the reader solves in the head and opens the
+//!   answer to compare; counting that as a miss kept the feed at level 1).
 //! - Three clean in a row on the current operation → one card a level higher
 //!   (two when the last eight were almost all clean). Clean on it → the level
 //!   goes up; a miss → the level stays, nothing is lost.
-//! - Two misses in a row → one level down, not below the text's own. A match
-//!   after opening the answer is a miss here. Speed never changes the level:
-//!   slow can be thinking; it is only kept for later study.
+//! - Two misses in a row → one level down, not below the text's own. Speed
+//!   never changes the level: slow can be thinking; it is only kept for later
+//!   study.
+//! - After eight cards on one operation the next one comes up (B92), so the
+//!   operations of the text take turns even before any is settled.
 //! - About one card in seven keeps something else alive: a due FSRS card, else
 //!   another operation of the text. When the last eight go badly, more often.
 //! - Clean three times at the top level → the operation is settled for this
@@ -36,6 +40,8 @@ pub const WINDOW: usize = 8;
 pub const BUFFER: usize = 5;
 /// Clean in a row before a step up is tried.
 pub const STEP_UP_AFTER: u32 = 3;
+/// Cards on one operation before the next one comes up (B92).
+pub const ROTATE_AFTER: u32 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pick {
@@ -81,6 +87,8 @@ struct Op {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Feed {
+    /// Cards on the current operation since it came up (B92).
+    run: u32,
     ops: Vec<Op>,
     current: usize,
     recent: VecDeque<bool>,
@@ -108,6 +116,7 @@ impl Feed {
             })
             .collect();
         Self {
+            run: 0,
             ops,
             current: 0,
             recent: VecDeque::new(),
@@ -318,6 +327,7 @@ impl Feed {
             }
             Pick::Other => self.ops[next.op].seen += 1,
             Pick::StepUp => {
+                self.run += 1;
                 let op = &mut self.ops[next.op];
                 op.seen += 1;
                 op.clean_in_row = 0;
@@ -327,6 +337,7 @@ impl Feed {
                 }
             }
             Pick::Current => {
+                self.run += 1;
                 let op = &mut self.ops[next.op];
                 op.seen += 1;
                 if clean {
@@ -345,6 +356,10 @@ impl Feed {
                     }
                 }
             }
+        }
+        // B92: the operations take turns, so one of them never fills the feed.
+        if self.run >= ROTATE_AFTER {
+            self.advance();
         }
     }
 
@@ -374,6 +389,7 @@ impl Feed {
     }
 
     fn advance(&mut self) {
+        self.run = 0;
         let n = self.ops.len();
         if let Some(next) = (1..=n)
             .map(|step| (self.current + step) % n)
@@ -527,7 +543,7 @@ impl FeedStore {
                 op_key(op),
                 next.level,
                 next.pick.as_str(),
-                attempt.correct && attempt.attempt_before_reveal,
+                attempt.correct,
                 attempt.correct,
                 attempt.attempt_before_reveal,
                 (now - shown_at).max(0),
@@ -607,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn a_match_after_the_answer_is_not_clean() {
+    fn misses_are_never_clean() {
         let mut f = feed(&[1]);
         for _ in 0..5 {
             let next = f.next(0.99, false);
@@ -832,6 +848,34 @@ mod tests {
         assert!(f.struggling(0));
         run(&mut f, true);
         assert!(!f.struggling(0));
+    }
+
+    #[test]
+    fn operations_take_turns_after_eight_cards() {
+        let mut f = feed(&[1, 1, 1]);
+        for _ in 0..ROTATE_AFTER - 1 {
+            let next = Next {
+                op: 0,
+                level: 1,
+                pick: Pick::Current,
+            };
+            f.record(next, false);
+        }
+        assert_eq!(f.current(), 0);
+        f.record(
+            Next {
+                op: 0,
+                level: 1,
+                pick: Pick::Current,
+            },
+            false,
+        );
+        assert_eq!(f.current(), 1, "the next operation comes up");
+        let mut f = feed(&[1]);
+        for _ in 0..20 {
+            run(&mut f, false);
+        }
+        assert_eq!(f.current(), 0, "a single operation stays");
     }
 
     #[test]

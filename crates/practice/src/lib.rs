@@ -38,6 +38,8 @@ pub use trails::{Help, MethodItem, MethodSet, Situation, method_trails, names_ac
 pub use whole::{WholeTask, load_types, whole_task};
 
 use cognitive_exoskeleton_ai::{AiError, Client, Priority, PromptStore, Request, Transport};
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -97,9 +99,36 @@ pub struct ProbeGroup {
     /// Trees kept before B93 have no role: they read as operations.
     #[serde(default)]
     pub role: Role,
+    /// The checked numeric template (B94): more cases of the same level come
+    /// from code at once, without a model request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<Value>,
 }
 
 impl ProbeGroup {
+    /// B94: `n` new cases of a numeric branch, computed by code (none for a
+    /// drill, which needs the model). Prompts in `seen` are skipped.
+    pub fn fresh_cards(&self, n: usize, seed: u64, seen: &HashSet<String>) -> Vec<Card> {
+        let Some(template) = self
+            .template
+            .as_ref()
+            .and_then(|t| Template::from_json(t).ok())
+        else {
+            return Vec::new();
+        };
+        template
+            .cases(n * 3 + 8, seed)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|c| !seen.contains(&c.prompt))
+            .take(n)
+            .map(|c| Card {
+                prompt: c.prompt,
+                answer: c.answer,
+            })
+            .collect()
+    }
+
     /// [Ещё 3] from what is already checked; None when the reserve is empty and
     /// a new model request is needed.
     pub fn more_three(&mut self) -> Option<Vec<Card>> {
@@ -123,7 +152,9 @@ pub struct ProbeTree {
     pub notes: Vec<String>,
 }
 
-/// One tab of the Alt+T tree.
+/// One tab of the Alt+T tree. At most four per opening: the size of a probe
+/// branch is not worth a box.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "category", rename_all = "snake_case")]
 pub enum Category {
@@ -243,6 +274,7 @@ fn accept(raw: &Value, text: &str, seed: u64) -> Result<Candidate, String> {
         } else {
             Role::Operation
         },
+        template: None,
     };
     match raw["kind"].as_str() {
         Some("numeric") => {
@@ -268,6 +300,7 @@ fn accept(raw: &Value, text: &str, seed: u64) -> Result<Candidate, String> {
                     example,
                     cards,
                     reserve,
+                    template: Some(raw.clone()),
                     ..base
                 },
                 pending: Vec::new(),

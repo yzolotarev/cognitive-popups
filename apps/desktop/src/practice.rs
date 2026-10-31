@@ -1828,6 +1828,11 @@ fn fill_model_step(body: &gtk::Box, step: Step, scaffold: Option<&Result<Scaffol
 /// Seconds without typing before «Застрял» lights up (B91).
 const STUCK_AFTER_S: i64 = 75;
 
+/// A seed for cases computed by code: a new one each time.
+fn rand_seed() -> u64 {
+    (understand_roll() * u64::MAX as f64) as u64
+}
+
 /// A branch to ask more cards from and its cards not shown yet.
 type Stock = (ProbeGroup, VecDeque<Card>);
 
@@ -1841,6 +1846,8 @@ struct FeedPage {
     /// the cards not shown yet.
     stock: RefCell<HashMap<(usize, u8), Stock>>,
     asked: RefCell<HashSet<(usize, u8)>>,
+    /// Prompts already in the feed: cases from code never repeat them.
+    seen: RefCell<HashSet<String>>,
     recall: RefCell<VecDeque<RecallCard>>,
     page: gtk::Box,
     /// Cards slide up through it, like a feed.
@@ -1899,6 +1906,11 @@ impl FeedPage {
             .filter(|(_, g)| g.role == practice::Role::Warmup)
             .map(|(i, _)| i)
             .collect();
+        let seen: HashSet<String> = groups
+            .iter()
+            .flat_map(|g| g.cards.iter().chain(&g.reserve))
+            .map(|c| c.prompt.clone())
+            .collect();
         let mut stock = HashMap::new();
         for (i, group) in groups.into_iter().enumerate() {
             let cards: VecDeque<Card> = group
@@ -1943,6 +1955,7 @@ impl FeedPage {
             feed: RefCell::new(Feed::new(saved).with_formats().with_warmups(&warmups)),
             stock: RefCell::new(stock),
             asked: RefCell::new(HashSet::new()),
+            seen: RefCell::new(seen),
             recall: RefCell::new(recall.into()),
             page: page.clone(),
             stack,
@@ -2095,6 +2108,30 @@ impl FeedPage {
             if this.ready(op, level) >= enough || this.asked.borrow().contains(&(op, level)) {
                 continue;
             }
+            // B94: a numeric branch already at this level gets its next cases
+            // from code at once — no request, no wait.
+            let own = this
+                .stock
+                .borrow()
+                .get(&(op, level))
+                .map(|(group, _)| group.clone())
+                .filter(|g| g.template.is_some());
+            if let Some(group) = own {
+                let mut seen = this.seen.borrow_mut();
+                let cards = group.fresh_cards(feed::BUFFER, rand_seed(), &seen);
+                seen.extend(cards.iter().map(|c| c.prompt.clone()));
+                if let Some((_, queue)) = this.stock.borrow_mut().get_mut(&(op, level)) {
+                    queue.extend(cards);
+                }
+                if this.ready(op, level) >= enough {
+                    continue;
+                }
+            }
+            // One request at a time: a burst of them only meets the
+            // provider's rate limit and makes every card wait (B94).
+            if !this.asked.borrow().is_empty() {
+                continue;
+            }
             let Some(group) = this.template(op, level) else {
                 continue;
             };
@@ -2118,6 +2155,13 @@ impl FeedPage {
                     t.asked.borrow_mut().remove(&(op, level));
                     match result {
                         Ok(group) => {
+                            t.seen.borrow_mut().extend(
+                                group
+                                    .cards
+                                    .iter()
+                                    .chain(group.reserve.iter())
+                                    .map(|c| c.prompt.clone()),
+                            );
                             let mut stock = t.stock.borrow_mut();
                             let entry = stock
                                 .entry((op, level))
@@ -2129,6 +2173,7 @@ impl FeedPage {
                         }
                         Err(e) => eprintln!("feed: level {level}: {e}"),
                     }
+                    Self::fill(&t);
                     if t.waiting.get() {
                         t.show_next();
                     } else {

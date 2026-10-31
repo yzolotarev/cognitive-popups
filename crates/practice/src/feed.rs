@@ -882,6 +882,7 @@ mod tests {
                 cards: vec![card.clone()],
                 reserve: Vec::new(),
                 role: crate::Role::Operation,
+                template: None,
             }],
             notes: Vec::new(),
         };

@@ -71,6 +71,10 @@ impl AiError {
             AiError::Rejected { .. } | AiError::Shape(_) | AiError::InvalidJson(_) => {
                 format!("Сбой ответа {provider}. Попробуй ещё раз.")
             }
+            // B94: a slow answer cut by the timeout is not a lost connection.
+            AiError::Network(e) if e.to_lowercase().contains("time") => {
+                format!("{provider} не ответил вовремя. Попробуй ещё раз.")
+            }
             AiError::Network(_) => "Нет соединения с провайдером ИИ.".into(),
         }
     }
@@ -391,6 +395,14 @@ mod tests {
             client.answered_by().as_deref(),
             Some("gemini-flash-lite-latest")
         );
+    }
+
+    #[test]
+    fn a_timeout_is_named_as_slow_not_as_no_connection() {
+        let slow = AiError::Network("timeout: global".into());
+        assert!(slow.user_message("Gemini").contains("не ответил вовремя"));
+        let lost = AiError::Network("connection refused".into());
+        assert!(lost.user_message("Gemini").contains("Нет соединения"));
     }
 
     #[test]

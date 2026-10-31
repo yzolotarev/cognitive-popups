@@ -15,11 +15,13 @@
 pub mod arith;
 pub mod availability;
 pub mod due;
+pub mod episode;
 pub mod expr;
 pub mod families;
 pub mod feed;
 pub mod feynman;
 pub mod guidance;
+pub mod learning;
 pub mod numeric;
 pub mod recall;
 pub mod revisit;

@@ -397,7 +397,7 @@ fn daemon() -> ExitCode {
                 "practice" => {
                     let (word, rest) = argument.split_once(' ').unwrap_or((argument, ""));
                     let route = match word {
-                        "probes" | "whole" => Some(Route::Probes),
+                        "probes" | "whole" | "feed" => Some(Route::Probes),
                         "methods" => Some(Route::ChooseMethod),
                         "feynman" => Some(Route::Feynman),
                         "continue" => Some(Route::ContinueTask),
@@ -412,6 +412,9 @@ fn daemon() -> ExitCode {
                         _ => None,
                     };
                     practice.open(grab(), route.or(promised), word == "pill");
+                    if word == "feed" {
+                        practice.feed_demo(rest);
+                    }
                     if word == "whole" {
                         practice.whole_demo();
                     }
@@ -580,7 +583,7 @@ fn core_cli(args: &[String]) -> ExitCode {
         (Some("material"), Some("register"))
             | (Some("experiment"), Some("cards"))
             | (Some("lesson"), Some("plan"))
-            | (Some("practice"), Some("tree"))
+            | (Some("practice"), Some("tree" | "learning"))
     );
     if needs_prompts && !args.iter().any(|a| a == "--prompts") {
         command.arg("--prompts").arg(ctx::prompts_dir());

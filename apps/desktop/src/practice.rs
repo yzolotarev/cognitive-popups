@@ -5,7 +5,6 @@
 //! the highlighted next step follows rules in code (`Guidance`), never the model.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
 use cognitive_exoskeleton_ai::Priority;
@@ -17,7 +16,7 @@ use cognitive_exoskeleton_practice::{
     PracticeError, ProbeGroup, RecallCard, WholeTask,
     availability::{self, Availability, Window},
     families,
-    feed::{self, Feed, FeedStore, Pick},
+    feed::FeedStore,
     feynman::{self, Feedback, Question},
     revisit,
     routes::{self, Route},
@@ -31,8 +30,11 @@ use gtk::{gdk, glib};
 use crate::ctx::{self, Ctx};
 use crate::popup::{self, Opened};
 use crate::ui;
+#[path = "learning_feed.rs"]
+mod learning_feed;
 use cognitive_exoskeleton_materials::window;
 
+const REST_AFTER_FORGOT: i64 = 86_400;
 pub const WIDTH: i32 = 520;
 /// Width and the tallest it usually gets: keeps it on screen near the cursor.
 pub const SIZE: (i32, i32) = (WIDTH, 640);
@@ -66,7 +68,7 @@ struct State {
     /// B95: what has come for the probes so far, and the feed on screen.
     probe_groups: Option<Vec<ProbeGroup>>,
     recall_cards: Option<Vec<RecallCard>>,
-    feed: Option<Rc<FeedPage>>,
+    feed: Option<Rc<learning_feed::Page>>,
 }
 
 struct Inner {
@@ -346,6 +348,45 @@ impl PracticeWindow {
     // ---------- probes and «Достань из памяти» ----------
 
     fn probes(&self) {
+        self.next_generation();
+        self.0.title.set_text("Лента");
+        // The lesson is the scope, a selection only focuses an explicit outside passage.
+        let lesson = self
+            .0
+            .ctx
+            .lesson
+            .borrow()
+            .as_ref()
+            .map(|l| l.as_str().to_string());
+        if let Some(lesson) = lesson {
+            let selected = self.0.state.borrow().text.clone();
+            if let Ok(materials) = cognitive_exoskeleton_materials::Materials::open(&self.0.ctx.db)
+                && let Ok(Some(material)) = materials.latest_for_lesson(&lesson)
+                && (selected.trim().is_empty()
+                    || cognitive_exoskeleton_materials::normalize(&material.text)
+                        .contains(&cognitive_exoskeleton_materials::normalize(&selected)))
+            {
+                self.0.state.borrow_mut().text = material.text;
+            }
+        }
+        self.tree(Vec::new());
+    }
+
+    pub fn feed_demo(&self, action: &str) {
+        if std::env::var_os("COGNITIVE_AI_FIXTURE").is_none() {
+            return;
+        }
+        let (this, action) = (self.clone(), action.to_string());
+        glib::timeout_add_local_once(std::time::Duration::from_millis(850), move || {
+            let feed = this.0.state.borrow().feed.clone();
+            if let Some(feed) = feed {
+                feed.demo(&action);
+            }
+        });
+    }
+
+    fn legacy_probes(&self) {
+        self.flush();
         let inner = &self.0;
         inner.title.set_text("Пробы");
         let generation = self.next_generation();
@@ -478,13 +519,6 @@ impl PracticeWindow {
     /// Tabs for the categories; «Лента» (B90) first and open, the categories
     /// one by one after it.
     fn tree(&self, categories: Vec<Category>) {
-        let groups: Vec<ProbeGroup> = categories
-            .iter()
-            .filter_map(|c| match c {
-                Category::Probe(group) => Some(group.clone()),
-                Category::Recall { .. } => None,
-            })
-            .collect();
         let recall: Vec<RecallCard> = categories
             .iter()
             .flat_map(|c| match c {
@@ -494,8 +528,7 @@ impl PracticeWindow {
             .collect();
         // B93: without a text (outside a lesson) the feed is reviews only —
         // quick FSRS, like reels; during a lesson the lesson's work comes too.
-        let feed = (!groups.is_empty() || !recall.is_empty())
-            .then(|| FeedPage::build(self, groups, recall));
+        let feed = Some(learning_feed::Page::build(self, recall));
         self.0.state.borrow_mut().feed = feed.clone();
         let pages: Vec<gtk::Box> = feed
             .map(|f| f.page.clone())
@@ -614,7 +647,9 @@ impl PracticeWindow {
             if !given.is_empty() {
                 this.record(&format!("Припоминание: {given}"));
             }
-            if let Some(task) = &task {
+            if let Some(task) = &task
+                && !given.is_empty()
+            {
                 let right = families::check(task, &given);
                 review_a(
                     if right { Grade::Good } else { Grade::Again },
@@ -717,11 +752,27 @@ impl PracticeWindow {
     /// reader may instead choose from the list.
     fn old_material(&self, avail: &Availability) {
         let db = self.0.ctx.db.clone();
+        let lesson = self
+            .0
+            .ctx
+            .lesson
+            .borrow()
+            .as_ref()
+            .map(|l| l.as_str().to_string());
+        let scope = practice::learning::scope(&db, lesson.as_deref());
         let ready = |f: &revisit::Fragment| {
-            FeedStore::open(&db)
+            practice::learning::Store::open(&db)
                 .ok()
-                .and_then(|s| s.tree(&text_key(&f.text)).ok().flatten())
+                .and_then(|s| {
+                    s.cache(&practice::learning::context(&f.text, &scope))
+                        .ok()
+                        .flatten()
+                })
                 .is_some()
+                || FeedStore::open(&db)
+                    .ok()
+                    .and_then(|s| s.tree(&text_key(&f.text)).ok().flatten())
+                    .is_some()
         };
         // B95: within the same pool, a passage with prepared probes goes first.
         let Some(fragment) =
@@ -1413,7 +1464,7 @@ impl PracticeWindow {
             }
             glib::ControlFlow::Continue
         });
-        Stuck { button, help, used }
+        Stuck { button, help }
     }
 
     // ---------- «своими словами» ----------
@@ -1862,7 +1913,6 @@ struct Ladder {
 struct Stuck {
     button: gtk::Button,
     help: gtk::Box,
-    used: Rc<RefCell<Vec<Step>>>,
 }
 
 /// Steps 2 and 3 of «Застрял» once the scaffold is there (or did not come).
@@ -1930,12 +1980,33 @@ pub fn warm_up(ctx: &Ctx) {
     let (db, ai, prompts) = (ctx.db.clone(), ctx.ai(), ctx.prompts.clone());
     ctx::background(
         move || {
-            if let Some(lesson) = lesson {
-                prepared_tree(&db, &lesson, "", |whole| {
-                    practice::probe_tree(&ai, &prompts, whole, Priority::Background)
-                        .map_err(|e| eprintln!("feed: warm lesson: {e}"))
-                        .ok()
-                });
+            if let Some(lesson) = lesson.as_deref() {
+                let source = cognitive_exoskeleton_materials::Materials::open(&db)
+                    .ok()
+                    .and_then(|m| m.latest_for_lesson(lesson).ok().flatten())
+                    .map(|m| m.text);
+                if let Some(source) = source {
+                    let scope = practice::learning::scope(&db, Some(lesson));
+                    let key = practice::learning::context(&source, &scope);
+                    if let Ok(store) = practice::learning::Store::open(&db)
+                        && store.cache(&key).ok().flatten().is_none()
+                    {
+                        match practice::learning::generate(
+                            &ai,
+                            &prompts,
+                            &source,
+                            None,
+                            &[],
+                            "entry",
+                            Priority::Background,
+                        ) {
+                            Ok(batch) => {
+                                let _ = store.cache_batch(&key, &batch, ctx::now());
+                            }
+                            Err(e) => eprintln!("feed: prepare learning: {e}"),
+                        }
+                    }
+                }
             }
             let now = ctx::now();
             let mut fragments = cognitive_exoskeleton_journal::Journal::open(&db)
@@ -1943,895 +2014,30 @@ pub fn warm_up(ctx: &Ctx) {
                 .unwrap_or_default();
             let _ = revisit::link_to_skills(&db, &mut fragments);
             for fragment in revisit::likely(&fragments, WARM_FRAGMENTS) {
-                if let Err(e) = kept_tree(&db, &ai, &prompts, &fragment.text, Priority::Background)
+                let scope = practice::learning::scope(&db, lesson.as_deref());
+                let key = practice::learning::context(&fragment.text, &scope);
+                if let Ok(store) = practice::learning::Store::open(&db)
+                    && store.cache(&key).ok().flatten().is_none()
                 {
-                    eprintln!("feed: warm passage: {e}");
+                    match practice::learning::generate(
+                        &ai,
+                        &prompts,
+                        &fragment.text,
+                        None,
+                        &[],
+                        "entry",
+                        Priority::Background,
+                    ) {
+                        Ok(batch) => {
+                            let _ = store.cache_batch(&key, &batch, ctx::now());
+                        }
+                        Err(e) => eprintln!("feed: prepare passage: {e}"),
+                    }
                 }
             }
         },
         |_| {},
     );
-}
-
-/// A seed for cases computed by code: a new one each time.
-fn rand_seed() -> u64 {
-    (understand_roll() * u64::MAX as f64) as u64
-}
-
-/// A branch to ask more cards from and its cards not shown yet.
-type Stock = (ProbeGroup, VecDeque<Card>);
-
-/// «Лента» (B90): one card at a time; the code picks the operation, its level
-/// and when to try a step up (`practice::feed`). Cards come ready from a stock
-/// the page refills in the background, so the next one does not wait.
-struct FeedPage {
-    window: PracticeWindow,
-    feed: RefCell<Feed>,
-    /// Per operation and level: the branch the next cards are asked from and
-    /// the cards not shown yet.
-    stock: RefCell<HashMap<(usize, u8), Stock>>,
-    asked: RefCell<HashSet<(usize, u8)>>,
-    /// Prompts already in the feed: cases from code never repeat them.
-    seen: RefCell<HashSet<String>>,
-    recall: RefCell<VecDeque<RecallCard>>,
-    page: gtk::Box,
-    /// Cards slide up through it, like a feed.
-    stack: gtk::Stack,
-    /// The card on screen.
-    slot: RefCell<gtk::Box>,
-    last: gtk::Label,
-    /// The edge of the next card: what comes and whether it is ready.
-    peek: gtk::Label,
-    keys: RefCell<CardKeys>,
-    waiting: Cell<bool>,
-    shown: Cell<u32>,
-}
-
-/// What the keys do on the card on screen.
-#[derive(Default)]
-struct CardKeys {
-    /// Opens the answer; false when there is nothing left to open.
-    reveal: Option<Rc<dyn Fn() -> bool>>,
-    /// [Дальше] on a card that has one: Enter presses it (B93).
-    next: Option<gtk::Button>,
-    mark: Option<Rc<dyn Fn(bool)>>,
-    choose: Vec<gtk::Button>,
-}
-
-/// «Не помню» puts a card to rest this long (B93): a day.
-const REST_AFTER_FORGOT: i64 = 86_400;
-
-/// How long a card slides; GTK skips it when animations are off.
-const SLIDE_MS: u32 = 220;
-/// How long the ✓/✗ tint stays before the next card.
-const FLASH_MS: u64 = 180;
-
-impl FeedPage {
-    fn build(
-        window: &PracticeWindow,
-        groups: Vec<ProbeGroup>,
-        recall: Vec<RecallCard>,
-    ) -> Rc<Self> {
-        let page = ui::column(8);
-        page.set_widget_name("Лента");
-        let store = FeedStore::open(&window.0.ctx.db).ok();
-        let saved: Vec<(String, u8)> = groups
-            .iter()
-            .map(|g| {
-                let level = store
-                    .as_ref()
-                    .and_then(|s| s.level(&g.title).ok())
-                    .unwrap_or(1);
-                (g.title.clone(), level)
-            })
-            .collect();
-        let warmups: Vec<usize> = groups
-            .iter()
-            .enumerate()
-            .filter(|(_, g)| g.role == practice::Role::Warmup)
-            .map(|(i, _)| i)
-            .collect();
-        let seen: HashSet<String> = groups
-            .iter()
-            .flat_map(|g| g.cards.iter().chain(&g.reserve))
-            .map(|c| c.prompt.clone())
-            .collect();
-        let mut stock = HashMap::new();
-        for (i, group) in groups.into_iter().enumerate() {
-            let cards: VecDeque<Card> = group
-                .cards
-                .iter()
-                .chain(group.reserve.iter())
-                .cloned()
-                .collect();
-            stock.insert((i, 1), (group, cards));
-        }
-        // Above: the card just answered, small and dim, as if scrolled past.
-        let last = ui::text("", &["cp-footnote", "cp-secondary", "cp-feed-past"]);
-        last.set_visible(false);
-        last.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        page.append(&last);
-        let stack = gtk::Stack::new();
-        stack.set_transition_type(gtk::StackTransitionType::SlideUp);
-        stack.set_transition_duration(SLIDE_MS);
-        stack.set_vhomogeneous(false);
-        stack.set_interpolate_size(true);
-        page.append(&stack);
-        // Below: the edge of the next card.
-        let peek = ui::text("", &["cp-footnote", "cp-secondary", "cp-feed-peek"]);
-        peek.set_xalign(0.0);
-        page.append(&peek);
-        let smaller = ui::button("Шаг поменьше", &["cp-quiet-link"]);
-        let skip = ui::button("Пропустить ↓", &["cp-quiet-link"]);
-        let hint = ui::text(
-            "← ✗   → ✓   Enter — ответ, дальше",
-            &["cp-footnote", "cp-secondary"],
-        );
-        hint.set_hexpand(true);
-        hint.set_xalign(0.0);
-        let footer = ui::row(12);
-        footer.append(&hint);
-        footer.append(&smaller);
-        footer.append(&skip);
-        page.append(&footer);
-        let slot = ui::column(8);
-        let this = Rc::new(Self {
-            window: window.clone(),
-            feed: RefCell::new(Feed::new(saved).with_formats().with_warmups(&warmups)),
-            stock: RefCell::new(stock),
-            asked: RefCell::new(HashSet::new()),
-            seen: RefCell::new(seen),
-            recall: RefCell::new(recall.into()),
-            page: page.clone(),
-            stack,
-            slot: RefCell::new(slot),
-            last,
-            peek,
-            keys: RefCell::new(CardKeys::default()),
-            waiting: Cell::new(false),
-            shown: Cell::new(0),
-        });
-        let t = this.clone();
-        smaller.connect_clicked(move |_| {
-            t.feed.borrow_mut().smaller_step();
-            t.save_levels();
-            t.show_next();
-        });
-        let t = this.clone();
-        skip.connect_clicked(move |_| t.show_next());
-        let weak = Rc::downgrade(&this);
-        *window.0.feed_keys.borrow_mut() = Some(Rc::new(move |key| {
-            weak.upgrade().is_some_and(|t| t.key(key))
-        }));
-        this.show_next();
-        this
-    }
-
-    /// B95: reviews that arrived after the probes join the feed.
-    fn add_recall(self: &Rc<Self>, cards: Vec<RecallCard>) {
-        if cards.is_empty() {
-            return;
-        }
-        self.recall.borrow_mut().extend(cards);
-        if self.waiting.get() || self.feed.borrow().done_drilling() {
-            self.show_next();
-        } else {
-            self.update_peek();
-        }
-    }
-
-    /// The feed's keys, only while it is on screen and no text field has the
-    /// keyboard: a field keeps its arrows and Enter.
-    fn key(self: &Rc<Self>, key: gdk::Key) -> bool {
-        if !self.page.is_mapped() {
-            return false;
-        }
-        let typing = gtk::prelude::GtkWindowExt::focus(&self.window.0.window)
-            .is_some_and(|w| w.is::<gtk::TextView>() || w.is::<gtk::Text>());
-        if typing {
-            return false;
-        }
-        let keys = self.keys.borrow();
-        match key {
-            gdk::Key::Down | gdk::Key::j => {
-                drop(keys);
-                self.show_next();
-                true
-            }
-            gdk::Key::Return | gdk::Key::KP_Enter => {
-                let (reveal, next) = (keys.reveal.clone(), keys.next.clone());
-                drop(keys);
-                if reveal.is_some_and(|reveal| reveal()) {
-                    return true;
-                }
-                match next {
-                    Some(button) => {
-                        button.emit_clicked();
-                        true
-                    }
-                    None => false,
-                }
-            }
-            gdk::Key::Right | gdk::Key::Left => match keys.mark.clone() {
-                Some(mark) => {
-                    drop(keys);
-                    mark(key == gdk::Key::Right);
-                    true
-                }
-                None => false,
-            },
-            _ => match key.to_unicode().and_then(|c| c.to_digit(10)) {
-                Some(n) if n >= 1 && (n as usize) <= keys.choose.len() => {
-                    let button = keys.choose[n as usize - 1].clone();
-                    drop(keys);
-                    button.emit_clicked();
-                    true
-                }
-                _ => false,
-            },
-        }
-    }
-
-    /// A new card slides up from below; the old one leaves after the slide.
-    fn turn(&self) {
-        let card = ui::column(8);
-        card.add_css_class("cp-feed-card");
-        let old = self.slot.replace(card.clone());
-        self.stack.add_child(&card);
-        self.stack.set_visible_child(&card);
-        *self.keys.borrow_mut() = CardKeys::default();
-        let stack = self.stack.clone();
-        glib::timeout_add_local_once(
-            std::time::Duration::from_millis(u64::from(SLIDE_MS) + 40),
-            move || {
-                if old.parent().is_some() {
-                    stack.remove(&old);
-                }
-            },
-        );
-        self.update_peek();
-    }
-
-    fn slot(&self) -> gtk::Box {
-        self.slot.borrow().clone()
-    }
-
-    /// «Дальше: <операция> · готово 5» — the stock of the feed, like a
-    /// preloaded reel.
-    fn update_peek(&self) {
-        let feed = self.feed.borrow();
-        if feed.done_drilling() {
-            let left = self.recall.borrow().len();
-            self.peek.set_text(&if left > 0 {
-                format!("Дальше: повторения · осталось {left}")
-            } else {
-                "Дальше: повторений по сроку нет".to_string()
-            });
-            return;
-        }
-        let op = feed.current();
-        let ready = self.ready(op, feed.level(op));
-        self.peek.set_text(&if ready > 0 {
-            format!("Дальше: {} · готово {ready}", feed.key(op))
-        } else {
-            format!("Дальше: {} · готовлю…", feed.key(op))
-        });
-    }
-
-    /// The branch to ask a level from: the one at that level, else the
-    /// nearest below it.
-    fn template(&self, op: usize, level: u8) -> Option<ProbeGroup> {
-        let stock = self.stock.borrow();
-        (1..=level)
-            .rev()
-            .find_map(|l| stock.get(&(op, l)).map(|(group, _)| group.clone()))
-    }
-
-    fn ready(&self, op: usize, level: u8) -> usize {
-        self.stock
-            .borrow()
-            .get(&(op, level))
-            .map_or(0, |(_, cards)| cards.len())
-    }
-
-    /// Keeps what the feed will want soon in stock: the model writes cards at
-    /// the level the code asks for; the usual checks decide what is kept.
-    fn fill(this: &Rc<Self>) {
-        let (wanted, current) = {
-            let feed = this.feed.borrow();
-            (feed.wanted(), feed.current())
-        };
-        for (op, level) in wanted {
-            let enough = if op == current { feed::BUFFER } else { 2 };
-            if this.ready(op, level) >= enough || this.asked.borrow().contains(&(op, level)) {
-                continue;
-            }
-            // B94: a numeric branch already at this level gets its next cases
-            // from code at once — no request, no wait.
-            let own = this
-                .stock
-                .borrow()
-                .get(&(op, level))
-                .map(|(group, _)| group.clone())
-                .filter(|g| g.template.is_some());
-            if let Some(group) = own {
-                let mut seen = this.seen.borrow_mut();
-                let cards = group.fresh_cards(feed::BUFFER, rand_seed(), &seen);
-                seen.extend(cards.iter().map(|c| c.prompt.clone()));
-                if let Some((_, queue)) = this.stock.borrow_mut().get_mut(&(op, level)) {
-                    queue.extend(cards);
-                }
-                if this.ready(op, level) >= enough {
-                    continue;
-                }
-            }
-            // One request at a time: a burst of them only meets the
-            // provider's rate limit and makes every card wait (B94).
-            if !this.asked.borrow().is_empty() {
-                continue;
-            }
-            let Some(group) = this.template(op, level) else {
-                continue;
-            };
-            this.asked.borrow_mut().insert((op, level));
-            let inner = &this.window.0;
-            let text = inner.state.borrow().text.clone();
-            let (ai, prompts) = (inner.ctx.ai(), inner.ctx.prompts.clone());
-            let t = this.clone();
-            ctx::background(
-                move || {
-                    practice::harder_group(
-                        &ai,
-                        &prompts,
-                        &text,
-                        &group,
-                        level,
-                        Priority::Background,
-                    )
-                },
-                move |result| {
-                    t.asked.borrow_mut().remove(&(op, level));
-                    match result {
-                        Ok(group) => {
-                            t.seen.borrow_mut().extend(
-                                group
-                                    .cards
-                                    .iter()
-                                    .chain(group.reserve.iter())
-                                    .map(|c| c.prompt.clone()),
-                            );
-                            let mut stock = t.stock.borrow_mut();
-                            let entry = stock
-                                .entry((op, level))
-                                .or_insert_with(|| (group.clone(), VecDeque::new()));
-                            entry
-                                .1
-                                .extend(group.cards.iter().chain(group.reserve.iter()).cloned());
-                            entry.0 = group;
-                        }
-                        Err(e) => eprintln!("feed: level {level}: {e}"),
-                    }
-                    Self::fill(&t);
-                    if t.waiting.get() {
-                        t.show_next();
-                    } else {
-                        t.update_peek();
-                    }
-                },
-            );
-        }
-    }
-
-    fn save_levels(&self) {
-        if let Ok(store) = FeedStore::open(&self.window.0.ctx.db)
-            && let Err(e) = store.save_levels(&self.feed.borrow().levels(), ctx::now())
-        {
-            eprintln!("feed: {e}");
-        }
-    }
-
-    fn show_next(self: &Rc<Self>) {
-        let mut next = self
-            .feed
-            .borrow()
-            .next(understand_roll(), !self.recall.borrow().is_empty());
-        // The card is taken out first: a borrow held in the `if let` would last
-        // through the block, and `turn` → `update_peek` reads the queue again
-        // (owner's log, 31.10: «RefCell already mutably borrowed»).
-        let review = if next.pick == Pick::Recall {
-            self.recall.borrow_mut().pop_front()
-        } else {
-            None
-        };
-        if let Some(card) = review {
-            self.waiting.set(false);
-            self.feed.borrow_mut().record(next, true);
-            self.turn();
-            self.slot().append(&ui::text(
-                "Повторение: вспомни сам, потом сверь",
-                &["cp-footnote", "cp-secondary"],
-            ));
-            self.slot().append(&self.window.recall_card(card, "feed"));
-            let on = ui::button("Дальше", &["cp-default"]);
-            let t = self.clone();
-            on.connect_clicked(move |_| t.show_next());
-            self.slot().append(&ui::actions(&[&on]));
-            self.keys.borrow_mut().next = Some(on);
-            Self::fill(self);
-            return;
-        }
-        // B93: nothing left to drill and no review due — an honest end.
-        if next.pick == Pick::Recall && self.feed.borrow().done_drilling() {
-            self.waiting.set(false);
-            self.turn();
-            self.slot().append(&ui::text(
-                "На сейчас всё: повторений по сроку нет, а в этом тексте больше нечего отрабатывать.",
-                &["cp-body"],
-            ));
-            self.slot().append(&ui::text(
-                "Можно выделить другой кусок урока и открыть Alt+T снова.",
-                &["cp-footnote", "cp-secondary"],
-            ));
-            return;
-        }
-        let shown = match next.pick {
-            Pick::Which => self.show_which(next),
-            Pick::Explain => self.show_explain(next),
-            Pick::Whole => self.show_whole(next),
-            _ => false,
-        };
-        if shown {
-            self.waiting.set(false);
-            Self::fill(self);
-            return;
-        }
-        // What the feed asked for is not ready yet (or a format could not be
-        // shown): the current operation at its level instead, rather than a wait.
-        if matches!(next.pick, Pick::Which | Pick::Explain | Pick::Whole)
-            || self.ready(next.op, next.level) == 0
-        {
-            let feed = self.feed.borrow();
-            next = feed::Next {
-                op: feed.current(),
-                level: feed.level(feed.current()),
-                pick: Pick::Current,
-            };
-        }
-        let card = self
-            .stock
-            .borrow_mut()
-            .get_mut(&(next.op, next.level))
-            .and_then(|(_, cards)| cards.pop_front());
-        Self::fill(self);
-        let Some(card) = card else {
-            self.waiting.set(true);
-            self.turn();
-            self.slot()
-                .append(&ui::waiting("Готовлю следующие карточки…").upcast::<gtk::Widget>());
-            return;
-        };
-        self.waiting.set(false);
-        self.show_card(next, card);
-    }
-
-    /// One marked card: the feed's rules, the saved levels, `probe_attempts`,
-    /// the journal, the «Прошлая» line; then the next card.
-    #[allow(clippy::too_many_arguments)]
-    fn note(
-        self: &Rc<Self>,
-        next: feed::Next,
-        title: &str,
-        attempt: practice::Attempt,
-        shown_at: i64,
-        serial: u32,
-        journal: &str,
-        last: &str,
-    ) {
-        // B92: «Совпало» after opening the answer counts too; `before_reveal`
-        // still keeps the difference in `probe_attempts`.
-        let clean = attempt.correct;
-        // In «В двух словах» an answer after help is the only way not to be
-        // «before the answer»: it counts as «с помощью», never a miss (B91).
-        if next.pick == Pick::Explain && !attempt.attempt_before_reveal {
-            self.feed.borrow_mut().record_helped(next);
-        } else {
-            self.feed.borrow_mut().record(next, clean);
-        }
-        self.save_levels();
-        let operation = self
-            .window
-            .0
-            .state
-            .borrow()
-            .operation
-            .as_ref()
-            .map(|o| o.as_str().to_string())
-            .unwrap_or_default();
-        if let Ok(store) = FeedStore::open(&self.window.0.ctx.db) {
-            let key = format!("feed:{operation}:{serial}");
-            if let Err(e) = store.attempt(&key, title, next, attempt, shown_at, ctx::now()) {
-                eprintln!("feed: {e}");
-            }
-        }
-        self.window.record(journal);
-        self.last.set_text(last);
-        self.last.set_visible(true);
-        // A short tint in the colour of the mark (with ✓/✗ in the line above,
-        // so it never rests on colour alone), then the next card.
-        *self.keys.borrow_mut() = CardKeys::default();
-        self.slot().add_css_class(if attempt.correct {
-            "cp-flash-right"
-        } else {
-            "cp-flash-wrong"
-        });
-        let t = self.clone();
-        glib::timeout_add_local_once(std::time::Duration::from_millis(FLASH_MS), move || {
-            t.show_next()
-        });
-    }
-
-    fn serial(&self) -> u32 {
-        let serial = self.shown.get() + 1;
-        self.shown.set(serial);
-        serial
-    }
-
-    fn caption(&self, title: &str, tag: &str) {
-        let caption = ui::row(8);
-        let name = ui::text(title, &["cp-headline"]);
-        name.set_hexpand(true);
-        name.set_xalign(0.0);
-        caption.append(&name);
-        caption.append(&ui::text(tag, &["cp-footnote", "cp-secondary"]));
-        self.slot().append(&caption);
-    }
-
-    /// «Какая операция тут нужна?»: a card of some operation without its name;
-    /// the reader picks the operation, the code knows which one wrote it.
-    fn show_which(self: &Rc<Self>, next: feed::Next) -> bool {
-        let n = self.feed.borrow().ops();
-        let ready: Vec<usize> = (0..n)
-            .filter(|op| self.ready(*op, self.feed.borrow().level(*op)) > 0)
-            .collect();
-        if n < 2 || ready.is_empty() {
-            return false;
-        }
-        let op = ready[((understand_roll() * ready.len() as f64) as usize).min(ready.len() - 1)];
-        let level = self.feed.borrow().level(op);
-        let Some(card) = self
-            .stock
-            .borrow_mut()
-            .get_mut(&(op, level))
-            .and_then(|(_, cards)| cards.pop_front())
-        else {
-            return false;
-        };
-        let serial = self.serial();
-        let shown_at = ctx::now();
-        self.turn();
-        self.caption("Какая операция тут нужна?", "узнай сам");
-        let content = ui::column(6);
-        content.add_css_class("cp-content");
-        content.append(&ui::text(&card.prompt, &["cp-body"]));
-        let titles: Vec<String> = (0..n)
-            .map(|i| self.feed.borrow().key(i).to_string())
-            .collect();
-        let choices = ui::column(4);
-        let done = Rc::new(Cell::new(false));
-        for (i, choice) in titles.iter().enumerate() {
-            let button = ui::button(&format!("{}  {choice}", i + 1), &[]);
-            let (t, done, titles, card) =
-                (self.clone(), done.clone(), titles.clone(), card.clone());
-            button.connect_clicked(move |_| {
-                if done.replace(true) {
-                    return;
-                }
-                let correct = i == op;
-                let attempt = practice::Attempt {
-                    correct,
-                    attempt_before_reveal: true,
-                };
-                let journal = format!(
-                    "Какая операция: {} — {} (выбрал «{}», нужна «{}»; проверено кодом)",
-                    card.prompt,
-                    if correct {
-                        "верно"
-                    } else {
-                        "неверно"
-                    },
-                    titles[i],
-                    titles[op]
-                );
-                let last = format!(
-                    "{} Прошлая: нужна «{}»; {} → {}",
-                    if correct { "✓" } else { "✗" },
-                    titles[op],
-                    card.prompt,
-                    card.answer
-                );
-                t.note(
-                    feed::Next { op, level, ..next },
-                    &titles[op],
-                    attempt,
-                    shown_at,
-                    serial,
-                    &journal,
-                    &last,
-                );
-            });
-            self.keys.borrow_mut().choose.push(button.clone());
-            choices.append(&button);
-        }
-        content.append(&choices);
-        self.slot().append(&content);
-        true
-    }
-
-    /// «В двух словах: почему так?» on a settled operation: the reader writes
-    /// first, then compares with the invariant and the quote and marks it.
-    fn show_explain(self: &Rc<Self>, next: feed::Next) -> bool {
-        let Some(group) = self.template(next.op, 1) else {
-            return false;
-        };
-        let title = self.feed.borrow().key(next.op).to_string();
-        let serial = self.serial();
-        let shown_at = ctx::now();
-        self.turn();
-        self.caption("В двух словах: почему так?", "своими словами");
-        let content = ui::column(6);
-        content.add_css_class("cp-content");
-        content.append(&ui::text(
-            &format!("Почему «{title}» делается именно так? Пара фраз."),
-            &["cp-body"],
-        ));
-        let (area, view) = ui::text_area("своими словами", 72);
-        content.append(&area);
-        let stuck = self.window.stuck(
-            Ladder {
-                context: format!("в двух словах «{title}»"),
-                target: Target::operation(&group),
-                quote: Some(format!("«{}»", group.source_span)),
-                example: Some(format!(
-                    "{} → {}",
-                    group.example.prompt, group.example.answer
-                )),
-                answer: Some(group.invariant.clone()),
-                on_step: None,
-            },
-            view.upcast_ref(),
-        );
-        content.append(&stuck.help);
-        let compare = ui::button("Сверить", &["cp-default"]);
-        let row = ui::row(8);
-        row.append(&stuck.button);
-        row.append(&compare);
-        content.append(&row);
-        self.slot().append(&content);
-        view.grab_focus();
-        let used = stuck.used;
-        let t = self.clone();
-        compare.connect_clicked(move |_| {
-            let buffer = view.buffer();
-            let own = buffer
-                .text(&buffer.start_iter(), &buffer.end_iter(), false)
-                .trim()
-                .to_string();
-            if own.is_empty() {
-                return;
-            }
-            view.set_editable(false);
-            row.set_visible(false);
-            content.append(&ui::text(&group.invariant, &["cp-callout"]));
-            if !group.source_span.is_empty() {
-                content.append(&ui::text(
-                    &format!("«{}»", group.source_span),
-                    &["cp-quote"],
-                ));
-            }
-            let matched = ui::button("✓ Совпало", &["cp-default"]);
-            let missed = ui::button("✗ Не то", &[]);
-            let mark = {
-                let (t, title, own) = (t.clone(), title.clone(), own.clone());
-                let steps: Vec<&str> = used.borrow().iter().map(|s| s.label()).collect();
-                let helped = !steps.is_empty();
-                let how = if helped {
-                    format!("сверил сам, с помощью: {}", steps.join(", "))
-                } else {
-                    "сверил сам".to_string()
-                };
-                Rc::new(move |correct: bool| {
-                    let attempt = practice::Attempt {
-                        correct,
-                        attempt_before_reveal: !helped,
-                    };
-                    let journal = format!(
-                        "В двух словах «{title}»: {own} — {} ({how})",
-                        if correct {
-                            "совпало"
-                        } else {
-                            "не то"
-                        }
-                    );
-                    let last = format!(
-                        "{} Прошлая: почему «{title}»",
-                        if correct { "✓" } else { "✗" }
-                    );
-                    t.note(next, &title, attempt, shown_at, serial, &journal, &last);
-                })
-            };
-            let keyed = mark.clone();
-            t.keys.borrow_mut().mark = Some(Rc::new(move |correct| keyed(correct)));
-            let (m1, m2) = (mark.clone(), mark);
-            matched.connect_clicked(move |b| {
-                b.set_sensitive(false);
-                m1(true)
-            });
-            missed.connect_clicked(move |b| {
-                b.set_sensitive(false);
-                m2(false)
-            });
-            content.append(&ui::actions(&[&missed, &matched]));
-        });
-        true
-    }
-
-    /// «Собери вместе» on the settled operations: the whole-task view of the
-    /// window, then [Дальше]. It does not steer the feed.
-    fn show_whole(self: &Rc<Self>, next: feed::Next) -> bool {
-        let settled = self.feed.borrow().settled();
-        if settled.len() < 2 {
-            return false;
-        }
-        let titles: Vec<String> = settled
-            .iter()
-            .map(|op| self.feed.borrow().key(*op).to_string())
-            .collect();
-        self.feed.borrow_mut().record(next, true);
-        self.turn();
-        self.caption("Собери вместе", "целая задача");
-        let body = ui::column(8);
-        self.slot().append(&body);
-        self.window.generate_whole(titles, &body);
-        let on = ui::button("Дальше", &[]);
-        let t = self.clone();
-        on.connect_clicked(move |_| t.show_next());
-        self.slot().append(&ui::actions(&[&on]));
-        self.keys.borrow_mut().next = Some(on);
-        true
-    }
-
-    fn show_card(self: &Rc<Self>, next: feed::Next, card: Card) {
-        let group = self.template(next.op, next.level);
-        let title = self.feed.borrow().key(next.op).to_string();
-        self.turn();
-        let caption = ui::row(8);
-        let name = ui::text(&title, &["cp-headline"]);
-        name.set_hexpand(true);
-        name.set_xalign(0.0);
-        caption.append(&name);
-        let tag = match next.pick {
-            Pick::StepUp => format!("шаг вверх · уровень {}", next.level),
-            Pick::Other => format!("повторим · уровень {}", next.level),
-            _ => format!("уровень {} из {}", next.level, practice::MAX_LEVEL),
-        };
-        caption.append(&ui::text(&tag, &["cp-footnote", "cp-secondary"]));
-        self.slot().append(&caption);
-        // Support fades as the level grows: the worked example is open at 1,
-        // folded at 2, gone from 3 on.
-        if let Some(group) = &group
-            && next.level <= 2
-        {
-            let example = ui::text(
-                &format!("{} → {}", group.example.prompt, group.example.answer),
-                &["cp-body"],
-            );
-            if next.level == 1 {
-                let boxed = ui::column(4);
-                boxed.add_css_class("cp-content");
-                boxed.append(&ui::text("Образец", &["cp-footnote", "cp-secondary"]));
-                boxed.append(&example);
-                self.slot().append(&boxed);
-            } else {
-                let expander = gtk::Expander::new(Some("Образец"));
-                expander.set_child(Some(&example));
-                self.slot().append(&expander);
-            }
-        }
-        let content = ui::column(6);
-        content.add_css_class("cp-content");
-        content.append(&ui::text(&card.prompt, &["cp-body"]));
-        let session = Rc::new(Cell::new(CardSession::default()));
-        let shown_at = ctx::now();
-        let serial = self.serial();
-        let right = ui::button("✓", &[]);
-        right.set_tooltip_text(Some("Решил сам, верно"));
-        let wrong = ui::button("✗", &[]);
-        wrong.set_tooltip_text(Some("Не вышло"));
-        let reveal = ui::button("Ответ", &["cp-default"]);
-        let row = ui::actions(&[&right, &wrong, &reveal]);
-        content.append(&row);
-        // B91: two misses at the text's own level — nothing lower to give, so
-        // an explanation of the quote (the Alt+W ladder), by the reader's click.
-        if self.feed.borrow().struggling(next.op)
-            && let Some(group) = &group
-        {
-            let explain = ui::button("Не понимаю — объясни", &["cp-quiet-link"]);
-            explain.set_halign(gtk::Align::Start);
-            let (t, span, title) = (self.clone(), group.source_span.clone(), title.clone());
-            explain.connect_clicked(move |_| {
-                t.window.record(&format!(
-                    "Лента: не понимаю «{title}» — объяснение по цитате"
-                ));
-                (t.window.0.links.ladder)(span.clone());
-            });
-            content.append(&explain);
-        }
-        self.slot().append(&content);
-        let mark = {
-            let (t, s, card, title) = (self.clone(), session.clone(), card.clone(), title.clone());
-            Rc::new(move |correct: bool| {
-                let mut current = s.get();
-                let Some(attempt) = current.mark(correct) else {
-                    return;
-                };
-                s.set(current);
-                let line = format!(
-                    "Проба «{title}» (уровень {}, лента): {} — {}{}",
-                    next.level,
-                    card.prompt,
-                    if correct {
-                        "верно"
-                    } else {
-                        "неверно"
-                    },
-                    if attempt.attempt_before_reveal {
-                        " (сам, до ответа)"
-                    } else {
-                        " (после ответа)"
-                    }
-                );
-                let last = format!(
-                    "{} Прошлая: {} → {}",
-                    if correct { "✓" } else { "✗" },
-                    card.prompt,
-                    card.answer
-                );
-                t.note(next, &title, attempt, shown_at, serial, &line, &last);
-            })
-        };
-        let m = mark.clone();
-        right.connect_clicked(move |_| m(true));
-        let m = mark.clone();
-        wrong.connect_clicked(move |_| m(false));
-        {
-            let mut keys = self.keys.borrow_mut();
-            let m = mark.clone();
-            keys.mark = Some(Rc::new(move |correct| m(correct)));
-            let r = reveal.clone();
-            keys.reveal = Some(Rc::new(move || {
-                let open = r.is_visible() && r.is_sensitive();
-                if open {
-                    r.emit_clicked();
-                }
-                open
-            }));
-        }
-        let (c, s, answer, r) = (content.clone(), session, card.answer.clone(), row.clone());
-        reveal.connect_clicked(move |b| {
-            let mut current = s.get();
-            current.reveal();
-            s.set(current);
-            r.set_visible(false);
-            b.set_sensitive(false);
-            c.append(&ui::text(&format!("Ответ: {answer}"), &["cp-callout"]));
-            let matched = ui::button("✓ Совпало", &["cp-default"]);
-            let missed = ui::button("✗ Промахнулся", &[]);
-            let (m1, m2) = (mark.clone(), mark.clone());
-            matched.connect_clicked(move |_| m1(true));
-            missed.connect_clicked(move |_| m2(false));
-            c.append(&ui::actions(&[&missed, &matched]));
-        });
-    }
 }
 
 /// [Не возвращаться] and its [Вернуть]: the reader's own action, undone by the

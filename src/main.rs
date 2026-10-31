@@ -52,6 +52,7 @@ usage:
                                     --key <k> [--now <t>]
   cognitive-exoskeleton memory goal --db <path> --subject <id> [--deadline <rfc3339>] [--inactive]
   cognitive-exoskeleton memory optimize --db <path> --subject <id> [--now <t>]
+  cognitive-exoskeleton practice learning --db <path> --text <file> [--type state|generate|support|reveal|grade|skip|return] [--key <id>] [--answer matched|partial|missed] [--prompts <dir>]
   cognitive-exoskeleton practice probes --text <file> --prompts <dir>
   cognitive-exoskeleton practice tree --db <path> --prompts <dir> [--text <file>] [--from-pill]
                                       [--now <t>]   probes + «Достань из памяти»
@@ -572,6 +573,108 @@ fn run_practice(args: &[String]) -> Result<String, String> {
         }
     };
     match command.as_str() {
+        "learning" => {
+            use cognitive_exoskeleton_practice::episode::Assessment;
+            use cognitive_exoskeleton_practice::learning::{self, Session, Store};
+            let db = options.get("--db").ok_or("--db is required")?;
+            let text = std::fs::read_to_string(options.get("--text").ok_or("--text is required")?)
+                .map_err(|e| e.to_string())?;
+            let context = learning::context(
+                &text,
+                options.get("--goal").map(String::as_str).unwrap_or(""),
+            );
+            let mut store = Store::open(db)?;
+            let (revision, mut session) = store
+                .load(&context)?
+                .map(|(r, s)| (r, Some(s)))
+                .unwrap_or((0, None));
+            let at = now(options.get("--now").map(String::as_str))?;
+            let op = options.get("--type").map(String::as_str).unwrap_or("state");
+            if matches!(op, "generate" | "support") {
+                let prompts =
+                    PromptStore::from_dir(options.get("--prompts").ok_or("--prompts is required")?)
+                        .map_err(|e| e.to_string())?;
+                let client = Client::new(ai_config_from_env()?, UreqTransport::default());
+                let root = if op == "support" {
+                    Some(session.as_ref().ok_or("No episode")?.episode.current())
+                } else {
+                    None
+                };
+                let history = session
+                    .as_ref()
+                    .map(|s| s.history.as_slice())
+                    .unwrap_or(&[]);
+                let batch = learning::generate(
+                    &client,
+                    &prompts,
+                    &text,
+                    root,
+                    history,
+                    "variation",
+                    Priority::Foreground,
+                )
+                .map_err(|e| e.to_string())?;
+                if op == "support" {
+                    session.as_mut().ok_or("No episode")?.support(batch)?;
+                } else if let Some(s) = session.as_mut() {
+                    s.append(batch.tasks);
+                } else {
+                    let mut tasks = batch.tasks;
+                    if !tasks.is_empty() {
+                        let first = tasks.remove(0);
+                        session = Some(Session::new(first, tasks));
+                    }
+                }
+            } else if op != "state" {
+                let s = session.as_mut().ok_or("No episode; generate first")?;
+                match op {
+                    "reveal" => s.episode.reveal().map_err(str::to_string)?,
+                    "return" => s.return_to_root(),
+                    "skip" | "grade" => {
+                        let grade = if op == "skip" {
+                            None
+                        } else {
+                            Some(match options.get("--answer").map(String::as_str) {
+                                Some("matched") => Assessment::Matched,
+                                Some("partial") => Assessment::Partial,
+                                Some("missed") => Assessment::Missed,
+                                _ => return Err("--answer matched|partial|missed".into()),
+                            })
+                        };
+                        s.advance(
+                            options
+                                .get("--key")
+                                .ok_or("--key required for idempotence")?,
+                            grade,
+                        )?;
+                    }
+                    _ => {
+                        return Err("--type state|generate|support|reveal|grade|skip|return".into());
+                    }
+                }
+            }
+            if op != "state"
+                && let Some(s) = &session
+            {
+                store.save(
+                    &context,
+                    revision,
+                    s,
+                    options
+                        .get("--key")
+                        .ok_or("--key required for idempotence")?,
+                    op,
+                    at,
+                )?;
+            }
+            if op != "state" {
+                session = store.load(&context)?.map(|(_, s)| s);
+            }
+            // Diagnostic CLI includes hidden references; the interactive renderer does not.
+            serde_json::to_string_pretty(&serde_json::json!({"context":context,"session":session}))
+                .map_err(|e| e.to_string())
+        }
+
         "tree" => {
             let db = options.get("--db").ok_or("--db is required")?;
             let prompts = options.get("--prompts").ok_or("--prompts is required")?;

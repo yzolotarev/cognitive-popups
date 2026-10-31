@@ -103,11 +103,18 @@ jobs:
       - run: cargo build --locked
       - name: Screenshots, light and dark
         run: tools/screenshots.sh "$RUNNER_TEMP/screenshots"
+      - name: Build the headless practice CLI
+        working-directory: .
+        run: cargo build --locked
+      - name: Learning feed episode, recovery and FSRS isolation
+        run: ../../tools/learning-feed-e2e.sh "$RUNNER_TEMP/learning-feed-e2e"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
           name: desktop-screenshots
-          path: ${{ runner.temp }}/screenshots
+          path: |
+            ${{ runner.temp }}/screenshots
+            ${{ runner.temp }}/learning-feed-e2e
           retention-days: 14
 
   audit:

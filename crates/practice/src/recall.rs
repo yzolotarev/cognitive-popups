@@ -173,6 +173,17 @@ pub fn recall_cards<T: Transport>(
     seed: u64,
     priority: Priority,
 ) -> Result<RecallSet, PracticeError> {
+    recall_cards_with_history(client, prompts, units, seed, priority, &[])
+}
+
+pub fn recall_cards_with_history<T: Transport>(
+    client: &Client<T>,
+    prompts: &PromptStore,
+    units: &[DueUnit],
+    seed: u64,
+    priority: Priority,
+    history: &[(String, Vec<String>)],
+) -> Result<RecallSet, PracticeError> {
     let chosen: Vec<&DueUnit> = units
         .iter()
         .filter(|u| u.family.is_some() || !u.evidence.is_empty())
@@ -208,13 +219,59 @@ pub fn recall_cards<T: Transport>(
             .get(RECALL_PROMPT)
             .map_err(|e| PracticeError::Prompt(e.to_string()))?
             .to_string(),
-        input: build_input(&units),
+        input: format!(
+            "{}\nПРЕЖНИЕ ВОПРОСЫ (не повторять по сути):\n{}",
+            build_input(&units),
+            serde_json::to_string(history).unwrap_or_default()
+        ),
         max_tokens: 1500,
         json: true,
         priority,
     };
-    let raw = client.complete_json(&request, schema_check)?;
+    let raw = client.complete_json(&request, |v| {
+        schema_check(v)?;
+        if let Some(cards) = v["cards"].as_array() {
+            for card in cards {
+                let id = card["unit"].as_str().unwrap_or_default();
+                let q = card["question"].as_str().unwrap_or_default();
+                if history
+                    .iter()
+                    .any(|(u, qs)| u == id && qs.iter().any(|old| normalize(old) == normalize(q)))
+                {
+                    return Err("Нужен другой вопрос на то же действие, прежний повторён".into());
+                }
+            }
+        }
+        Ok(())
+    })?;
     let mut set = validate(&raw, &units);
+    if history.iter().any(|(_, qs)| !qs.is_empty()) && !set.cards.is_empty() {
+        let check = client.complete_json(
+            &Request {
+                system: prompts
+                    .get("NEW_recall_variation_verify")
+                    .map_err(|e| PracticeError::Prompt(e.to_string()))?
+                    .into(),
+                input: serde_json::json!({"history":history,"cards":set.cards}).to_string(),
+                max_tokens: 600,
+                json: true,
+                priority,
+            },
+            |v| {
+                v["bad"]
+                    .as_array()
+                    .filter(|a| a.iter().all(Value::is_string))
+                    .map(|_| ())
+                    .ok_or_else(|| "Нужен bad: [unit id]".into())
+            },
+        )?;
+        let bad = check["bad"].as_array().unwrap();
+        set.cards.retain(|c| {
+            let rejected=bad.iter().any(|id| id.as_str()==Some(c.unit.as_str()));
+            if rejected {set.notes.push(format!("Не подготовлен новый вопрос для {}: слишком похож на прежний. Повторение остаётся в очереди.",c.unit));}
+            !rejected
+        });
+    }
     set.cards.splice(0..0, coded);
     Ok(set)
 }

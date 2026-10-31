@@ -491,3 +491,34 @@ fn alt_i_offers_pursued_goals_with_the_latest_lesson_first() {
     store.update_subject(&other).unwrap();
     assert_eq!(names(&store).len(), 3, "nothing pursued: all are offered");
 }
+
+#[test]
+fn expired_step_can_continue_without_finishing_or_completing_the_journey() {
+    let (mut store, _) = store_with_subject();
+    let journey = store.start_journey(Some(1), 100).unwrap();
+    let step = store
+        .start_step(None, journey.id, "читаю", 15, 100)
+        .unwrap();
+    let continued = store
+        .extend_step(step.id, 15, 1100, "continue-once")
+        .unwrap();
+    assert_eq!(continued.deadline, 2000);
+    assert_eq!(continued.started_at, 100);
+    assert!(continued.finished_at.is_none());
+    assert!(continued.outcome.is_none());
+    assert_eq!(store.journey(journey.id).unwrap().unwrap().completed, 0);
+    assert_eq!(
+        store
+            .extend_step(step.id, 15, 1200, "continue-once")
+            .unwrap()
+            .deadline,
+        2000
+    );
+    assert!(
+        store
+            .extend_step(step.id, 25, 1200, "continue-once")
+            .is_err()
+    );
+    store.finish_step(step.id, None, "", 2100).unwrap();
+    assert!(store.extend_step(step.id, 15, 2200, "too-late").is_err());
+}

@@ -123,12 +123,22 @@ pub fn recall_with_blocks<T: cognitive_exoskeleton_ai::Transport>(
     let generated = if due.is_empty() {
         Ok(crate::recall::RecallSet::default())
     } else {
-        crate::recall::recall_cards(
+        let history: Vec<(String, Vec<String>)> = due
+            .iter()
+            .map(|u| {
+                let qs = crate::learning::Store::open(db)
+                    .and_then(|s| s.question_history(&u.id))
+                    .unwrap_or_default();
+                (u.id.clone(), qs)
+            })
+            .collect();
+        crate::recall::recall_cards_with_history(
             client,
             prompts,
             &due,
             at as u64,
             cognitive_exoskeleton_ai::Priority::Foreground,
+            &history,
         )
     };
     let mut set = match generated {

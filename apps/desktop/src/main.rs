@@ -324,6 +324,11 @@ fn daemon() -> ExitCode {
         });
         pill.start();
         let lesson = lesson::LessonUi::new(app, ctx.clone(), notice.clone(), pill.clone());
+        let practice_for_lesson = practice.clone();
+        lesson.set_feed_opener(move || {
+            practice_for_lesson.hide();
+            practice_for_lesson.open(None, Some(Route::Probes), false);
+        });
         lesson.restore();
         // B95: old passages get their probes ready too (the lesson's, if any,
         // were started by `restore`).
@@ -397,7 +402,7 @@ fn daemon() -> ExitCode {
                 "practice" => {
                     let (word, rest) = argument.split_once(' ').unwrap_or((argument, ""));
                     let route = match word {
-                        "probes" | "whole" => Some(Route::Probes),
+                        "probes" | "whole" | "feed" => Some(Route::Probes),
                         "methods" => Some(Route::ChooseMethod),
                         "feynman" => Some(Route::Feynman),
                         "continue" => Some(Route::ContinueTask),
@@ -412,6 +417,9 @@ fn daemon() -> ExitCode {
                         _ => None,
                     };
                     practice.open(grab(), route.or(promised), word == "pill");
+                    if word == "feed" {
+                        practice.feed_demo(rest);
+                    }
                     if word == "whole" {
                         practice.whole_demo();
                     }
@@ -580,7 +588,7 @@ fn core_cli(args: &[String]) -> ExitCode {
         (Some("material"), Some("register"))
             | (Some("experiment"), Some("cards"))
             | (Some("lesson"), Some("plan"))
-            | (Some("practice"), Some("tree"))
+            | (Some("practice"), Some("tree" | "learning"))
     );
     if needs_prompts && !args.iter().any(|a| a == "--prompts") {
         command.arg("--prompts").arg(ctx::prompts_dir());

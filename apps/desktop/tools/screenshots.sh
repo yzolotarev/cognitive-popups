@@ -32,6 +32,10 @@ shots=(
   "understand-character|understand|character"
   "hypothesis|hypothesis|"
   "practice|practice|probes"
+  "feed-answer|practice|feed answer"
+  "feed-map|practice|feed support"
+  "feed-return|practice|feed return"
+  "feed-end|practice|feed end"
   "practice-methods|practice|methods"
   "practice-feynman|practice|feynman"
   "practice-continue-empty|practice|continue"
@@ -64,7 +68,7 @@ shots=(
 
 for theme in light dark; do
   COGNITIVE_THEME=$theme COGNITIVE_DB="$out/journal-$theme.db" COGNITIVE_CURSOR=300,200 \
-    COGNITIVE_AI_FIXTURE="$here/tools/fixture.json" \
+    COGNITIVE_PROMPTS="$here/../../docs/v2/port/prompts" COGNITIVE_AI_FIXTURE="$here/tools/fixture.json" \
     dbus-run-session "$bin" daemon >"$out/daemon-$theme.log" 2>&1 &
   daemon=$!
   for _ in $(seq 50); do grep -q ready "$out/daemon-$theme.log" && break; sleep 0.1; done
@@ -73,7 +77,7 @@ for theme in light dark; do
     IFS='|' read -r name window argument <<<"$shot"
     # shellcheck disable=SC2086
     "$bin" signal $window ${argument:+"$argument"}
-    sleep 1.2
+    sleep 2
     if [[ $name == _* ]]; then continue; fi
     grim "$out/$name-$theme.png"
     "$bin" signal hide

@@ -174,6 +174,9 @@ impl PracticeWindow {
             }
             glib::Propagation::Proceed
         });
+        // Capture: Enter reaches the feed before a focused button eats it
+        // (B93); the feed's handler steps aside while a field is typed in.
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         self.0.window.add_controller(keys);
     }
 
@@ -439,7 +442,10 @@ impl PracticeWindow {
                 Category::Probe(_) => Vec::new(),
             })
             .collect();
-        let feed = (!groups.is_empty()).then(|| FeedPage::build(self, groups, recall));
+        // B93: without a text (outside a lesson) the feed is reviews only —
+        // quick FSRS, like reels; during a lesson the lesson's work comes too.
+        let feed = (!groups.is_empty() || !recall.is_empty())
+            .then(|| FeedPage::build(self, groups, recall));
         let pages: Vec<gtk::Box> = feed
             .into_iter()
             .chain(categories.into_iter().map(|category| match category {
@@ -601,8 +607,12 @@ impl PracticeWindow {
         let reference = card.reference.clone();
         forgot.connect_clicked(move |_| {
             // B34: «не помню» without an attempt is a self-report, not a review.
-            let noted = Memory::open(&db)
-                .and_then(|mut m| m.note(&unit, Note::SelfReport, &key, ctx::now()));
+            let noted = Memory::open(&db).and_then(|mut m| {
+                m.note(&unit, Note::SelfReport, &key, ctx::now())?;
+                // B93: not again today — right after the reference it
+                // would be recognised, not recalled.
+                m.rest(&unit, ctx::now() + REST_AFTER_FORGOT)
+            });
             if let Err(e) = noted {
                 eprintln!("memory: {e}");
             }
@@ -612,7 +622,7 @@ impl PracticeWindow {
                 &["cp-quote"],
             ));
             c.append(&ui::text(
-                "Вернётся в очереди повторений.",
+                "Вернётся не раньше завтра, чтобы ты вспоминал, а не узнавал.",
                 &["cp-footnote", "cp-secondary"],
             ));
         });
@@ -1848,10 +1858,16 @@ struct FeedPage {
 /// What the keys do on the card on screen.
 #[derive(Default)]
 struct CardKeys {
-    reveal: Option<Rc<dyn Fn()>>,
+    /// Opens the answer; false when there is nothing left to open.
+    reveal: Option<Rc<dyn Fn() -> bool>>,
+    /// [Дальше] on a card that has one: Enter presses it (B93).
+    next: Option<gtk::Button>,
     mark: Option<Rc<dyn Fn(bool)>>,
     choose: Vec<gtk::Button>,
 }
+
+/// «Не помню» puts a card to rest this long (B93): a day.
+const REST_AFTER_FORGOT: i64 = 86_400;
 
 /// How long a card slides; GTK skips it when animations are off.
 const SLIDE_MS: u32 = 220;
@@ -1876,6 +1892,12 @@ impl FeedPage {
                     .unwrap_or(1);
                 (g.title.clone(), level)
             })
+            .collect();
+        let warmups: Vec<usize> = groups
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| g.role == practice::Role::Warmup)
+            .map(|(i, _)| i)
             .collect();
         let mut stock = HashMap::new();
         for (i, group) in groups.into_iter().enumerate() {
@@ -1905,7 +1927,7 @@ impl FeedPage {
         let smaller = ui::button("Шаг поменьше", &["cp-quiet-link"]);
         let skip = ui::button("Пропустить ↓", &["cp-quiet-link"]);
         let hint = ui::text(
-            "← ✗   → ✓   Enter — ответ",
+            "← ✗   → ✓   Enter — ответ, дальше",
             &["cp-footnote", "cp-secondary"],
         );
         hint.set_hexpand(true);
@@ -1918,7 +1940,7 @@ impl FeedPage {
         let slot = ui::column(8);
         let this = Rc::new(Self {
             window: window.clone(),
-            feed: RefCell::new(Feed::new(saved).with_formats()),
+            feed: RefCell::new(Feed::new(saved).with_formats().with_warmups(&warmups)),
             stock: RefCell::new(stock),
             asked: RefCell::new(HashSet::new()),
             recall: RefCell::new(recall.into()),
@@ -1965,14 +1987,20 @@ impl FeedPage {
                 self.show_next();
                 true
             }
-            gdk::Key::Return | gdk::Key::KP_Enter => match keys.reveal.clone() {
-                Some(reveal) => {
-                    drop(keys);
-                    reveal();
-                    true
+            gdk::Key::Return | gdk::Key::KP_Enter => {
+                let (reveal, next) = (keys.reveal.clone(), keys.next.clone());
+                drop(keys);
+                if reveal.is_some_and(|reveal| reveal()) {
+                    return true;
                 }
-                None => false,
-            },
+                match next {
+                    Some(button) => {
+                        button.emit_clicked();
+                        true
+                    }
+                    None => false,
+                }
+            }
             gdk::Key::Right | gdk::Key::Left => match keys.mark.clone() {
                 Some(mark) => {
                     drop(keys);
@@ -2021,6 +2049,15 @@ impl FeedPage {
     /// preloaded reel.
     fn update_peek(&self) {
         let feed = self.feed.borrow();
+        if feed.done_drilling() {
+            let left = self.recall.borrow().len();
+            self.peek.set_text(&if left > 0 {
+                format!("Дальше: повторения · осталось {left}")
+            } else {
+                "Дальше: повторений по сроку нет".to_string()
+            });
+            return;
+        }
         let op = feed.current();
         let ready = self.ready(op, feed.level(op));
         self.peek.set_text(&if ready > 0 {
@@ -2130,7 +2167,22 @@ impl FeedPage {
             let t = self.clone();
             on.connect_clicked(move |_| t.show_next());
             self.slot().append(&ui::actions(&[&on]));
+            self.keys.borrow_mut().next = Some(on);
             Self::fill(self);
+            return;
+        }
+        // B93: nothing left to drill and no review due — an honest end.
+        if next.pick == Pick::Recall && self.feed.borrow().done_drilling() {
+            self.waiting.set(false);
+            self.turn();
+            self.slot().append(&ui::text(
+                "На сейчас всё: повторений по сроку нет, а в этом тексте больше нечего отрабатывать.",
+                &["cp-body"],
+            ));
+            self.slot().append(&ui::text(
+                "Можно выделить другой кусок урока и открыть Alt+T снова.",
+                &["cp-footnote", "cp-secondary"],
+            ));
             return;
         }
         let shown = match next.pick {
@@ -2455,6 +2507,7 @@ impl FeedPage {
         let t = self.clone();
         on.connect_clicked(move |_| t.show_next());
         self.slot().append(&ui::actions(&[&on]));
+        self.keys.borrow_mut().next = Some(on);
         true
     }
 
@@ -2567,9 +2620,11 @@ impl FeedPage {
             keys.mark = Some(Rc::new(move |correct| m(correct)));
             let r = reveal.clone();
             keys.reveal = Some(Rc::new(move || {
-                if r.is_visible() && r.is_sensitive() {
+                let open = r.is_visible() && r.is_sensitive();
+                if open {
                     r.emit_clicked();
                 }
+                open
             }));
         }
         let (c, s, answer, r) = (content.clone(), session, card.answer.clone(), row.clone());

@@ -72,6 +72,16 @@ pub struct Card {
     pub answer: String,
 }
 
+/// What a branch is for (B93): a warm-up on the words of the text, or an
+/// operation of its subject. Only operations climb the levels.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    Warmup,
+    #[default]
+    Operation,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProbeGroup {
     pub title: String,
@@ -84,6 +94,9 @@ pub struct ProbeGroup {
     pub cards: Vec<Card>,
     /// Further checked cards: [Ещё 3] and the diagnostic case after a miss.
     pub reserve: Vec<Card>,
+    /// Trees kept before B93 have no role: they read as operations.
+    #[serde(default)]
+    pub role: Role,
 }
 
 impl ProbeGroup {
@@ -173,9 +186,6 @@ impl PracticeError {
 /// Shape check inside the model call, so a malformed answer gets one repair.
 pub fn schema_check(value: &Value) -> Result<(), String> {
     let groups = value["groups"].as_array().ok_or("нет массива groups")?;
-    if groups.is_empty() {
-        return Err("groups пуст".into());
-    }
     for (i, group) in groups.iter().enumerate() {
         for field in ["title", "source_span", "kind"] {
             if !group[field].is_string() {
@@ -228,6 +238,11 @@ fn accept(raw: &Value, text: &str, seed: u64) -> Result<Candidate, String> {
         },
         cards: Vec::new(),
         reserve: Vec::new(),
+        role: if raw["role"].as_str() == Some("warmup") {
+            Role::Warmup
+        } else {
+            Role::Operation
+        },
     };
     match raw["kind"].as_str() {
         Some("numeric") => {
@@ -350,6 +365,21 @@ pub fn probe_tree<T: Transport>(
                 {
                     rejected.push(format!("«{}»: повтор ветви", candidate.group.title));
                 }
+                // B93: one warm-up at most; the rest of the feed is the subject.
+                Ok(candidate)
+                    if candidate.group.role == Role::Warmup
+                        && tree
+                            .groups
+                            .iter()
+                            .map(|g| g.role)
+                            .chain(fresh.iter().map(|c| c.group.role))
+                            .any(|r| r == Role::Warmup) =>
+                {
+                    rejected.push(format!(
+                        "«{}»: вторая разминка — нужна операция предмета или ничего",
+                        candidate.group.title
+                    ));
+                }
                 Ok(candidate) => fresh.push(candidate),
                 Err(reason) => rejected.push(reason),
             }
@@ -363,7 +393,9 @@ pub fn probe_tree<T: Transport>(
             }
         }
         tree.notes.extend(rejected.iter().cloned());
-        if tree.groups.len() >= GROUPS || round == REPAIR_ROUNDS {
+        // B93: a text may hold fewer than three operations; only what the code
+        // rejected is asked for again, never a missing one to fill the count.
+        if tree.groups.len() >= GROUPS || round == REPAIR_ROUNDS || rejected.is_empty() {
             break;
         }
         let titles: Vec<&str> = tree.groups.iter().map(|g| g.title.as_str()).collect();
@@ -374,7 +406,7 @@ pub fn probe_tree<T: Transport>(
             } else {
                 titles.join("; ")
             },
-            GROUPS - tree.groups.len(),
+            rejected.len().min(GROUPS - tree.groups.len()),
             rejected.join("\n- ")
         );
     }

@@ -252,3 +252,22 @@ fn last_correct_at_is_the_latest_good_and_pause_is_visible() {
         Err(MemoryError::NotEnrolled(_))
     ));
 }
+
+#[test]
+fn a_rest_after_not_remembering_moves_only_the_date_and_never_earlier() {
+    let mut memory = memory_with(&[("u1", "S")]);
+    assert_eq!(memory.due(T0).unwrap().len(), 1);
+    memory.rest("u1", T0 + 86_400).unwrap();
+    assert!(
+        memory.due(T0 + 60).unwrap().is_empty(),
+        "not again right away"
+    );
+    assert_eq!(memory.due(T0 + 86_400).unwrap().len(), 1);
+    memory.rest("u1", T0).unwrap();
+    assert!(
+        memory.due(T0 + 60).unwrap().is_empty(),
+        "a rest never brings it earlier"
+    );
+    assert_eq!(memory.review_count("u1").unwrap(), 0, "no grade");
+    assert!(memory.rest("nope", T0).is_err());
+}

@@ -162,6 +162,39 @@ pub fn pick(fragments: &[Fragment], roll: f64) -> Option<&Fragment> {
     pool.get(index).copied()
 }
 
+/// B95: the same pool as `pick` (tied fragments first, B66), but a fragment
+/// whose probes are already prepared goes first, so the window opens at once.
+pub fn pick_ready(
+    fragments: &[Fragment],
+    roll: f64,
+    ready: impl Fn(&Fragment) -> bool,
+) -> Option<&Fragment> {
+    let tied: Vec<&Fragment> = fragments.iter().filter(|f| !f.linked.is_empty()).collect();
+    let pool: Vec<&Fragment> = if tied.is_empty() {
+        fragments.iter().collect()
+    } else {
+        tied
+    };
+    let prepared: Vec<&Fragment> = pool.iter().copied().filter(|f| ready(f)).collect();
+    let pool = if prepared.is_empty() { pool } else { prepared };
+    if pool.is_empty() {
+        return None;
+    }
+    let index = ((roll.clamp(0.0, 0.999_999) * pool.len() as f64) as usize).min(pool.len() - 1);
+    pool.get(index).copied()
+}
+
+/// The ones to prepare ahead (B95): the pool `pick` draws from, newest first.
+pub fn likely(fragments: &[Fragment], n: usize) -> Vec<&Fragment> {
+    let tied: Vec<&Fragment> = fragments.iter().filter(|f| !f.linked.is_empty()).collect();
+    let pool: Vec<&Fragment> = if tied.is_empty() {
+        fragments.iter().collect()
+    } else {
+        tied
+    };
+    pool.into_iter().take(n).collect()
+}
+
 /// The reader's own choice from the list (F-23 point 2): the fragment by its
 /// journal sequence, no roll.
 pub fn choose(fragments: &[Fragment], sequence: i64) -> Option<&Fragment> {
@@ -465,5 +498,43 @@ mod tests {
     #[test]
     fn nothing_to_pick_from_is_none() {
         assert!(pick(&[], 0.5).is_none());
+        assert!(pick_ready(&[], 0.5, |_| true).is_none());
+    }
+
+    fn plain(text: &str, linked: &[&str]) -> Fragment {
+        Fragment {
+            sequence: 0,
+            text: text.into(),
+            at: 0,
+            application: None,
+            title: None,
+            operations: Vec::new(),
+            linked: linked.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn a_prepared_fragment_goes_first_within_the_same_pool() {
+        let all = [
+            plain("a", &[]),
+            plain("b", &["S"]),
+            plain("c", &["S"]),
+            plain("d", &[]),
+        ];
+        let ready = |f: &Fragment| f.text == "c" || f.text == "d";
+        for roll in [0.0, 0.5, 0.999] {
+            assert_eq!(
+                pick_ready(&all, roll, ready).unwrap().text,
+                "c",
+                "tied and ready"
+            );
+        }
+        assert_eq!(
+            pick_ready(&all, 0.0, |_| false).unwrap().text,
+            "b",
+            "else as pick"
+        );
+        let likely: Vec<&str> = likely(&all, 5).iter().map(|f| f.text.as_str()).collect();
+        assert_eq!(likely, ["b", "c"], "the pool pick draws from");
     }
 }

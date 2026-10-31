@@ -112,7 +112,9 @@ impl Default for UreqTransport {
         let agent = ureq::Agent::config_builder()
             .tls_config(tls)
             .http_status_as_error(false)
-            .timeout_global(Some(std::time::Duration::from_secs(120)))
+            // B95: an answer comes in seconds; a minute without one means a stuck
+            // request, and the reader should hear so, not wait two more.
+            .timeout_global(Some(std::time::Duration::from_secs(60)))
             .build()
             .new_agent();
         Self { agent }

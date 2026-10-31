@@ -325,6 +325,11 @@ fn daemon() -> ExitCode {
         pill.start();
         let lesson = lesson::LessonUi::new(app, ctx.clone(), notice.clone(), pill.clone());
         lesson.restore();
+        // B95: old passages get their probes ready too (the lesson's, if any,
+        // were started by `restore`).
+        if ctx.lesson.borrow().is_none() {
+            practice::warm_up(&ctx);
+        }
         let material_watch = watch::MaterialWatch::start(ctx.clone(), notice.clone());
         app.connect_shutdown(move |_| material_watch.stop());
         let hub = hub::Hub::new(app, ctx.clone(), {

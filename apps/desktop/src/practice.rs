@@ -63,6 +63,10 @@ struct State {
     flush: Vec<Rc<dyn Fn()>>,
     /// Opens the solution of the whole task on screen (scripts, screenshots).
     reveal: Option<Rc<dyn Fn()>>,
+    /// B95: what has come for the probes so far, and the feed on screen.
+    probe_groups: Option<Vec<ProbeGroup>>,
+    recall_cards: Option<Vec<RecallCard>>,
+    feed: Option<Rc<FeedPage>>,
 }
 
 struct Inner {
@@ -346,7 +350,10 @@ impl PracticeWindow {
         inner.title.set_text("Пробы");
         let generation = self.next_generation();
         let (text, from_pill) = {
-            let state = inner.state.borrow();
+            let mut state = inner.state.borrow_mut();
+            state.probe_groups = None;
+            state.recall_cards = None;
+            state.feed = None;
             (state.text.clone(), state.from_pill)
         };
         self.show(&[ui::waiting("Строю пробы по тексту…").upcast()]);
@@ -355,7 +362,6 @@ impl PracticeWindow {
             inner.ctx.prompts.clone(),
             inner.ctx.db.clone(),
         );
-        let this = self.clone();
         let provider = inner.ctx.provider();
         let lesson = inner
             .ctx
@@ -363,10 +369,33 @@ impl PracticeWindow {
             .borrow()
             .as_ref()
             .map(|l| l.as_str().to_string());
+        // B95: the probes and the reviews come separately — a review written by
+        // the model never holds the probes back, and a prepared tree opens at once.
+        let this = self.clone();
+        let (ai_r, prompts_r, db_r) = (ai.clone(), prompts.clone(), db.clone());
         ctx::background(
-            move || -> Result<Built, PracticeError> {
-                let now = ctx::now();
-                let recall = practice::due::recall_with_blocks(&db, &ai, &prompts, now)?;
+            move || practice::due::recall_with_blocks(&db_r, &ai_r, &prompts_r, ctx::now()),
+            move |result| {
+                if !this.current(generation) {
+                    return;
+                }
+                let cards = result.map(|set| set.cards).unwrap_or_else(|e| {
+                    eprintln!("feed: reviews: {e}");
+                    Vec::new()
+                });
+                let feed = this.0.state.borrow().feed.clone();
+                match feed {
+                    Some(feed) => feed.add_recall(cards),
+                    None => {
+                        this.0.state.borrow_mut().recall_cards = Some(cards);
+                        this.assemble(from_pill);
+                    }
+                }
+            },
+        );
+        let this = self.clone();
+        ctx::background(
+            move || -> Result<(practice::ProbeTree, Option<String>), PracticeError> {
                 let prepared = lesson.as_deref().and_then(|l| {
                     prepared_tree(&db, l, &text, |whole| {
                         practice::probe_tree(&ai, &prompts, whole, Priority::Foreground)
@@ -374,45 +403,66 @@ impl PracticeWindow {
                             .ok()
                     })
                 });
-                let (probes, whole) = match prepared {
+                Ok(match prepared {
                     Some((tree, material)) => (tree, Some(material)),
                     None if text.trim().is_empty() => (practice::ProbeTree::default(), None),
                     None => (
-                        practice::probe_tree(&ai, &prompts, &text, Priority::Foreground)?,
+                        kept_tree(&db, &ai, &prompts, &text, Priority::Foreground)?,
                         None,
                     ),
-                };
-                let mut notes = probes.notes;
-                notes.extend(recall.notes);
-                Ok((
-                    practice::arrange(probes.groups, recall.cards, from_pill),
-                    notes,
-                    whole,
-                ))
+                })
             },
             move |result| {
                 if !this.current(generation) {
                     return;
                 }
-                // A prepared tree is of the whole text: its cards are asked
-                // for against that text too.
-                let result = result.map(|(categories, notes, whole)| {
-                    if let Some(whole) = whole {
-                        this.0.state.borrow_mut().text = whole;
-                    }
-                    (categories, notes)
-                });
                 match result {
-                    Ok((categories, _)) if categories.is_empty() => this.show(&[ui::text(
-                        "Нет доступной работы: выдели материал или дождись повторений.",
-                        &["cp-body"],
-                    )
-                    .upcast()]),
-                    Ok((categories, _)) => this.tree(categories),
+                    Ok((tree, whole)) => {
+                        let mut state = this.0.state.borrow_mut();
+                        // A prepared tree is of the whole text: its cards are
+                        // asked for against that text too.
+                        if let Some(whole) = whole {
+                            state.text = whole;
+                        }
+                        state.probe_groups = Some(tree.groups);
+                        drop(state);
+                        this.assemble(from_pill);
+                    }
                     Err(e) => this.failed(&e.user_message(provider), Route::Probes),
                 }
             },
         );
+    }
+
+    /// Shows what has come: probes at once, reviews joining the feed when
+    /// they arrive; a wait only while neither has anything (B95).
+    fn assemble(&self, from_pill: bool) {
+        let (groups, recall) = {
+            let state = self.0.state.borrow();
+            (state.probe_groups.clone(), state.recall_cards.clone())
+        };
+        match (groups, recall) {
+            (Some(groups), recall) if !groups.is_empty() => {
+                let reviews_later = recall.is_none();
+                self.0.state.borrow_mut().recall_cards = None;
+                self.tree(practice::arrange(
+                    groups,
+                    recall.unwrap_or_default(),
+                    from_pill,
+                ));
+                if !reviews_later {
+                    self.0.state.borrow_mut().recall_cards = Some(Vec::new());
+                }
+            }
+            (Some(_), Some(recall)) if recall.is_empty() => self.show(&[ui::text(
+                "Нет доступной работы: выдели материал или дождись повторений.",
+                &["cp-body"],
+            )
+            .upcast()]),
+            (Some(_), Some(recall)) => self.tree(practice::arrange(Vec::new(), recall, from_pill)),
+            (Some(_), None) => self.show(&[ui::waiting("Готовлю повторения…").upcast()]),
+            (None, _) => {}
+        }
     }
 
     fn failed(&self, message: &str, route: Route) {
@@ -446,7 +496,9 @@ impl PracticeWindow {
         // quick FSRS, like reels; during a lesson the lesson's work comes too.
         let feed = (!groups.is_empty() || !recall.is_empty())
             .then(|| FeedPage::build(self, groups, recall));
+        self.0.state.borrow_mut().feed = feed.clone();
         let pages: Vec<gtk::Box> = feed
+            .map(|f| f.page.clone())
             .into_iter()
             .chain(categories.into_iter().map(|category| match category {
                 Category::Probe(group) => ProbePage::build(self, group),
@@ -664,7 +716,16 @@ impl PracticeWindow {
     /// the probes again; one tied to an active skill is preferred (B66). The
     /// reader may instead choose from the list.
     fn old_material(&self, avail: &Availability) {
-        let Some(fragment) = revisit::pick(&avail.stock.fragments, understand_roll()).cloned()
+        let db = self.0.ctx.db.clone();
+        let ready = |f: &revisit::Fragment| {
+            FeedStore::open(&db)
+                .ok()
+                .and_then(|s| s.tree(&text_key(&f.text)).ok().flatten())
+                .is_some()
+        };
+        // B95: within the same pool, a passage with prepared probes goes first.
+        let Some(fragment) =
+            revisit::pick_ready(&avail.stock.fragments, understand_roll(), ready).cloned()
         else {
             return;
         };
@@ -1746,9 +1807,6 @@ impl ProbePage {
     }
 }
 
-/// The categories, the notes, and the whole text when a prepared tree was used.
-type Built = (Vec<Category>, Vec<String>, Option<String>);
-
 /// B90: the tree prepared for the lesson's registered text, when the
 /// selection lies in that text or nothing is selected. The operations the
 /// selection touches come first. Returns the tree and the whole text.
@@ -1828,6 +1886,73 @@ fn fill_model_step(body: &gtk::Box, step: Step, scaffold: Option<&Result<Scaffol
 /// Seconds without typing before «Застрял» lights up (B91).
 const STUCK_AFTER_S: i64 = 75;
 
+/// B95: where the probes of a text that is not a registered material are kept.
+fn text_key(text: &str) -> String {
+    use cognitive_exoskeleton_materials::{clean, material_id};
+    format!("text:{}", material_id(&clean(text)))
+}
+
+/// B95: the probes of a text from the store, else built now and kept, so the
+/// same passage never waits twice.
+fn kept_tree(
+    db: &std::path::Path,
+    ai: &ctx::Ai,
+    prompts: &cognitive_exoskeleton_ai::PromptStore,
+    text: &str,
+    priority: Priority,
+) -> Result<practice::ProbeTree, PracticeError> {
+    let key = text_key(text);
+    let store = FeedStore::open(db).ok();
+    if let Some(tree) = store.as_ref().and_then(|s| s.tree(&key).ok().flatten()) {
+        return Ok(tree);
+    }
+    let tree = practice::probe_tree(ai, prompts, text, priority)?;
+    if !tree.groups.is_empty()
+        && let Some(store) = store
+        && let Err(e) = store.save_tree(&key, &tree, ctx::now())
+    {
+        eprintln!("feed: {e}");
+    }
+    Ok(tree)
+}
+
+/// Old passages prepared ahead (B95).
+const WARM_FRAGMENTS: usize = 3;
+
+/// B95: prepares the feed before the reader asks — the open lesson's text
+/// and the old passages «Старый материал» draws from — one request at a time,
+/// in the background. Off with «Готовить ленту проб заранее».
+pub fn warm_up(ctx: &Ctx) {
+    if !ctx.precompute_feed.get() {
+        return;
+    }
+    let lesson = ctx.lesson.borrow().as_ref().map(|l| l.as_str().to_string());
+    let (db, ai, prompts) = (ctx.db.clone(), ctx.ai(), ctx.prompts.clone());
+    ctx::background(
+        move || {
+            if let Some(lesson) = lesson {
+                prepared_tree(&db, &lesson, "", |whole| {
+                    practice::probe_tree(&ai, &prompts, whole, Priority::Background)
+                        .map_err(|e| eprintln!("feed: warm lesson: {e}"))
+                        .ok()
+                });
+            }
+            let now = ctx::now();
+            let mut fragments = cognitive_exoskeleton_journal::Journal::open(&db)
+                .and_then(|j| revisit::fragments(&j, now, ""))
+                .unwrap_or_default();
+            let _ = revisit::link_to_skills(&db, &mut fragments);
+            for fragment in revisit::likely(&fragments, WARM_FRAGMENTS) {
+                if let Err(e) = kept_tree(&db, &ai, &prompts, &fragment.text, Priority::Background)
+                {
+                    eprintln!("feed: warm passage: {e}");
+                }
+            }
+        },
+        |_| {},
+    );
+}
+
 /// A seed for cases computed by code: a new one each time.
 fn rand_seed() -> u64 {
     (understand_roll() * u64::MAX as f64) as u64
@@ -1886,7 +2011,7 @@ impl FeedPage {
         window: &PracticeWindow,
         groups: Vec<ProbeGroup>,
         recall: Vec<RecallCard>,
-    ) -> gtk::Box {
+    ) -> Rc<Self> {
         let page = ui::column(8);
         page.set_widget_name("Лента");
         let store = FeedStore::open(&window.0.ctx.db).ok();
@@ -1979,7 +2104,20 @@ impl FeedPage {
             weak.upgrade().is_some_and(|t| t.key(key))
         }));
         this.show_next();
-        page
+        this
+    }
+
+    /// B95: reviews that arrived after the probes join the feed.
+    fn add_recall(self: &Rc<Self>, cards: Vec<RecallCard>) {
+        if cards.is_empty() {
+            return;
+        }
+        self.recall.borrow_mut().extend(cards);
+        if self.waiting.get() || self.feed.borrow().done_drilling() {
+            self.show_next();
+        } else {
+            self.update_peek();
+        }
     }
 
     /// The feed's keys, only while it is on screen and no text field has the

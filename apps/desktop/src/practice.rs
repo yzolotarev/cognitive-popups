@@ -364,7 +364,13 @@ impl PracticeWindow {
             move || -> Result<Built, PracticeError> {
                 let now = ctx::now();
                 let recall = practice::due::recall_with_blocks(&db, &ai, &prompts, now)?;
-                let prepared = lesson.as_deref().and_then(|l| prepared_tree(&db, l, &text));
+                let prepared = lesson.as_deref().and_then(|l| {
+                    prepared_tree(&db, l, &text, |whole| {
+                        practice::probe_tree(&ai, &prompts, whole, Priority::Foreground)
+                            .map_err(|e| eprintln!("feed: lesson text: {e}"))
+                            .ok()
+                    })
+                });
                 let (probes, whole) = match prepared {
                     Some((tree, material)) => (tree, Some(material)),
                     None if text.trim().is_empty() => (practice::ProbeTree::default(), None),
@@ -1736,10 +1742,14 @@ type Built = (Vec<Category>, Vec<String>, Option<String>);
 /// B90: the tree prepared for the lesson's registered text, when the
 /// selection lies in that text or nothing is selected. The operations the
 /// selection touches come first. Returns the tree and the whole text.
+/// B92: when nothing was prepared yet (a text registered before B90, or the
+/// switch off), the tree is built from the whole lesson text now and kept —
+/// the lesson comes first, not the one paragraph selected.
 fn prepared_tree(
     db: &std::path::Path,
     lesson: &str,
     selection: &str,
+    build: impl FnOnce(&str) -> Option<practice::ProbeTree>,
 ) -> Option<(practice::ProbeTree, String)> {
     use cognitive_exoskeleton_materials::{Materials, normalize};
     let material = Materials::open(db).ok()?.latest_for_lesson(lesson).ok()??;
@@ -1747,7 +1757,17 @@ fn prepared_tree(
     if !picked.is_empty() && !normalize(&material.text).contains(&picked) {
         return None;
     }
-    let mut tree = FeedStore::open(db).ok()?.tree(&material.id).ok()??;
+    let store = FeedStore::open(db).ok()?;
+    let mut tree = match store.tree(&material.id).ok()? {
+        Some(tree) => tree,
+        None => {
+            let tree = build(&material.text).filter(|t| !t.groups.is_empty())?;
+            if let Err(e) = store.save_tree(&material.id, &tree, ctx::now()) {
+                eprintln!("feed: {e}");
+            }
+            tree
+        }
+    };
     if !picked.is_empty() {
         tree.groups.sort_by_key(|g| {
             let span = normalize(&g.source_span);
@@ -2166,7 +2186,9 @@ impl FeedPage {
         journal: &str,
         last: &str,
     ) {
-        let clean = attempt.correct && attempt.attempt_before_reveal;
+        // B92: «Совпало» after opening the answer counts too; `before_reveal`
+        // still keeps the difference in `probe_attempts`.
+        let clean = attempt.correct;
         // In «В двух словах» an answer after help is the only way not to be
         // «before the answer»: it counts as «с помощью», never a miss (B91).
         if next.pick == Pick::Explain && !attempt.attempt_before_reveal {

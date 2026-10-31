@@ -169,7 +169,9 @@ mod prompt_tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../docs/v2/port/prompts/NEW_study_text.md"),
         )
-        .unwrap();
+        .unwrap()
+        // A Windows checkout ends lines with CRLF.
+        .replace("\r\n", "\n");
         let start = file.find("```text\n").unwrap() + "```text\n".len();
         file[start..start + file[start..].find("\n```").unwrap()].to_string()
     }

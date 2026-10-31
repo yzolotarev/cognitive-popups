@@ -2335,9 +2335,15 @@ impl FeedPage {
             .feed
             .borrow()
             .next(understand_roll(), !self.recall.borrow().is_empty());
-        if next.pick == Pick::Recall
-            && let Some(card) = self.recall.borrow_mut().pop_front()
-        {
+        // The card is taken out first: a borrow held in the `if let` would last
+        // through the block, and `turn` → `update_peek` reads the queue again
+        // (owner's log, 31.10: «RefCell already mutably borrowed»).
+        let review = if next.pick == Pick::Recall {
+            self.recall.borrow_mut().pop_front()
+        } else {
+            None
+        };
+        if let Some(card) = review {
             self.waiting.set(false);
             self.feed.borrow_mut().record(next, true);
             self.turn();

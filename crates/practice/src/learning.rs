@@ -383,9 +383,12 @@ pub fn generate<T: Transport>(
     }
     let key = if root.is_some() { DECOMPOSE } else { GENERATE };
     let base=serde_json::json!({"source":source,"root":root,"history":history.iter().rev().take(20).collect::<Vec<_>>(),"direction":direction}).to_string();
+    // These structured requests use their own Unicode rule. Appending the
+    // general LaTeX rule encourages invalid JSON escapes such as \(.
     let system = prompts
-        .with_formulas(key)
-        .map_err(|e| PracticeError::Prompt(e.to_string()))?;
+        .get(key)
+        .map_err(|e| PracticeError::Prompt(e.to_string()))?
+        .to_string();
     let verifier = prompts
         .get(VERIFY)
         .map_err(|e| PracticeError::Prompt(e.to_string()))?

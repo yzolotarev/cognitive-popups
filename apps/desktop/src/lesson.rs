@@ -218,6 +218,10 @@ impl LessonUi {
 
     fn set_lesson(&self, lesson: Option<&Lesson>) {
         *self.0.ctx.lesson.borrow_mut() = lesson.and_then(|l| LessonId::new(l.id.clone()).ok());
+        // B95: the lesson's probes get ready while the reader starts reading.
+        if lesson.is_some() {
+            crate::practice::warm_up(&self.0.ctx);
+        }
     }
 
     fn show(&self, widgets: &[gtk::Widget]) {
